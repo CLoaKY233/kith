@@ -8,7 +8,7 @@ use kith_config::{Config, ConfigError};
 use kith_ipc::{DnsRecord, IpcClient, IpcError, Request, Response};
 use kith_types::{NetworkId, NodeId};
 
-use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, Opts, WgCmd};
+use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, Opts, RelayCmd, WgCmd};
 use crate::render;
 
 /// A failure worth one line on stderr.
@@ -167,6 +167,31 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             },
             node: None,
         },
+        Cmd::Exit(ExitCmd::Allow { network, node }) => Request::SetExitGrant {
+            network: names.network(network)?,
+            node: names.node(node)?,
+            allowed: true,
+        },
+        Cmd::Exit(ExitCmd::Deny { network, node }) => Request::SetExitGrant {
+            network: names.network(network)?,
+            node: names.node(node)?,
+            allowed: false,
+        },
+        Cmd::Relay(RelayCmd::Advertise {
+            node,
+            network,
+            name,
+            address,
+        }) => Request::AdvertiseRelay {
+            network: names.network(network)?,
+            name: name.clone(),
+            address: address.clone(),
+            node: node.as_deref().map(|node| names.node(node)).transpose()?,
+        },
+        Cmd::Relay(RelayCmd::Remove { network, name }) => Request::RemoveRelay {
+            network: names.network(network)?,
+            name: name.clone(),
+        },
         Cmd::Server { exit, relay } => Request::ServerMode {
             exit: *exit,
             relay: *relay,
@@ -220,13 +245,13 @@ pub(crate) fn load_config(path: Option<&Path>) -> Result<Config, CliError> {
     })
 }
 
-fn socket_path(opts: &Opts) -> PathBuf {
-    opts.socket.clone().unwrap_or_else(|| {
-        Config::load_or_default(&Config::default_path())
-            .unwrap_or_default()
+fn socket_path(opts: &Opts) -> Result<PathBuf, CliError> {
+    match &opts.socket {
+        Some(path) => Ok(path.clone()),
+        None => Ok(Config::load_or_default(&Config::default_path())?
             .daemon
-            .socket_path
-    })
+            .socket_path),
+    }
 }
 
 async fn connect(path: &Path) -> Result<IpcClient, CliError> {
@@ -278,12 +303,13 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Peers { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
+        | Cmd::Relay(_)
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Watch => {}
     }
 
-    let mut client = connect(&socket_path(opts)).await?;
+    let mut client = connect(&socket_path(opts)?).await?;
     match &opts.cmd {
         Cmd::Watch => {
             let mut events = client.watch().await?;
@@ -301,6 +327,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Peers { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
+        | Cmd::Relay(_)
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Config(_)
@@ -325,7 +352,17 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
     {
         names.hostname = hostname();
     }
-    if let Cmd::Exit(ExitCmd::Use { network, .. }) = &opts.cmd {
+    if let Cmd::Exit(
+        ExitCmd::Use { network, .. }
+        | ExitCmd::Allow { network, .. }
+        | ExitCmd::Deny { network, .. },
+    )
+    | Cmd::Relay(RelayCmd::Advertise {
+        network,
+        node: Some(_),
+        ..
+    }) = &opts.cmd
+    {
         let network = names.network(network)?;
         names.peers = fetch_peers(&mut client, network)
             .await?

@@ -154,19 +154,25 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn relayed_packets_cross_a_server_when_direct_udp_is_off() -> TestResult {
-        let s = start_with(
-            |mut config| {
-                config.server.enabled = true;
-                config.server.relay = true;
-                config
-            },
-            |options| options,
-        )
-        .await?;
+        let s = start().await?;
         let a = start_with(|config| config, NodeOptions::without_direct_udp).await?;
         let b = start_with(|config| config, NodeOptions::without_direct_udp).await?;
         let network = create(&s, "server").await?;
-        s.advertise_relay(network, "main").await?;
+        let served = s
+            .request(Request::ServerMode {
+                exit: false,
+                relay: true,
+            })
+            .await;
+        let Response::ServerModeSet { notes } = &served else {
+            return Err(format!("server mode failed: {served:?}").into());
+        };
+        if !notes
+            .iter()
+            .any(|note| note.starts_with("advertised relay server"))
+        {
+            return Err(format!("relay not advertised: {notes:?}").into());
+        }
         join(&s, &a, network, "alpha").await?;
         join(&s, &b, network, "beta").await?;
         let beta = peer(&a, network, "beta").await?;

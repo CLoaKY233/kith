@@ -166,6 +166,33 @@ pub(crate) enum Action {
         /// The exit peer.
         node: Option<NodeId>,
     },
+    /// Advertise a relay as `relay/<name>`; admins only.
+    AdvertiseRelay {
+        /// The network.
+        network: NetworkId,
+        /// The relay name.
+        name: String,
+        /// The relay's `host:port`.
+        address: String,
+        /// The relay's node; `None` is this device.
+        node: Option<NodeId>,
+    },
+    /// Remove `relay/<name>`; admins only.
+    RemoveRelay {
+        /// The network.
+        network: NetworkId,
+        /// The relay name.
+        name: String,
+    },
+    /// Grant or revoke `exit/<node>`; admins only.
+    SetExitGrant {
+        /// The network.
+        network: NetworkId,
+        /// The node.
+        node: NodeId,
+        /// Grant when true.
+        allowed: bool,
+    },
     /// Turn server mode features on or off.
     ServerMode {
         /// Act as an exit node.

@@ -75,9 +75,12 @@ pub(crate) enum Cmd {
     /// Manage DNS records
     #[bpaf(command)]
     Dns(#[bpaf(external(dns_cmd))] DnsCmd),
-    /// Route internet traffic through an exit node
+    /// Use, allow or deny exit nodes
     #[bpaf(command)]
     Exit(#[bpaf(external(exit_cmd))] ExitCmd),
+    /// Advertise or remove relay servers
+    #[bpaf(command)]
+    Relay(#[bpaf(external(relay_cmd))] RelayCmd),
     /// Offer this device as an exit node and/or relay
     #[bpaf(command)]
     Server {
@@ -151,6 +154,48 @@ pub(crate) enum ExitCmd {
         /// Needed only when this device is in several networks
         #[bpaf(positional("NETWORK"))]
         network: Option<String>,
+    },
+    /// Let a node act as an exit node (admins only)
+    #[bpaf(command)]
+    Allow {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        #[bpaf(positional("NODE"))]
+        node: String,
+    },
+    /// Stop a node acting as an exit node (admins only)
+    #[bpaf(command)]
+    Deny {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        #[bpaf(positional("NODE"))]
+        node: String,
+    },
+}
+
+/// `kith relay …`.
+#[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
+pub(crate) enum RelayCmd {
+    /// Advertise a relay to a network's members (admins only)
+    #[bpaf(command)]
+    Advertise {
+        /// The node running the relay (default: this device)
+        #[bpaf(argument("NODE"))]
+        node: Option<String>,
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        #[bpaf(positional("NAME"))]
+        name: String,
+        #[bpaf(positional("HOST:PORT"))]
+        address: String,
+    },
+    /// Stop advertising a relay (admins only)
+    #[bpaf(command)]
+    Remove {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        #[bpaf(positional("NAME"))]
+        name: String,
     },
 }
 

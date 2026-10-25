@@ -83,17 +83,28 @@ sudo kith server --exit --relay
 
 This restarts server mode with only the relay (and its STUN responder) on `listen_port + 1` and the exit flag; it does not start the QUIC or WebSocket listeners and is not written to the config file. `kith server` with neither flag stops server mode. To keep the roles across restarts, set them in `[server]`. `kith status` shows whether the node is serving as exit and relay.
 
+In every network where the VPS is an admin, `kith server --relay` also advertises the relay as `relay/<device name>` at its public address and the relay port, and `--exit` grants it `exit/<node>`. Where it is not an admin, the command prints the exact `kith relay advertise` or `kith exit allow` line an admin must run.
+
 ## Advertising the relay
 
-Members pick up relays from `relay/<name>` records in the network ledger, each holding a `host:port` and the relay's node id. The CLI has no command that writes such a record yet, so a relay that is running is not used by other members until one is published.
+Members pick up relays from `relay/<name>` records in the network ledger, each holding a `host:port` and the relay's node id. An admin writes or removes one with:
+
+```sh
+kith relay advertise home vps1 vps.example.com:41642 --node vps1
+kith relay remove home vps1
+```
+
+`--node` defaults to the device running the command.
 
 ## Using it as an exit
 
-On the laptop:
+An admin grants the exit role, then the laptop uses it:
 
 ```sh
+kith exit allow home vps1
 kith exit use home vps1
 kith exit off
+kith exit deny home vps1
 ```
 
-`kith exit use` is refused unless the node holds an `exit/<node hex>` grant in that network's ledger, and the CLI has no command that writes this grant yet. The same choice can be made at startup with `[exit] use_exit = { network = "home", node = "vps1" }`; set `allow_lan = true` to keep the local LAN reachable.
+`kith exit use` is refused unless the node holds an `exit/<node hex>` grant in that network's ledger. The same choice can be made at startup with `[exit] use_exit = { network = "home", node = "vps1" }`; set `allow_lan = true` to keep the local LAN reachable.

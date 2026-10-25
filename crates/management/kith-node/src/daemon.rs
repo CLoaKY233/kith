@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use kith_config::Config;
-use kith_control::records::Relay;
+use kith_control::records::{Record, Relay};
 use kith_control::{NetMap, Networks};
 use kith_dataplane::{Dataplane, DataplaneHandle, Endpoint, PeerSpec};
 use kith_identity::{Bootstrap, BootstrapAddr, DeviceIdentity, InviteToken, MAX_BOOTSTRAP};
@@ -129,10 +129,6 @@ impl Node {
             control_addr: started.control_addr,
             #[cfg(feature = "test-support")]
             tun: started.tun.map(tokio::sync::Mutex::new),
-            #[cfg(feature = "test-support")]
-            node: started.node,
-            #[cfg(feature = "test-support")]
-            relay_addr: started.relay_addr,
         })
     }
 }
@@ -146,10 +142,6 @@ pub struct NodeHandle {
     control_addr: SocketAddr,
     #[cfg(feature = "test-support")]
     tun: Option<tokio::sync::Mutex<kith_dataplane::MemoryTun>>,
-    #[cfg(feature = "test-support")]
-    node: NodeId,
-    #[cfg(feature = "test-support")]
-    relay_addr: Option<SocketAddr>,
 }
 
 impl NodeHandle {
@@ -186,31 +178,6 @@ impl NodeHandle {
     pub async fn recv_packet(&self) -> Result<Vec<u8>, NodeError> {
         let tun = self.tun.as_ref().ok_or(NodeError::NoMemoryTun)?;
         tun.lock().await.receive().await.ok_or(NodeError::Stopped)
-    }
-
-    /// Advertises this node's relay in `network` as `relay/<name>`.
-    #[cfg(feature = "test-support")]
-    pub async fn advertise_relay(&self, network: NetworkId, name: &str) -> Result<(), NodeError> {
-        let invalid =
-            |error: &dyn core::fmt::Display| NodeError::InvalidArgument(error.to_string());
-        let address = self
-            .relay_addr
-            .ok_or_else(|| NodeError::NotFound(String::from("relay")))?;
-        let relay = Relay::new(name.to_owned(), address.to_string(), self.node)
-            .map_err(|error| invalid(&error))?;
-        let record = kith_control::records::Record::Relay(relay);
-        let value = record.encode().map_err(|error| invalid(&error))?;
-        let action = Action::SetRecord {
-            network,
-            key: record.key(),
-            value,
-        };
-        let response = ipc::dispatch(&self.commands, action).await;
-        if response == Response::RecordSet {
-            Ok(())
-        } else {
-            Err(invalid(&format!("{response:?}")))
-        }
     }
 
     /// Reverts OS changes and stops the node.
@@ -260,12 +227,6 @@ pub(crate) struct Started {
     /// The test end of the in-memory TUN.
     #[cfg(feature = "test-support")]
     pub(crate) tun: Option<kith_dataplane::MemoryTun>,
-    /// This node's identity.
-    #[cfg(feature = "test-support")]
-    pub(crate) node: NodeId,
-    /// The relay listener, in server mode.
-    #[cfg(feature = "test-support")]
-    pub(crate) relay_addr: Option<SocketAddr>,
 }
 
 /// The event loop's state; owned by one task, so nothing is locked.
@@ -503,10 +464,6 @@ impl Daemon {
             control_addr: channel.local_addr(),
             #[cfg(feature = "test-support")]
             tun: dataplanes.memory,
-            #[cfg(feature = "test-support")]
-            node: local,
-            #[cfg(feature = "test-support")]
-            relay_addr: server.as_ref().and_then(ServerMode::relay_addr),
         };
         let mut daemon = Self {
             identity,
@@ -657,6 +614,40 @@ impl Daemon {
                 Ok(Response::PolicySet)
             }
             Action::UseExit { network, node } => self.use_exit(network, node).await,
+            Action::AdvertiseRelay {
+                network,
+                name,
+                address,
+                node,
+            } => {
+                let node = node.unwrap_or_else(|| identity.node_id());
+                let relay = Relay::new(name, address.clone(), node)
+                    .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+                self.write_admin_record(network, &Record::Relay(relay), true)
+                    .await?;
+                Ok(Response::RelayAdvertised { address })
+            }
+            Action::RemoveRelay { network, name } => {
+                let relay = self
+                    .member_map(network)?
+                    .relays()
+                    .iter()
+                    .find(|relay| relay.name() == name)
+                    .cloned()
+                    .ok_or_else(|| NodeError::NotFound(format!("relay {name}")))?;
+                self.write_admin_record(network, &Record::Relay(relay), false)
+                    .await?;
+                Ok(Response::RelayRemoved)
+            }
+            Action::SetExitGrant {
+                network,
+                node,
+                allowed,
+            } => {
+                self.write_admin_record(network, &Record::Exit(node), allowed)
+                    .await?;
+                Ok(Response::ExitGrantSet)
+            }
             Action::ServerMode { exit, relay } => self.server_mode(exit, relay).await,
             Action::ImportWireGuard { name, config } => {
                 let network = self.external.import(&self.state, name, *config).await?;
@@ -780,6 +771,112 @@ impl Daemon {
         Ok(Response::ExitSet)
     }
 
+    fn is_admin(&self, network: NetworkId) -> Result<bool, NodeError> {
+        let local = self.identity.node_id();
+        self.networks
+            .get(&network)
+            .ok_or_else(|| NodeError::NotFound(network.to_string()))?
+            .with_ledger(|ledger| ledger.view().admins().contains(&local))
+    }
+
+    async fn write_admin_record(
+        &mut self,
+        network: NetworkId,
+        record: &Record,
+        present: bool,
+    ) -> Result<(), NodeError> {
+        if !self.is_admin(network)? {
+            return Err(NodeError::InvalidArgument(format!(
+                "this device is not an admin of {network}"
+            )));
+        }
+        let value = if present {
+            record
+                .encode()
+                .map_err(|error| NodeError::InvalidArgument(error.to_string()))?
+        } else {
+            Vec::new()
+        };
+        let identity = Arc::clone(&self.identity);
+        self.runtime_mut(network)?
+            .set_record(&identity, record.key(), value, now())?;
+        self.commit(network).await
+    }
+
+    fn relay_address(&self) -> Option<String> {
+        let bound = self.server.as_ref().and_then(ServerMode::relay_addr)?;
+        let public = self
+            .connectivity
+            .local_endpoints()
+            .into_iter()
+            .find(|addr| is_public(addr.ip()))
+            .map(|addr| SocketAddr::new(addr.ip(), bound.port()));
+        let fallback = (!bound.ip().is_unspecified()).then_some(bound);
+        public.or(fallback).map(|addr| addr.to_string())
+    }
+
+    async fn advertise_roles(&mut self, exit: bool, relay: bool) -> Result<Vec<String>, NodeError> {
+        let local = self.identity.node_id();
+        let address = if relay { self.relay_address() } else { None };
+        let mut notes = Vec::new();
+        if relay && address.is_none() {
+            notes.push(
+                "no public address is known yet; advertise the relay with `kith relay advertise`"
+                    .to_owned(),
+            );
+        }
+        let networks: Vec<(NetworkId, String, String, bool, bool)> =
+            member_maps(self.networks.maps())
+                .map(|map| {
+                    let name = map.local_device().map_or_else(
+                        || "server".to_owned(),
+                        |device| device.name.to_ascii_lowercase(),
+                    );
+                    let advertised = map.relays().iter().any(|known| {
+                        known.node() == local && Some(known.address()) == address.as_deref()
+                    });
+                    let granted = map.exit_nodes().contains(&local);
+                    (
+                        map.network_id(),
+                        map.name().to_owned(),
+                        name,
+                        advertised,
+                        granted,
+                    )
+                })
+                .collect();
+        for (network, network_name, device, advertised, granted) in networks {
+            let admin = self.is_admin(network)?;
+            if let Some(address) = address.as_ref().filter(|_| !advertised) {
+                if admin {
+                    let relay = Relay::new(device.clone(), address.clone(), local)
+                        .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+                    self.write_admin_record(network, &Record::Relay(relay), true)
+                        .await?;
+                    notes.push(format!(
+                        "advertised relay {device} at {address} in {network_name}"
+                    ));
+                } else {
+                    notes.push(format!(
+                        "not an admin of {network_name}; an admin must run: kith relay advertise {network_name} {device} {address} --node {local}"
+                    ));
+                }
+            }
+            if exit && !granted {
+                if admin {
+                    self.write_admin_record(network, &Record::Exit(local), true)
+                        .await?;
+                    notes.push(format!("granted exit in {network_name}"));
+                } else {
+                    notes.push(format!(
+                        "not an admin of {network_name}; an admin must run: kith exit allow {network_name} {local}"
+                    ));
+                }
+            }
+        }
+        Ok(notes)
+    }
+
     async fn server_mode(&mut self, exit: bool, relay: bool) -> Result<Response, NodeError> {
         self.server = None;
         if exit || relay {
@@ -795,7 +892,8 @@ impl Daemon {
             );
         }
         self.refresh(None).await?;
-        Ok(Response::ServerModeSet)
+        let notes = self.advertise_roles(exit, relay).await?;
+        Ok(Response::ServerModeSet { notes })
     }
 
     async fn export(
@@ -1262,6 +1360,25 @@ fn member_maps_with_ids(maps: &Networks) -> impl Iterator<Item = (NetworkId, &Ne
     maps.iter()
         .filter(|(_, map)| map.is_member())
         .map(|(id, map)| (*id, map))
+}
+
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation())
+        }
+        IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local())
+        }
+    }
 }
 
 fn relays(maps: &Networks) -> Vec<Relay> {

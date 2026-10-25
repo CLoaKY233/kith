@@ -28,11 +28,13 @@ kith join kith://join/...
 
 kith status
 kith dns set home nas A 100.64.0.2
+kith exit allow home vps                    # admin: let peer "vps" act as an exit
 kith exit use home vps                      # route internet traffic through peer "vps"
 kith exit off
 
-# Turn a VPS into an always-on exit node and relay
+# Turn a VPS into an always-on exit node and relay (advertised automatically if it is an admin)
 kith server --exit --relay
+kith relay advertise home vps vps.example.com:41642 --node vps   # admin, when the VPS is not one
 
 # Interoperate with plain WireGuard
 kith wg import office ./wg0.conf

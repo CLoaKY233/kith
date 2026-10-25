@@ -9,6 +9,7 @@ use kith_ipc::{
 };
 use kith_naming::DEFAULT_DEVICE_TTL;
 use kith_policy::Policy;
+use kith_types::NetworkId;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, warn};
@@ -146,17 +147,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             network,
             name,
             record,
-        } => {
-            let record = dns_record(&name, record)?;
-            let value = record
-                .encode()
-                .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
-            Action::SetRecord {
-                network,
-                key: record.key(),
-                value,
-            }
-        }
+        } => set_record(network, &name, record)?,
         Request::DeleteRecord { network, name } => Action::DeleteRecord {
             network,
             key: format!("{DNS_PREFIX}{}", dns_name(&name)?),
@@ -172,6 +163,30 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             ),
         },
         Request::UseExit { network, node } => Action::UseExit { network, node },
+        Request::AdvertiseRelay {
+            network,
+            name,
+            address,
+            node,
+        } => Action::AdvertiseRelay {
+            network,
+            name: relay_name(&name)?,
+            address: non_empty("relay address", address)?,
+            node,
+        },
+        Request::RemoveRelay { network, name } => Action::RemoveRelay {
+            network,
+            name: relay_name(&name)?,
+        },
+        Request::SetExitGrant {
+            network,
+            node,
+            allowed,
+        } => Action::SetExitGrant {
+            network,
+            node,
+            allowed,
+        },
         Request::ServerMode { exit, relay } => Action::ServerMode { exit, relay },
         Request::ImportWireGuard { name, conf_text } => Action::ImportWireGuard {
             name: non_empty("import name", name)?,
@@ -233,6 +248,26 @@ fn dns_name(name: &str) -> Result<String, NodeError> {
         return Err(NodeError::InvalidArgument(
             "record name is empty".to_owned(),
         ));
+    }
+    Ok(name)
+}
+
+fn set_record(network: NetworkId, name: &str, record: DnsRecord) -> Result<Action, NodeError> {
+    let record = dns_record(name, record)?;
+    let value = record
+        .encode()
+        .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+    Ok(Action::SetRecord {
+        network,
+        key: record.key(),
+        value,
+    })
+}
+
+fn relay_name(name: &str) -> Result<String, NodeError> {
+    let name = name.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return Err(NodeError::InvalidArgument("relay name is empty".to_owned()));
     }
     Ok(name)
 }

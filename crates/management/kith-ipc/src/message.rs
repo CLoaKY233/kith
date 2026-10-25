@@ -79,6 +79,33 @@ pub enum Request {
         /// The exit node.
         node: Option<NodeId>,
     },
+    /// Advertises a relay server as the record `relay/<name>`.
+    AdvertiseRelay {
+        /// Network to advertise in.
+        network: NetworkId,
+        /// Relay name.
+        name: String,
+        /// The relay's `host:port`.
+        address: String,
+        /// The node running the relay; `None` is this device.
+        node: Option<NodeId>,
+    },
+    /// Removes the record `relay/<name>`.
+    RemoveRelay {
+        /// Network owning the record.
+        network: NetworkId,
+        /// Relay name.
+        name: String,
+    },
+    /// Grants or revokes a node's right to act as an exit node.
+    SetExitGrant {
+        /// Network to change.
+        network: NetworkId,
+        /// The node.
+        node: NodeId,
+        /// Grant when true, revoke when false.
+        allowed: bool,
+    },
     /// Offers this device as an exit node and/or relay.
     ServerMode {
         /// Act as an exit node.
@@ -158,8 +185,20 @@ pub enum Response {
     PolicySet,
     /// Answers [`Request::UseExit`].
     ExitSet,
+    /// Answers [`Request::AdvertiseRelay`].
+    RelayAdvertised {
+        /// The address advertised.
+        address: String,
+    },
+    /// Answers [`Request::RemoveRelay`].
+    RelayRemoved,
+    /// Answers [`Request::SetExitGrant`].
+    ExitGrantSet,
     /// Answers [`Request::ServerMode`].
-    ServerModeSet,
+    ServerModeSet {
+        /// What was advertised, or what an admin must still run.
+        notes: Vec<String>,
+    },
     /// Answers [`Request::ImportWireGuard`].
     Imported {
         /// The imported network.

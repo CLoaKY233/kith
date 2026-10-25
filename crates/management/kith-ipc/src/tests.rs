@@ -29,7 +29,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 2, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 3, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -39,7 +39,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 2, 0, 15, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 3, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -52,7 +52,7 @@ fn golden_bytes() {
         rx_bytes: 1,
         tx_bytes: 128,
     }]));
-    let mut expected = vec![54, b'k', b't', 0x70, 2, 0, 6, 1];
+    let mut expected = vec![54, b'k', b't', 0x70, 3, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01,
@@ -117,6 +117,22 @@ fn request() -> impl Strategy<Value = Request> {
         }),
         (net(), proptest::option::of(node()))
             .prop_map(|(network, node)| Request::UseExit { network, node }),
+        (net(), text(), text(), proptest::option::of(node())).prop_map(
+            |(network, name, address, node)| Request::AdvertiseRelay {
+                network,
+                name,
+                address,
+                node
+            }
+        ),
+        (net(), text()).prop_map(|(network, name)| Request::RemoveRelay { network, name }),
+        (net(), node(), any::<bool>()).prop_map(|(network, node, allowed)| {
+            Request::SetExitGrant {
+                network,
+                node,
+                allowed,
+            }
+        }),
         (any::<bool>(), any::<bool>())
             .prop_map(|(exit, relay)| Request::ServerMode { exit, relay }),
         (text(), text()).prop_map(|(name, conf_text)| Request::ImportWireGuard { name, conf_text }),
@@ -203,7 +219,10 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
         Just(Response::RecordDeleted),
         Just(Response::PolicySet),
         Just(Response::ExitSet),
-        Just(Response::ServerModeSet),
+        text().prop_map(|address| Response::RelayAdvertised { address }),
+        Just(Response::RelayRemoved),
+        Just(Response::ExitGrantSet),
+        proptest::collection::vec(text(), 0..3).prop_map(|notes| Response::ServerModeSet { notes }),
         net().prop_map(|network| Response::Imported { network }),
         text().prop_map(|conf_text| Response::WireGuardConfig { conf_text }),
         Just(Response::Watching),

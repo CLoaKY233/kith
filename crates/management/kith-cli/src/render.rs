@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 use kith_ipc::{Event, IpcError, PathKind, PeerInfo, Response, Status};
 
-use crate::cli::{Cmd, DnsCmd, ExitCmd, WgCmd};
+use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
 
 fn path_name(path: Option<PathKind>) -> &'static str {
@@ -286,12 +286,29 @@ pub(crate) fn response(
             writeln!(out, "internet traffic now goes through {node}")?;
         }
         (Cmd::Exit(ExitCmd::Off { .. }), Response::ExitSet) => writeln!(out, "exit node off")?,
-        (Cmd::Server { exit, relay }, Response::ServerModeSet) => writeln!(
-            out,
-            "exit node {}, relay {}",
-            if *exit { "on" } else { "off" },
-            if *relay { "on" } else { "off" }
-        )?,
+        (Cmd::Exit(ExitCmd::Allow { node, .. }), Response::ExitGrantSet) => {
+            writeln!(out, "{node} may now act as an exit node")?;
+        }
+        (Cmd::Exit(ExitCmd::Deny { node, .. }), Response::ExitGrantSet) => {
+            writeln!(out, "{node} may no longer act as an exit node")?;
+        }
+        (Cmd::Relay(RelayCmd::Advertise { name, .. }), Response::RelayAdvertised { address }) => {
+            writeln!(out, "advertised relay {name} at {address}")?;
+        }
+        (Cmd::Relay(RelayCmd::Remove { name, .. }), Response::RelayRemoved) => {
+            writeln!(out, "removed relay {name}")?;
+        }
+        (Cmd::Server { exit, relay }, Response::ServerModeSet { notes }) => {
+            writeln!(
+                out,
+                "exit node {}, relay {}",
+                if *exit { "on" } else { "off" },
+                if *relay { "on" } else { "off" }
+            )?;
+            for note in notes {
+                writeln!(out, "{note}")?;
+            }
+        }
         (Cmd::Wg(WgCmd::Import { name, .. }), Response::Imported { network }) => {
             writeln!(out, "imported {name} ({})", network.short())?;
         }

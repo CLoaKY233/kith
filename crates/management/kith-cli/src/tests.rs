@@ -111,6 +111,31 @@ fn every_command_parses_into_the_right_request() {
         ),
         (vec!["exit", "use", "home", "ghost"], Err(())),
         (
+            vec!["exit", "allow", "home", "nas"],
+            Ok(Request::SetExitGrant {
+                network: NET,
+                node: NODE,
+                allowed: true,
+            }),
+        ),
+        (
+            vec![
+                "relay",
+                "advertise",
+                "--node",
+                "nas",
+                "home",
+                "main",
+                "vps.example.com:41642",
+            ],
+            Ok(Request::AdvertiseRelay {
+                network: NET,
+                name: "main".into(),
+                address: "vps.example.com:41642".into(),
+                node: Some(NODE),
+            }),
+        ),
+        (
             vec!["exit", "off"],
             Ok(Request::UseExit {
                 network: NET,

@@ -33,6 +33,7 @@ fn main() -> ExitCode {
         | Cmd::Peers { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
+        | Cmd::Relay(_)
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Watch
