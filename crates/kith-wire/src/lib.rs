@@ -23,6 +23,7 @@ pub mod envelope;
 mod error;
 pub mod ext;
 pub mod frame;
+pub mod registry;
 pub mod varint;
 
 pub use envelope::{Header, MAGIC, MAX_MESSAGE_LEN, MessageType};

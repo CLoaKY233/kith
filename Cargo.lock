@@ -372,10 +372,19 @@ version = "0.0.0"
 [[package]]
 name = "kith-obfs"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-packet"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-policy"
@@ -396,10 +405,22 @@ version = "0.0.0"
 [[package]]
 name = "kith-relay-proto"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-router"
 version = "0.0.0"
+dependencies = [
+ "kith-types",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-sim"
@@ -412,6 +433,10 @@ version = "0.0.0"
 [[package]]
 name = "kith-stun"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-sync"

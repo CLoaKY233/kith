@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c0d1acb274f2fd4c82ce3b5110c491f38583209696cd421b69684aa7918e0aaa # shrinks to policy = Policy { rules: [Rule { sources: [Any], destinations: [Target { selector: Any, protocol: Udp, ports: Only(PortRanges([PortRange { start: 0, end: 0 }])) }] }] }, members = Members({NodeId(00000000): Member { tags: {}, addresses: Addresses { v4: 100.64.0.3, v6: fd00::3 } }, NodeId(03030303): Member { tags: {}, addresses: Addresses { v4: 100.64.0.2, v6: fd00::2 } }}), local = 3, packets = [(100.64.0.3, Udp, None)]

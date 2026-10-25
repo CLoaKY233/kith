@@ -21,7 +21,7 @@ kith-types.workspace = true
 kith-wire.workspace = true
 serde = { workspace = true, features = ["alloc", "derive"] }
 thiserror.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
 proptest.workspace = true
