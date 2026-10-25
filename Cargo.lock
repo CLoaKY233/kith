@@ -823,6 +823,7 @@ dependencies = [
  "kith-tls",
  "kith-types",
  "kith-wire",
+ "proptest",
  "rustls",
  "serde",
  "thiserror",
