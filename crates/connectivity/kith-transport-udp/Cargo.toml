@@ -12,9 +12,10 @@ publish.workspace = true
 [dependencies]
 kith-wire.workspace = true
 quinn-udp.workspace = true
-socket2.workspace = true
+socket2 = { workspace = true, features = ["all"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["net", "rt"] }
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

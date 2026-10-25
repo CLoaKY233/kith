@@ -8,6 +8,7 @@ use quinn_udp::{Transmit, UdpSocketState};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::Interest;
 use tokio::net::UdpSocket;
+use tracing::{debug, warn};
 
 use crate::{RecvBatch, SendBatch, UdpError};
 
@@ -28,6 +29,22 @@ pub struct BufferSizes {
     pub recv: usize,
 }
 
+/// Socket configuration applied by [`UdpLink::bind_with`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BindOptions {
+    mark: Option<u32>,
+}
+
+impl BindOptions {
+    /// Sets the Linux `SO_MARK`, so fwmark policy routing keeps the tunnel's own packets out of
+    /// the tunnel. Elsewhere a mark fails with [`UdpError::Unsupported`].
+    #[must_use]
+    pub const fn mark(mut self, mark: Option<u32>) -> Self {
+        self.mark = mark;
+        self
+    }
+}
+
 /// A bound UDP socket carrying WireGuard, disco and STUN.
 #[derive(Debug)]
 pub struct UdpLink {
@@ -35,7 +52,7 @@ pub struct UdpLink {
     state: UdpSocketState,
     local_addr: SocketAddr,
     buffer_sizes: BufferSizes,
-    /// Set once a segmented send has failed; segmentation then stays off for this socket.
+    /// Set once a segmented send failed because of segmentation; then it stays off.
     gso_disabled: AtomicBool,
 }
 
@@ -45,13 +62,27 @@ impl UdpLink {
     /// IPv4 gives an IPv4-only socket; `[::]` gives a dual-stack one on every OS.
     /// Must be called within a tokio runtime.
     pub fn bind(addr: SocketAddr) -> Result<Self, UdpError> {
+        Self::bind_with(addr, BindOptions::default())
+    }
+
+    /// Like [`bind`](Self::bind), applying `options` before the socket is bound.
+    pub fn bind_with(addr: SocketAddr, options: BindOptions) -> Result<Self, UdpError> {
         let bind_error = |source| UdpError::Bind { addr, source };
-        let std_socket = open_socket(addr).map_err(bind_error)?;
+        let std_socket = open_socket(addr, options)?;
         let state = UdpSocketState::new((&std_socket).into()).map_err(bind_error)?;
         let buffer_sizes = grow_buffers(&state, &std_socket);
         std_socket.set_nonblocking(true).map_err(bind_error)?;
         let socket = UdpSocket::from_std(std_socket).map_err(bind_error)?;
         let local_addr = socket.local_addr().map_err(UdpError::LocalAddr)?;
+        debug!(
+            %local_addr,
+            send_buffer = buffer_sizes.send,
+            recv_buffer = buffer_sizes.recv,
+            gso_segments = state.max_gso_segments(),
+            gro_segments = state.gro_segments(),
+            mark = ?options.mark,
+            "UDP link bound",
+        );
         Ok(Self {
             socket,
             state,
@@ -112,35 +143,51 @@ impl UdpLink {
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Some drivers reject GSO only at send time, so a failed segmented send turns GSO off and
-    /// resends the segments singly.
+    /// Some drivers reject GSO only at send time, so a failed segmented send is resent singly,
+    /// and GSO is turned off if segmentation was at fault.
     async fn send_transmit(&self, transmit: Transmit<'_>) -> Result<(), UdpError> {
         let transmit = self.map_destination(transmit);
-        let Err(source) = self.send_once(&transmit).await else {
+        let destination = transmit.destination;
+        let send_error = move |source| UdpError::Send {
+            destination,
+            source,
+        };
+        let Err(segmented_error) = self.send_once(&transmit).await else {
             return Ok(());
         };
         let Some(segment_size) = transmit.segment_size else {
-            return Err(UdpError::Send {
-                destination: transmit.destination,
-                source,
-            });
+            return Err(send_error(segmented_error));
         };
-        self.gso_disabled.store(true, Ordering::Relaxed);
         let mut first_error = None;
+        let mut any_sent = false;
         for segment in transmit.contents.chunks(segment_size) {
             let single = Transmit {
                 contents: segment,
                 segment_size: None,
                 ..transmit
             };
-            if let Err(source) = self.send_once(&single).await {
-                first_error.get_or_insert(UdpError::Send {
-                    destination: transmit.destination,
-                    source,
-                });
+            match self.send_once(&single).await {
+                Ok(()) => any_sent = true,
+                Err(source) => {
+                    first_error.get_or_insert(send_error(source));
+                }
             }
         }
+        // Single sends failing too blames the destination, unless quinn-udp already halted GSO.
+        if any_sent || self.state.max_gso_segments() == 1 {
+            self.disable_gso(&segmented_error);
+        }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn disable_gso(&self, error: &io::Error) {
+        if !self.gso_disabled.swap(true, Ordering::Relaxed) {
+            warn!(
+                local_addr = %self.local_addr,
+                %error,
+                "UDP segmentation offload failed; sending datagrams singly from now on",
+            );
+        }
     }
 
     async fn send_once(&self, transmit: &Transmit<'_>) -> io::Result<()> {
@@ -160,16 +207,33 @@ impl UdpLink {
     }
 }
 
-fn open_socket(addr: SocketAddr) -> io::Result<StdUdpSocket> {
-    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+fn open_socket(addr: SocketAddr, options: BindOptions) -> Result<StdUdpSocket, UdpError> {
+    let bind_error = |source| UdpError::Bind { addr, source };
+    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))
+        .map_err(bind_error)?;
     if let SocketAddr::V6(v6) = addr
         && v6.ip().is_unspecified()
     {
         // Windows defaults to IPv6-only; Linux and macOS do not.
-        socket.set_only_v6(false)?;
+        socket.set_only_v6(false).map_err(bind_error)?;
     }
-    socket.bind(&addr.into())?;
+    if let Some(mark) = options.mark {
+        set_mark(&socket, mark)?;
+    }
+    socket.bind(&addr.into()).map_err(bind_error)?;
     Ok(socket.into())
+}
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn set_mark(socket: &Socket, mark: u32) -> Result<(), UdpError> {
+    socket
+        .set_mark(mark)
+        .map_err(|source| UdpError::Mark { mark, source })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+fn set_mark(_socket: &Socket, _mark: u32) -> Result<(), UdpError> {
+    Err(UdpError::Unsupported { option: "SO_MARK" })
 }
 
 /// Requests [`SOCKET_BUFFER_BYTES`], halving on rejection; the OS default is an acceptable
@@ -199,7 +263,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
     use std::time::Duration;
 
-    use crate::{RecvBatch, SendBatch, UdpLink};
+    use crate::{BindOptions, RecvBatch, SendBatch, UdpError, UdpLink};
 
     const DATAGRAMS: usize = 200;
 
@@ -259,5 +323,26 @@ mod tests {
             let received = receive(receiver, sender.local_addr(), expected.len()).await;
             assert_eq!(received, expected);
         }
+    }
+
+    /// An unmarked socket in exit-node mode routes its own packets into the tunnel, so a
+    /// requested mark must be applied or refused, never dropped.
+    #[tokio::test]
+    async fn requested_mark_is_applied_or_refused() {
+        const MARK: u32 = 0x6b69;
+        let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let result = UdpLink::bind_with(loopback, BindOptions::default().mark(Some(MARK)));
+
+        #[cfg(any(target_os = "android", target_os = "linux"))]
+        match result {
+            Ok(link) => assert_eq!(socket2::SockRef::from(&link.socket).mark().unwrap(), MARK),
+            Err(UdpError::Mark { mark, source }) => {
+                assert_eq!(mark, MARK);
+                assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            Err(error) => panic!("unexpected error: {error}"),
+        }
+        #[cfg(not(any(target_os = "android", target_os = "linux")))]
+        assert!(matches!(result, Err(UdpError::Unsupported { .. })));
     }
 }

@@ -16,6 +16,21 @@ pub enum UdpError {
         #[source]
         source: io::Error,
     },
+    /// The socket mark could not be set; Linux requires `CAP_NET_ADMIN`.
+    #[error("cannot set socket mark {mark:#x}")]
+    Mark {
+        /// The mark that was requested.
+        mark: u32,
+        /// The underlying OS error.
+        #[source]
+        source: io::Error,
+    },
+    /// A bind option was requested that this platform lacks.
+    #[error("{option} is not supported on this platform")]
+    Unsupported {
+        /// The option's name.
+        option: &'static str,
+    },
     /// The socket's local address could not be read.
     #[error("cannot read the UDP socket's local address")]
     LocalAddr(#[source] io::Error),
