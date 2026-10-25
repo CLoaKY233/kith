@@ -9,5 +9,12 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[dependencies]
+kith-types.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true
