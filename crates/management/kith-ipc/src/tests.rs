@@ -1,16 +1,21 @@
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use kith_types::{NetworkId, NodeId};
 use proptest::prelude::*;
+#[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 
 use crate::codec::{decode, encode};
 use crate::message::ServerMessage;
 use crate::{
-    DnsRecord, ErrorCode, Event, IpcClient, IpcError, IpcServer, MAX_FRAME_LEN, NetworkSummary,
-    PROTOCOL_VERSION, PathKind, PeerInfo, Request, Response, Status,
+    DnsRecord, ErrorCode, Event, MAX_FRAME_LEN, NetworkSummary, PathKind, PeerInfo, Request,
+    Response, Status,
 };
+#[cfg(unix)]
+use crate::{IpcClient, IpcError, IpcServer, PROTOCOL_VERSION};
 
 fn unframe(bytes: &[u8]) -> Vec<u8> {
     let mut decoder = kith_wire::FrameDecoder::new(MAX_FRAME_LEN);
@@ -234,6 +239,7 @@ proptest! {
     }
 }
 
+#[cfg(unix)]
 fn socket_path() -> PathBuf {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -243,6 +249,7 @@ fn socket_path() -> PathBuf {
 }
 
 /// Serves one connection: answers `Status`, and streams two events on `Watch`.
+#[cfg(unix)]
 async fn serve_one(server: IpcServer) -> Option<u32> {
     let mut conn = server.accept().await.unwrap();
     let uid = conn.peer().map(|peer| peer.uid);
@@ -276,6 +283,7 @@ async fn serve_one(server: IpcServer) -> Option<u32> {
     uid
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn request_watch_and_peer_cred_over_a_real_socket() {
     let path = socket_path();
@@ -307,6 +315,7 @@ async fn request_watch_and_peer_cred_over_a_real_socket() {
     assert_eq!(server.await.unwrap(), Some(our_uid));
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn version_mismatch_is_a_clean_error() {
     let path = socket_path();

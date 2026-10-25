@@ -387,7 +387,9 @@ proptest! {
             prop_assert_eq!(diff.relays_changed, old.relays() != new.relays());
             prop_assert_eq!(diff.dns_changed, old.dns_records() != new.dns_records());
             prop_assert_eq!(diff.exit_nodes_changed, old.exit_nodes() != new.exit_nodes());
+            prop_assert_eq!(diff.local_device_changed, old.local_device() != new.local_device());
             prop_assert_eq!(diff.is_empty(), old.peers() == new.peers()
+                && old.local_device() == new.local_device()
                 && old.filter() == new.filter()
                 && old.local_addresses() == new.local_addresses()
                 && old.routes() == new.routes()
