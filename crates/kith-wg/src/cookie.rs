@@ -21,6 +21,7 @@ const LOAD_WINDOW: Duration = Duration::from_secs(1);
 /// under load and demands a valid MAC2, answering anything else with a cookie reply.
 pub struct CookieChecker {
     secret: Zeroizing<[u8; 32]>,
+    previous_secret: Option<Zeroizing<[u8; 32]>>,
     secret_born: Option<Duration>,
     limit_per_second: u32,
     window_start: Duration,
@@ -56,6 +57,7 @@ impl CookieChecker {
     pub fn new(handshakes_per_second: u32) -> Self {
         Self {
             secret: Zeroizing::new([0; 32]),
+            previous_secret: None,
             secret_born: None,
             limit_per_second: handshakes_per_second,
             window_start: Duration::ZERO,
@@ -99,8 +101,16 @@ impl CookieChecker {
         let covered_by_mac2 = message
             .get(..mac2_offset)
             .ok_or(WgError::MalformedMessage)?;
-        let expected_mac2 = mac(&cookie, &[covered_by_mac2]).ok_or(WgError::InvalidMac)?;
-        if constant_time_eq(&expected_mac2, received_mac2) {
+        let mac2_matches = |cookie: &[u8; MAC_LEN]| {
+            mac(cookie, &[covered_by_mac2])
+                .is_some_and(|expected| constant_time_eq(&expected, received_mac2))
+        };
+        // A cookie issued just before rotation stays valid, as in wireguard-go.
+        let previous_cookie = self
+            .previous_secret
+            .as_ref()
+            .and_then(|secret| mac(secret.as_slice(), &[source]));
+        if mac2_matches(&cookie) || previous_cookie.as_ref().is_some_and(mac2_matches) {
             return Ok(Verdict::Process);
         }
 
@@ -138,6 +148,10 @@ impl CookieChecker {
             .secret_born
             .is_some_and(|born| now.saturating_sub(born) < COOKIE_SECRET_LIFETIME);
         if !fresh {
+            self.previous_secret = self
+                .secret_born
+                .filter(|born| now.saturating_sub(*born) < COOKIE_SECRET_LIFETIME.saturating_mul(2))
+                .map(|_| self.secret.clone());
             random.fill_bytes(self.secret.as_mut_slice())?;
             self.secret_born = Some(now);
         }

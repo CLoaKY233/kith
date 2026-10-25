@@ -366,6 +366,30 @@ mod tests {
     const B_SECRET: [u8; 32] = [0x88; 32];
 
     /// `b` holds a session with `a`; returns `b` and a valid transport message from `a`.
+    /// Fresh, validly timestamped initiations from one peer are throttled per peer.
+    #[test]
+    fn initiation_flood_from_one_peer_is_throttled() {
+        let (a, b) = ([1; 32], [2; 32]);
+        let mut responder = peer(b, a, 1);
+        let initiations: Vec<Vec<u8>> = [(10, 0), (11, 1), (12, 20)]
+            .into_iter()
+            .map(|(seed, millis)| send(&mut peer(a, b, seed), at(millis), &ipv4(b"x")).1)
+            .collect();
+        let mut out = vec![0; BUFFER];
+        assert!(matches!(
+            responder.decapsulate(at(0), &initiations[0], &mut out),
+            Ok(Decapsulated::Reply(_))
+        ));
+        assert_eq!(
+            responder.decapsulate(at(1), &initiations[1], &mut out),
+            Err(WgError::Replay)
+        );
+        assert!(matches!(
+            responder.decapsulate(at(20), &initiations[2], &mut out),
+            Ok(Decapsulated::Reply(_))
+        ));
+    }
+
     fn established(seed: u64) -> (Peer, Vec<u8>) {
         let mut a = peer(A_SECRET, B_SECRET, seed);
         let mut b = peer(B_SECRET, A_SECRET, seed ^ 0xffff);

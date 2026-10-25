@@ -32,6 +32,9 @@ pub const MAX_QUEUED_PACKETS: usize = 16;
 /// Handshake initiations per second a standalone peer accepts before demanding cookies.
 const STANDALONE_HANDSHAKE_LIMIT: u32 = 20;
 
+/// wireguard-go's per-peer floor between consumed initiations (50 per second).
+const MIN_INITIATION_INTERVAL: Duration = Duration::from_millis(20);
+
 /// Whitepaper §6.2: an initiator receiving on an old session rekeys before it expires.
 const REKEY_ON_RECEIVE_AGE: Duration = REJECT_AFTER_TIME
     .saturating_sub(KEEPALIVE_TIMEOUT)
@@ -148,6 +151,7 @@ pub struct Peer {
     last_response: Option<(u32, [u8; MAC_LEN])>,
     cookie: Option<([u8; MAC_LEN], Duration)>,
     greatest_timestamp: Option<Tai64N>,
+    last_initiation_consumed: Option<Duration>,
 
     keypairs: Keypairs,
     last_session_at: Option<Duration>,
@@ -213,6 +217,7 @@ impl Peer {
             last_response: None,
             cookie: None,
             greatest_timestamp: None,
+            last_initiation_consumed: None,
             keypairs: Keypairs::default(),
             last_session_at: None,
             queue: VecDeque::new(),
@@ -457,10 +462,16 @@ impl Peer {
         {
             return Err(WgError::Replay);
         }
+        let at = now.monotonic;
+        if self
+            .last_initiation_consumed
+            .is_some_and(|last| at.saturating_sub(last) < MIN_INITIATION_INTERVAL)
+        {
+            return Err(WgError::Replay);
+        }
         let slot = out
             .get_mut(..HANDSHAKE_RESPONSE_LEN)
             .ok_or(WgError::BufferTooSmall)?;
-        let at = now.monotonic;
         let local_index = self.allocate_index();
         let remote_index = handshake.remote_index;
         let (response, keys) =
@@ -475,6 +486,7 @@ impl Peer {
         slot.copy_from_slice(&bytes);
 
         self.greatest_timestamp = Some(timestamp);
+        self.last_initiation_consumed = Some(at);
         self.keypairs
             .install(Keypair::new(keys, local_index, remote_index, at, false));
         self.last_response = Some((local_index, mac1));
