@@ -59,3 +59,32 @@ don't decide: how devices find each other, join, and stay in sync.
 
 - No LAN discovery without a bootstrap address. mDNS comes later.
 - Endpoint gossip is unsigned, so a malicious member can claim false endpoints. The harm is limited: WireGuard authenticates every packet, so the worst outcome is a failed connection attempt.
+
+## Internals
+
+`kith-node` is a set of modules around one event loop, on a single-threaded tokio runtime. The loop owns all state. Subsystems run as tasks and talk to it only through channels, so there are no locks across `.await`.
+
+| Module | Owns | Talks to |
+|---|---|---|
+| `state` | State directory: identity (created on first start, stored 0600), per-network ledger persistence | `kith-store`, `kith-identity`, `kith-ledger` |
+| `network` | One `NetworkRuntime` per joined network: ledger, current `NetMap`, local operations (create network, invite, records, policy, exit) | `kith-ledger`, `kith-control`, `kith-identity` |
+| `channel` | `ChannelHandler` implementation over the network runtimes; picks which peers to keep control connections to; gossips our endpoints | `kith-channel` |
+| `connectivity` | Per-peer `kith-disco` path selection, STUN probing, relay clients for advertised relays, port mapping, network change handling | `kith-disco`, `kith-stun`, `kith-relay`, `kith-netmon` |
+| `dns` | Zone built from all NetMaps (device names, custom records), the DNS server on the resolver address, split-DNS settings | `kith-naming`, `kith-dns` |
+| `os` | Turns NetMaps into a `kith-sys` `Plan` (mesh routes, DNS, exit routing, forwarding and NAT for server mode); applies on change, reverts on shutdown | `kith-sys` |
+| `ipc` | IPC server; maps each `Request` to a loop command; broadcasts `Event`s to watchers. Authorization: root or the daemon's own uid may change state; anyone may read status | `kith-ipc` |
+| `server` | Server mode: relay server, STUN responder on the WireGuard port, exit-node NAT | `kith-relay`, `kith-stun` |
+| `external` | Standard WireGuard peers that aren't mesh members: imported exits (wg-quick) and exported gateway clients | `kith-config` wg-quick parser, dataplane external interfaces |
+| `daemon` | The event loop: wires the above to the dataplane, handles shutdown (SIGINT/SIGTERM, reverts the OS plan) | everything |
+
+**Data flow on a ledger change.** An op arrives through sync, IPC or join. The runtime inserts it and persists it, then rebuilds its NetMap and diffs it. The diff updates three things:
+- the dataplane: peers, routes, filter;
+- the DNS zone;
+- the OS plan.
+
+The channel layer then calls `notify_changed` so peers sync.
+
+**Testing without root.**
+- The dataplane's `test-support` feature exposes an in-memory TUN.
+- `os` takes a `kith_sys::System` implementation, so tests pass a no-op one.
+- `kith-node` exposes `Node::start(NodeOptions)`, which returns a handle used by in-process multi-node tests. The real daemon (`run`) uses the same path with the real TUN and OS.
