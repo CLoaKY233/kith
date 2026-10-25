@@ -1,2 +1,5 @@
 [files]
 extend-exclude = ["LICENSE-*", "*.lock"]
+
+[default.extend-identifiers]
+UPnP = "UPnP"
