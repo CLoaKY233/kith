@@ -24,6 +24,8 @@ kith-wire = { path = "crates/kith-wire" }
 kith-identity = { path = "crates/kith-identity" }
 kith-ledger = { path = "crates/kith-ledger" }
 kith-policy = { path = "crates/kith-policy" }
+kith-packet = { path = "crates/kith-packet" }
+kith-naming = { path = "crates/kith-naming" }
 
 # Cryptography (pure Rust, no C toolchain).
 blake3 = { version = "1.8.7", default-features = false }

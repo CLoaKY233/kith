@@ -293,6 +293,14 @@ version = "0.0.0"
 [[package]]
 name = "kith-control"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-ledger",
+ "kith-policy",
+ "kith-types",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-crypto"
@@ -333,6 +341,12 @@ version = "0.0.0"
 [[package]]
 name = "kith-filter"
 version = "0.0.0"
+dependencies = [
+ "kith-packet",
+ "kith-policy",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-identity"
@@ -457,6 +471,15 @@ dependencies = [
 [[package]]
 name = "kith-sync"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-ledger",
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-sys"
