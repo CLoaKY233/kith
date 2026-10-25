@@ -191,6 +191,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "data-encoding"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
+
+[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -324,6 +330,16 @@ version = "0.0.0"
 [[package]]
 name = "kith-identity"
 version = "0.0.0"
+dependencies = [
+ "data-encoding",
+ "kith-crypto",
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "serde",
+ "thiserror",
+ "zeroize",
+]
 
 [[package]]
 name = "kith-ipc"
@@ -332,6 +348,14 @@ version = "0.0.0"
 [[package]]
 name = "kith-ledger"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-naming"
@@ -356,6 +380,14 @@ version = "0.0.0"
 [[package]]
 name = "kith-policy"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-relay"

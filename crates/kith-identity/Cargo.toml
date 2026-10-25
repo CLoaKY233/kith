@@ -9,5 +9,22 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Generate keys and invite secrets from the operating system's random source.
+getrandom = ["kith-crypto/getrandom"]
+
+[dependencies]
+data-encoding = { workspace = true, features = ["alloc"] }
+kith-crypto.workspace = true
+kith-types.workspace = true
+kith-wire.workspace = true
+serde = { workspace = true, features = ["alloc", "derive"] }
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

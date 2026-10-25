@@ -1,6 +1,6 @@
 [package]
 name = "kith-policy"
-description = "Access-control policy model, parser and compiler, plus deterministic address allocation"
+description = "Access-control policy model and compiler, plus deterministic address allocation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,16 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish.workspace = true
+
+[dependencies]
+kith-crypto.workspace = true
+kith-types.workspace = true
+kith-wire.workspace = true
+serde = { workspace = true, features = ["alloc", "derive"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
