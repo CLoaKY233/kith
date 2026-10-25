@@ -109,7 +109,7 @@ done
 
 log "creating network and invite in ns1"
 kith_in 1 create --device-name "$DEV1" "$NETWORK"
-LINK=$(kith_in 1 invite "$NETWORK" | tail -n 1)
+LINK=$(kith_in 1 invite "$NETWORK" | grep -o 'kith://join/[A-Za-z0-9]*' | head -n 1)
 [ -n "$LINK" ] || fail "empty invite link"
 
 log "joining from ns2"

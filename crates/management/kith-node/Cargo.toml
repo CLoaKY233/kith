@@ -40,7 +40,15 @@ kith-types.workspace = true
 rustls-pki-types.workspace = true
 toml.workspace = true
 thiserror = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = [
+  "io-util",
+  "macros",
+  "net",
+  "rt",
+  "signal",
+  "sync",
+  "time",
+] }
 tracing.workspace = true
 
 [dev-dependencies]

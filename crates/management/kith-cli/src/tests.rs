@@ -1,6 +1,6 @@
-use kith_ipc::{
-    DnsRecord, IpcServer, NetworkSummary, PathKind, PeerInfo, Request, Response, Status,
-};
+use kith_ipc::{DnsRecord, Request, Status};
+#[cfg(unix)]
+use kith_ipc::{IpcServer, NetworkSummary, PathKind, PeerInfo, Response};
 use kith_types::{NetworkId, NodeId};
 
 use crate::cli::{Cmd, opts};
@@ -217,6 +217,7 @@ async fn run_against(path: &std::path::Path, command: &[&str]) -> String {
     String::from_utf8(out).unwrap()
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn status_renders_what_the_daemon_reports() {
     let path = std::env::temp_dir().join(format!("kith-cli-{}.sock", std::process::id()));
