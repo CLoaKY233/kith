@@ -9,5 +9,33 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[dependencies]
+kith-channel.workspace = true
+kith-config.workspace = true
+kith-control.workspace = true
+kith-crypto.workspace = true
+kith-dataplane.workspace = true
+kith-disco.workspace = true
+kith-dns.workspace = true
+kith-identity = { workspace = true, features = ["getrandom"] }
+kith-ipc.workspace = true
+kith-ledger.workspace = true
+kith-naming.workspace = true
+kith-netmon.workspace = true
+kith-policy.workspace = true
+kith-relay.workspace = true
+kith-stun.workspace = true
+kith-store.workspace = true
+kith-sys.workspace = true
+kith-transport-udp.workspace = true
+kith-tun.workspace = true
+kith-types.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "signal", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
 [lints]
 workspace = true
