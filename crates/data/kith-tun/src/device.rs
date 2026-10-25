@@ -1,11 +1,13 @@
 //! The TUN device and its batched read and write paths.
 
 use std::io;
+use std::net::IpAddr;
 
+use tracing::debug;
 use tun_rs::AsyncDevice;
 
 use crate::batch::{BatchError, PacketBatch};
-use crate::config::{ConfigError, TunConfig};
+use crate::config::{ConfigError, TunConfig, validate_address};
 
 /// Why creating or using a [`Tun`] failed.
 #[derive(Debug, thiserror::Error)]
@@ -16,12 +18,12 @@ pub enum TunError {
     InvalidConfig(#[from] ConfigError),
     /// The OS refused to create or configure the device.
     #[error(
-        "permission denied creating the TUN device: run as root, or grant CAP_NET_ADMIN on Linux \
+        "permission denied creating or configuring the TUN device: run as root, or grant CAP_NET_ADMIN on Linux \
          (for example `sudo setcap cap_net_admin+ep <binary>`)"
     )]
     PermissionDenied(#[source] io::Error),
-    /// This platform or build cannot create the device.
-    #[error("TUN devices are not supported here: {0}")]
+    /// This platform or build cannot do what was asked.
+    #[error("not supported on this platform: {0}")]
     Unsupported(&'static str),
     /// [`Tun::create`] was called outside a Tokio runtime.
     #[error("Tun::create must be called from within a Tokio runtime")]
@@ -101,8 +103,28 @@ impl Tun {
         self.offload
     }
 
+    /// Adds `address/prefix_len` beside the existing addresses. An address the
+    /// device already has, under any prefix length, is left as is. Returns
+    /// [`TunError::Unsupported`] except on Linux, macOS and the BSDs.
+    pub fn add_address(&self, address: IpAddr, prefix_len: u8) -> Result<(), TunError> {
+        validate_address(address, prefix_len, self.mtu)?;
+        if crate::address::add(&self.device, address, prefix_len)? {
+            debug!(device = %self.name, %address, prefix_len, "added TUN address");
+        }
+        Ok(())
+    }
+
+    /// Removes `address` whatever its prefix length; an address the device does
+    /// not have is not an error. Returns [`TunError::Unsupported`] except on
+    /// Linux, macOS and the BSDs.
+    pub fn remove_address(&self, address: IpAddr) -> Result<(), TunError> {
+        if crate::address::remove(&self.device, address)? {
+            debug!(device = %self.name, %address, "removed TUN address");
+        }
+        Ok(())
+    }
+
     /// A batch sized for this device's MTU.
-    ///
     pub fn new_batch(&self) -> Result<PacketBatch, BatchError> {
         PacketBatch::new(usize::from(self.mtu))
     }
@@ -189,20 +211,25 @@ fn builder(config: &TunConfig) -> tun_rs::DeviceBuilder {
 /// Opens the device, returning it and whether offload is on.
 #[cfg(target_os = "linux")]
 fn open(config: &TunConfig) -> Result<(AsyncDevice, bool), TunError> {
-    if config.offload {
-        match builder(config).offload(true).build_async() {
-            Ok(device) => {
-                let offload = device.tcp_gso();
-                return Ok((device, offload));
-            }
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                return Err(error.into());
-            }
-            // Old kernels and some containers reject offload; unrelated errors recur below.
-            Err(_offload_refused) => {}
-        }
+    if !config.offload {
+        return Ok((builder(config).build_async()?, false));
     }
-    Ok((builder(config).build_async()?, false))
+    let refusal = match builder(config).offload(true).build_async() {
+        Ok(device) => {
+            if !device.udp_gso() {
+                debug!("TUN UDP segmentation offload unavailable (needs Linux 6.2)");
+            }
+            let offload = device.tcp_gso();
+            return Ok((device, offload));
+        }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            return Err(error.into());
+        }
+        Err(error) => error,
+    };
+    let device = builder(config).build_async()?;
+    tracing::warn!(error = %refusal, "TUN offload refused, continuing without GSO/GRO");
+    Ok((device, false))
 }
 
 /// Opens the device, returning it and whether offload is on (never, here).
@@ -221,52 +248,95 @@ fn open(_config: &TunConfig) -> Result<(AsyncDevice, bool), TunError> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
     use std::time::Duration;
 
     use super::*;
 
-    /// Destination and protocol of an IPv4 packet, if it is one.
-    fn ipv4_destination(packet: &[u8]) -> Option<(Ipv4Addr, u8)> {
-        let version = packet.first()? >> 4;
-        let protocol = *packet.get(9)?;
-        let destination: [u8; 4] = packet.get(16..20)?.try_into().ok()?;
-        (version == 4).then_some((Ipv4Addr::from(destination), protocol))
+    /// Destination of a UDP packet, if it is one.
+    fn udp_destination(packet: &[u8]) -> Option<IpAddr> {
+        match packet.first()? >> 4 {
+            4 if *packet.get(9)? == 17 => {
+                let destination: [u8; 4] = packet.get(16..20)?.try_into().ok()?;
+                Some(Ipv4Addr::from(destination).into())
+            }
+            6 if *packet.get(6)? == 17 => {
+                let destination: [u8; 16] = packet.get(24..40)?.try_into().ok()?;
+                Some(Ipv6Addr::from(destination).into())
+            }
+            _ => None,
+        }
     }
 
-    /// Needs root: `sudo -E cargo nextest run -p kith-tun --run-ignored only`.
-    #[tokio::test]
-    #[ignore = "creates a real TUN device; needs root or CAP_NET_ADMIN"]
-    async fn udp_sent_into_the_subnet_arrives_through_recv_batch() {
-        let config = TunConfig {
-            name: None,
-            mtu: 1420,
-            ipv4: Some((Ipv4Addr::new(10, 213, 77, 1), 24)),
-            ipv6: None,
-            offload: true,
+    /// Whether UDP sent to `target` comes out of `tun` within five seconds.
+    async fn udp_arrives(tun: &Tun, target: SocketAddr) -> bool {
+        let local: IpAddr = if target.is_ipv4() {
+            Ipv4Addr::UNSPECIFIED.into()
+        } else {
+            Ipv6Addr::UNSPECIFIED.into()
         };
-        let tun = Tun::create(&config).unwrap();
+        let socket = UdpSocket::bind((local, 0)).unwrap();
         let mut batch = tun.new_batch().unwrap();
-        let target = SocketAddrV4::new(Ipv4Addr::new(10, 213, 77, 2), 40_000);
-        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-
-        let found = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 socket.send_to(b"kith", target).unwrap();
                 tun.recv_batch(&mut batch).await.unwrap();
                 if batch
                     .iter()
-                    .any(|packet| ipv4_destination(packet) == Some((*target.ip(), 17)))
+                    .any(|packet| udp_destination(packet) == Some(target.ip()))
                 {
                     return;
                 }
             }
         })
-        .await;
+        .await
+        .is_ok()
+    }
+
+    /// Needs root: `sudo -E cargo nextest run -p kith-tun --run-ignored only`.
+    #[tokio::test]
+    #[ignore = "creates a real TUN device; needs root or CAP_NET_ADMIN"]
+    async fn initial_and_added_subnets_reach_recv_batch_and_removal_keeps_the_rest() {
+        let initial = Ipv4Addr::new(10, 213, 78, 1);
+        let tun = Tun::create(&TunConfig {
+            name: None,
+            mtu: 1420,
+            ipv4: Some((initial, 24)),
+            ipv6: None,
+            offload: true,
+        })
+        .unwrap();
+        let initial_target = SocketAddr::from((Ipv4Addr::new(10, 213, 78, 2), 40_000));
         assert!(
-            found.is_ok(),
-            "no UDP packet to {target} arrived on {}",
+            udp_arrives(&tun, initial_target).await,
+            "no UDP packet to {initial_target} arrived on {}",
             tun.name()
         );
+        let ipv6 = |host| Ipv6Addr::new(0xfd6b, 0x6974, 0x6800, 1, 0, 0, 0, host);
+        let added: [(IpAddr, u8, SocketAddr); 2] = [
+            (
+                Ipv4Addr::new(10, 213, 79, 1).into(),
+                24,
+                (Ipv4Addr::new(10, 213, 79, 2), 40_000).into(),
+            ),
+            (ipv6(1).into(), 64, (ipv6(2), 40_000).into()),
+        ];
+        for &(address, prefix_len, target) in &added {
+            tun.add_address(address, prefix_len).unwrap();
+            tun.add_address(address, prefix_len).unwrap();
+            assert!(
+                udp_arrives(&tun, target).await,
+                "no UDP packet to {target} arrived after adding {address}"
+            );
+        }
+        for &(address, _, _) in &added {
+            tun.remove_address(address).unwrap();
+            tun.remove_address(address).unwrap();
+        }
+        let remaining = tun.device.addresses().unwrap();
+        assert!(remaining.contains(&initial.into()), "{remaining:?}");
+        for (address, _, _) in added {
+            assert!(!remaining.contains(&address), "{remaining:?}");
+        }
     }
 }

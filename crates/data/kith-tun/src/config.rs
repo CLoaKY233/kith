@@ -1,6 +1,6 @@
 //! Device configuration, validated before any syscall.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Smallest accepted MTU (the IPv4 minimum).
 pub const MIN_MTU: u16 = 576;
@@ -25,7 +25,7 @@ pub struct TunConfig {
     pub ipv4: Option<(Ipv4Addr, u8)>,
     /// IPv6 address and prefix length (0..=128) assigned to the interface.
     pub ipv6: Option<(Ipv6Addr, u8)>,
-    /// Request GSO/GRO offload; Linux only, falls back silently.
+    /// Request GSO/GRO offload; Linux only, falls back with a warning if refused.
     pub offload: bool,
 }
 
@@ -83,20 +83,23 @@ impl TunConfig {
         if !(MIN_MTU..=MAX_MTU).contains(&self.mtu) {
             return Err(ConfigError::MtuOutOfRange { mtu: self.mtu });
         }
-        if let Some((_, prefix)) = self.ipv4
-            && prefix > 32
-        {
-            return Err(ConfigError::Ipv4PrefixOutOfRange { prefix });
+        if let Some((address, prefix)) = self.ipv4 {
+            validate_address(address.into(), prefix, self.mtu)?;
         }
-        if let Some((_, prefix)) = self.ipv6 {
-            if prefix > 128 {
-                return Err(ConfigError::Ipv6PrefixOutOfRange { prefix });
-            }
-            if self.mtu < MIN_MTU_IPV6 {
-                return Err(ConfigError::MtuTooSmallForIpv6 { mtu: self.mtu });
-            }
+        if let Some((address, prefix)) = self.ipv6 {
+            validate_address(address.into(), prefix, self.mtu)?;
         }
         Ok(())
+    }
+}
+
+/// Checks one interface address against the device MTU.
+pub(crate) fn validate_address(address: IpAddr, prefix: u8, mtu: u16) -> Result<(), ConfigError> {
+    match address {
+        IpAddr::V4(_) if prefix > 32 => Err(ConfigError::Ipv4PrefixOutOfRange { prefix }),
+        IpAddr::V6(_) if prefix > 128 => Err(ConfigError::Ipv6PrefixOutOfRange { prefix }),
+        IpAddr::V6(_) if mtu < MIN_MTU_IPV6 => Err(ConfigError::MtuTooSmallForIpv6 { mtu }),
+        IpAddr::V4(_) | IpAddr::V6(_) => Ok(()),
     }
 }
 

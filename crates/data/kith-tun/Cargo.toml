@@ -13,8 +13,9 @@ publish.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 # `rt` to report a missing runtime instead of panicking.
 tokio = { workspace = true, features = ["rt"] }
-# No `address-management`: initial addresses work without it.
-tun-rs = { workspace = true, features = ["async_tokio"] }
+tracing = { workspace = true }
+# `address-management` adds IPv4 addresses to a live device on Linux.
+tun-rs = { workspace = true, features = ["address-management", "async_tokio"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
