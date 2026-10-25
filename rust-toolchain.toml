@@ -1,0 +1,6 @@
+# Pinned for reproducible builds. Bump deliberately, in its own commit.
+# Nightly is used only for optional tooling (miri, cargo-fuzz), never for builds.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy", "rust-src", "llvm-tools"]
