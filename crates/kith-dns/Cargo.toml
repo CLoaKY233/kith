@@ -1,0 +1,13 @@
+[package]
+name = "kith-dns"
+description = "Stub DNS server, upstream forwarding and split DNS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

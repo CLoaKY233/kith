@@ -1,0 +1,46 @@
+name: nightly
+
+# Checks that need the nightly toolchain: miri for undefined behaviour in the
+# core crates, and MIPS builds (tier 3, so they need `-Zbuild-std`).
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install nightly --profile minimal --component miri,rust-src
+      - name: miri on core crates
+        run: |
+          set -euo pipefail
+          packages=""
+          for name in $(cargo xtask core-crates); do packages="$packages -p $name"; done
+          cargo +nightly miri test $packages
+        env: { MIRIFLAGS: "-Zmiri-strict-provenance" }
+
+  mips:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [mipsel-unknown-linux-musl, mips-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup toolchain install nightly --profile minimal --component rust-src
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with: { tool: cargo-zigbuild }
+      - run: >
+          cargo +nightly zigbuild -p kith-cli --profile embedded --target ${{ matrix.target }}
+          -Zbuild-std=std,panic_abort

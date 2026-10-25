@@ -1,0 +1,40 @@
+msrv = "1.99"
+
+# Tests may panic: that is how they fail.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
+
+# Keep functions and argument lists small.
+too-many-arguments-threshold = 6
+cognitive-complexity-threshold = 20
+
+# Proper nouns used in docs; ".." keeps clippy's defaults.
+doc-valid-idents = [
+  "..",
+  "AmneziaWG",
+  "BLAKE3",
+  "ChaCha20",
+  "ChaCha20-Poly1305",
+  "Ed25519",
+  "ICMP",
+  "IPv4",
+  "IPv6",
+  "OpenWrt",
+  "QUIC",
+  "STUN",
+  "TCP",
+  "TLS",
+  "UDP",
+  "WebSocket",
+  "WireGuard",
+  "X25519",
+]
+
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "blocks the async runtime; sans-IO cores take `now` as input instead" },
+  { path = "std::time::Instant::now", reason = "cores receive time as input; only drivers read the clock" },
+  { path = "std::time::SystemTime::now", reason = "cores receive time as input; only drivers read the clock" },
+]

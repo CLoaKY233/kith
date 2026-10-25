@@ -1,0 +1,13 @@
+[package]
+name = "kith-relay"
+description = "Relay server and client drivers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

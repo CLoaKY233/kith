@@ -1,0 +1,8 @@
+include = ["**/*.toml"]
+exclude = ["target/**"]
+
+[formatting]
+align_comments = false
+array_auto_expand = true
+column_width = 100
+indent_string = "  "

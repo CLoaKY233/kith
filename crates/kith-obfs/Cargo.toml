@@ -1,0 +1,13 @@
+[package]
+name = "kith-obfs"
+description = "Packet obfuscation transforms: junk packets, padding and header remapping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,150 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/CLoaKY233/kith"
+authors = ["The kith contributors"]
+publish = false
+
+# ---------------------------------------------------------------------------
+# Dependencies. Every external crate is declared once, here, with default
+# features off. Member crates opt into exactly the features they need.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# Internal crates.
+kith-types = { path = "crates/kith-types" }
+kith-crypto = { path = "crates/kith-crypto" }
+kith-wire = { path = "crates/kith-wire" }
+kith-identity = { path = "crates/kith-identity" }
+kith-ledger = { path = "crates/kith-ledger" }
+kith-policy = { path = "crates/kith-policy" }
+
+# Cryptography (pure Rust, no C toolchain).
+blake3 = { version = "1.8.7", default-features = false }
+chacha20poly1305 = { version = "0.11.0", default-features = false }
+ed25519-dalek = { version = "3.0.0", default-features = false }
+getrandom = { version = "0.4.3", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
+x25519-dalek = { version = "3.0.0", default-features = false }
+zeroize = { version = "1.9.1", default-features = false }
+
+# Encoding and errors.
+data-encoding = { version = "2.11.1", default-features = false }
+postcard = { version = "1.1.3", default-features = false }
+serde = { version = "1.0.229", default-features = false }
+thiserror = { version = "2.0.21", default-features = false }
+
+# Test-only.
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
+# ---------------------------------------------------------------------------
+# Lints. Applied to every member through `[lints] workspace = true`.
+# CI runs clippy with `-D warnings`, so every `warn` here fails the build.
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
+# `deny` (not `forbid`) so that `kith-sys` alone can opt in. Every other
+# crate additionally carries `#![forbid(unsafe_code)]` at its root.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+unused_import_braces = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+let_underscore_drop = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Panics are bugs. Library code returns errors instead.
+unwrap_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "warn"
+expect_used = "warn"
+panic_in_result_fn = "warn"
+indexing_slicing = "warn"
+unwrap_in_result = "warn"
+
+# Unsafe hygiene (only reachable in `kith-sys`).
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+missing_safety_doc = "deny"
+
+# Casts must be explicit and checked.
+as_conversions = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+
+# Prefer `core` paths over `alloc` ones. (`no_std` crates cannot name `std` at all.)
+alloc_instead_of_core = "warn"
+
+# Clarity.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "deny"
+exit = "warn"
+mem_forget = "deny"
+mod_module_files = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+rc_buffer = "warn"
+redundant_clone = "warn"
+semicolon_inside_block = "warn"
+str_to_string = "warn"
+string_add = "warn"
+tests_outside_test_module = "warn"
+try_err = "warn"
+use_self = "warn"
+verbose_file_reads = "warn"
+wildcard_enum_match_arm = "warn"
+
+# Pedantic lints that are noise for this codebase.
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+# ---------------------------------------------------------------------------
+# Profiles.
+# ---------------------------------------------------------------------------
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# Crypto is unbearably slow unoptimized; keep our own code debuggable.
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+
+# Shipping builds for desktop and server.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Routers and small devices.
+[profile.embedded]
+inherits = "dist"
+opt-level = "z"
+
+# Release speed with symbols, for perf and flamegraphs.
+[profile.profiling]
+inherits = "release"
+debug = "full"
+strip = false

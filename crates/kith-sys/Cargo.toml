@@ -1,0 +1,13 @@
+[package]
+name = "kith-sys"
+description = "Operating-system integration: routes, addresses, DNS configuration and firewall"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

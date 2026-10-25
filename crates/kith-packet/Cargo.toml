@@ -1,0 +1,13 @@
+[package]
+name = "kith-packet"
+description = "Zero-copy IPv4, IPv6, TCP, UDP and ICMP header views and checksums"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

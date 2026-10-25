@@ -1,0 +1,13 @@
+[package]
+name = "kith-router"
+description = "Per-network longest-prefix-match routing from IP to peer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "kith-crypto"
+description = "The narrow cryptography facade: Ed25519, X25519, ChaCha20-Poly1305 and BLAKE3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

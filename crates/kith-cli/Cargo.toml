@@ -1,0 +1,17 @@
+[package]
+name = "kith-cli"
+description = "The `kith` binary: daemon and command line in one executable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kith"
+path = "src/main.rs"
+
+[lints]
+workspace = true
