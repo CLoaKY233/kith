@@ -10,7 +10,6 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-kith-types.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -298,6 +298,7 @@ dependencies = [
  "kith-ledger",
  "kith-policy",
  "kith-types",
+ "kith-wire",
  "proptest",
  "thiserror",
 ]
@@ -344,8 +345,8 @@ version = "0.0.0"
 dependencies = [
  "kith-packet",
  "kith-policy",
+ "kith-types",
  "proptest",
- "thiserror",
 ]
 
 [[package]]
