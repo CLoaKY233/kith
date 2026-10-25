@@ -1,6 +1,6 @@
 [package]
 name = "kith-dataplane"
-description = "The packet hot loop: TUN, filter, router, WireGuard and links"
+description = "The packet path: TUN, filter, router, WireGuard and UDP"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,21 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish.workspace = true
+
+[dependencies]
+kith-crypto = { workspace = true, features = ["getrandom"] }
+kith-filter.workspace = true
+kith-policy.workspace = true
+kith-router.workspace = true
+kith-transport-udp.workspace = true
+kith-tun.workspace = true
+kith-types.workspace = true
+kith-wg.workspace = true
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

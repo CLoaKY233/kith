@@ -819,6 +819,18 @@ dependencies = [
 [[package]]
 name = "kith-dataplane"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-filter",
+ "kith-policy",
+ "kith-router",
+ "kith-transport-udp",
+ "kith-tun",
+ "kith-types",
+ "kith-wg",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "kith-disco"
