@@ -14,10 +14,8 @@ use crate::zone::Zone;
 /// Longest CNAME chain followed inside the zone. Bounds the work per query and breaks
 /// CNAME loops.
 pub const MAX_CNAME_CHAIN: usize = 8;
-/// UDP payload size assumed when the query has no EDNS OPT record (RFC 1035 §4.2.1).
-pub const MIN_UDP_PAYLOAD: u16 = 512;
-/// UDP payload size kith advertises in its own OPT record (the DNS Flag Day 2020 value).
-pub const ADVERTISED_UDP_PAYLOAD: u16 = 1232;
+const MIN_UDP_PAYLOAD: u16 = 512;
+const ADVERTISED_UDP_PAYLOAD: u16 = 1232;
 
 const HEADER_LEN: usize = 12;
 const QUESTION_OFFSET: u16 = 12;
@@ -140,6 +138,21 @@ pub fn answer_stream(
     respond(zone, split, query, out, Transport::Stream)
 }
 
+/// The UDP response limit for `query`: its EDNS payload size, or 512 when absent or smaller.
+pub fn udp_payload_size(query: &[u8]) -> u16 {
+    let edns = match *query {
+        [_, _, flags, ..] => parse(query, 0, flags).ok().and_then(|parsed| parsed.edns),
+        _ => None,
+    };
+    payload_limit(edns)
+}
+
+fn payload_limit(edns: Option<Edns>) -> u16 {
+    edns.map_or(MIN_UDP_PAYLOAD, |edns| {
+        edns.udp_payload.max(MIN_UDP_PAYLOAD)
+    })
+}
+
 /// A parsed standard query.
 struct Query {
     id: u16,
@@ -206,9 +219,7 @@ fn respond(
     };
 
     let limit = match transport {
-        Transport::Datagram => usize::from(parsed.edns.map_or(MIN_UDP_PAYLOAD, |edns| {
-            edns.udp_payload.max(MIN_UDP_PAYLOAD)
-        })),
+        Transport::Datagram => usize::from(payload_limit(parsed.edns)),
         Transport::Stream => usize::from(u16::MAX),
     };
     let opt_reserve = if parsed.edns.is_some() {

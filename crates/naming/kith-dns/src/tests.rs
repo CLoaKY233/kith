@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use kith_naming::{DomainName, SplitDns, UpstreamGroupId, ZoneBuilder};
+use kith_naming::{DomainName, SplitDns, UpstreamGroupId, Zone, ZoneBuilder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::Instant;
@@ -21,6 +21,15 @@ fn query(id: u16, name: &str) -> Vec<u8> {
         message.extend_from_slice(label.as_bytes());
     }
     message.extend_from_slice(&[0, 0, 1, 0, 1]);
+    message
+}
+
+fn query_with_edns(id: u16, name: &str, udp_payload: u16) -> Vec<u8> {
+    let mut message = query(id, name);
+    message[11] = 1;
+    message.extend_from_slice(&[0, 0, 41]);
+    message.extend_from_slice(&udp_payload.to_be_bytes());
+    message.extend_from_slice(&[0; 6]);
     message
 }
 
@@ -57,6 +66,27 @@ fn spawn_upstream(socket: UdpSocket, marker: [u8; 4], truncated: bool) -> Socket
 
 async fn upstream(marker: [u8; 4]) -> SocketAddr {
     spawn_upstream(UdpSocket::bind(LOOPBACK).await.unwrap(), marker, false)
+}
+
+async fn truncating_upstream(size: usize) -> SocketAddr {
+    let udp = UdpSocket::bind(LOOPBACK).await.unwrap();
+    let tcp = TcpListener::bind(udp.local_addr().unwrap()).await.unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = tcp.accept().await.unwrap();
+            let len = stream.read_u16().await.unwrap();
+            let mut message = vec![0; usize::from(len)];
+            stream.read_exact(&mut message).await.unwrap();
+            let mut response = reply(&message, [5, 5, 5, 5], false);
+            response.resize(size, 0);
+            stream
+                .write_all(&u16::try_from(size).unwrap().to_be_bytes())
+                .await
+                .unwrap();
+            stream.write_all(&response).await.unwrap();
+        }
+    });
+    spawn_upstream(udp, [0; 4], true)
 }
 
 async fn start(state: DnsState) -> SocketAddr {
@@ -148,29 +178,11 @@ async fn split_suffix_goes_to_its_group_and_client_keeps_its_id() {
 }
 
 #[tokio::test]
-async fn dead_upstream_fails_over_and_truncation_retries_over_tcp() {
+async fn dead_upstream_fails_over_and_tcp_retry_respects_client_edns_size() {
+    const FULL_REPLY_LEN: u16 = 1300;
     // Bound but silent, so the forwarder must time out rather than see ICMP.
     let dead = UdpSocket::bind(LOOPBACK).await.unwrap();
     let alive = upstream([4, 4, 4, 4]).await;
-
-    let truncating = UdpSocket::bind(LOOPBACK).await.unwrap();
-    let tcp = TcpListener::bind(truncating.local_addr().unwrap())
-        .await
-        .unwrap();
-    let truncating = spawn_upstream(truncating, [0; 4], true);
-    tokio::spawn(async move {
-        let (mut stream, _) = tcp.accept().await.unwrap();
-        let len = stream.read_u16().await.unwrap();
-        let mut message = vec![0; usize::from(len)];
-        stream.read_exact(&mut message).await.unwrap();
-        let response = reply(&message, [5, 5, 5, 5], false);
-        stream
-            .write_all(&u16::try_from(response.len()).unwrap().to_be_bytes())
-            .await
-            .unwrap();
-        stream.write_all(&response).await.unwrap();
-    });
-
     let state = state();
     state.set_default_upstreams(vec![dead.local_addr().unwrap(), alive]);
     let failover_server = start(state).await;
@@ -179,12 +191,29 @@ async fn dead_upstream_fails_over_and_truncation_retries_over_tcp() {
     assert_eq!(last_address(&response), [4, 4, 4, 4]);
     assert!(started.elapsed() < TIMEOUT * 2);
 
-    let state = self::state();
-    state.set_default_upstreams(vec![truncating]);
-    let truncation_server = start(state).await;
-    let response = ask_udp(truncation_server, &query(8, "big.example.org")).await;
-    assert_eq!(response[2] & 0x02, 0, "TC cleared");
-    assert_eq!(last_address(&response), [5, 5, 5, 5]);
+    let state = DnsState::new(Zone::empty());
+    state.set_default_upstreams(vec![truncating_upstream(FULL_REPLY_LEN.into()).await]);
+    let server = start(state).await;
+
+    let fits = ask_udp(
+        server,
+        &query_with_edns(8, "big.example.org", FULL_REPLY_LEN),
+    )
+    .await;
+    assert_eq!(fits.len(), usize::from(FULL_REPLY_LEN));
+    assert_eq!(fits[..2], [0, 8]);
+    assert_eq!(fits[2] & 0x02, 0, "TC cleared");
+
+    let too_big = ask_udp(
+        server,
+        &query_with_edns(9, "big.example.org", FULL_REPLY_LEN - 1),
+    )
+    .await;
+    assert_eq!(
+        too_big[2] & 0x02,
+        0x02,
+        "TC kept so the client retries over TCP"
+    );
 }
 
 #[tokio::test]

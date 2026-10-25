@@ -790,7 +790,9 @@ proptest! {
                 prop_assert_eq!(message.id, 77);
                 prop_assert!(message.authoritative());
                 prop_assert_eq!(&message.question, &Some((qname.clone(), qtype)));
-                prop_assert!(len <= usize::from(udp.map_or(512, |u| u.max(512))));
+                let limit = udp.map_or(512, |u| u.max(512));
+                prop_assert_eq!(udp_payload_size(&bytes), limit);
+                prop_assert!(len <= usize::from(limit));
                 if let Some(first) = message.answers.first() {
                     prop_assert_eq!(&first.name, &qname);
                 }

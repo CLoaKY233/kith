@@ -47,7 +47,7 @@ pub enum OverridePolicy {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ZoneError {
-    /// A zone needs at least one authoritative suffix.
+    /// A built zone needs at least one authoritative suffix; see [`Zone::empty`].
     #[error("zone has no authoritative suffix")]
     NoSuffix,
     /// More than [`MAX_SUFFIXES`] suffixes.
@@ -392,6 +392,20 @@ struct ZoneInner {
 }
 
 impl Zone {
+    /// A zone with no suffixes, so every query is forwarded.
+    pub fn empty() -> Self {
+        Self {
+            inner: Arc::new(ZoneInner {
+                apexes: BTreeSet::new(),
+                nodes: BTreeMap::new(),
+                reverse: BTreeMap::new(),
+                device_ttl: DEFAULT_DEVICE_TTL,
+                negative_ttl: DEFAULT_NEGATIVE_TTL,
+                serial: 0,
+            }),
+        }
+    }
+
     /// The authoritative suffixes, sorted.
     pub fn suffixes(&self) -> impl Iterator<Item = &DomainName> {
         self.inner.apexes.iter()

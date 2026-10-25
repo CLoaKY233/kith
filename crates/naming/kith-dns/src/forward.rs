@@ -4,12 +4,13 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use kith_naming::{ADVERTISED_UDP_PAYLOAD, MIN_UDP_PAYLOAD};
+use kith_naming::udp_payload_size;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
+use tracing::{debug, warn};
 
 /// Most queries forwarded at once; further queries get SERVFAIL.
 pub const MAX_IN_FLIGHT: usize = 1024;
@@ -20,6 +21,7 @@ const HEADER_LEN: usize = 12;
 const FLAG_RESPONSE: u8 = 0x80;
 const FLAG_TRUNCATED: u8 = 0x02;
 const MAX_MESSAGE: usize = 65535;
+const OUTAGE_WARNING_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 struct Pending {
@@ -45,6 +47,7 @@ pub(crate) struct Forwarder {
     slots: Arc<Semaphore>,
     upstream_timeout: Duration,
     readers: Vec<JoinHandle<()>>,
+    last_outage_warning: Mutex<Option<Instant>>,
 }
 
 impl Drop for Forwarder {
@@ -73,6 +76,7 @@ impl Forwarder {
             slots: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
             upstream_timeout,
             readers,
+            last_outage_warning: Mutex::new(None),
         })
     }
 
@@ -90,15 +94,38 @@ impl Forwarder {
         _slot: &OwnedSemaphorePermit,
     ) -> Option<Vec<u8>> {
         let client_id = message_id(query)?;
-        for &upstream in upstreams {
+        let mut remaining = upstreams.iter().peekable();
+        while let Some(&upstream) = remaining.next() {
             if let Some(mut reply) = self.ask(query, upstream, client).await {
                 reply
                     .get_mut(..2)?
                     .copy_from_slice(&client_id.to_be_bytes());
                 return Some(reply);
             }
+            if let Some(next) = remaining.peek() {
+                debug!(%upstream, %next, "upstream did not answer; failing over");
+            }
         }
+        self.report_outage(upstreams);
         None
+    }
+
+    fn report_outage(&self, upstreams: &[SocketAddr]) {
+        let now = Instant::now();
+        let mut last = self
+            .last_outage_warning
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|at| now.duration_since(at) < OUTAGE_WARNING_INTERVAL) {
+            return;
+        }
+        *last = Some(now);
+        drop(last);
+        if upstreams.is_empty() {
+            warn!("no upstream configured for a forwarded query; answering SERVFAIL");
+        } else {
+            warn!(?upstreams, "every upstream failed; answering SERVFAIL");
+        }
     }
 
     async fn ask(
@@ -112,7 +139,10 @@ impl Forwarder {
             return Some(reply);
         }
         match timeout(self.upstream_timeout, ask_tcp(query, upstream)).await {
-            Ok(Some(full)) if client == ClientTransport::Tcp || full.len() <= udp_limit(query) => {
+            Ok(Some(full))
+                if client == ClientTransport::Tcp
+                    || full.len() <= usize::from(udp_payload_size(query)) =>
+            {
                 Some(full)
             }
             // The client can retry over TCP itself on the truncated reply.
@@ -219,17 +249,6 @@ fn is_truncated(message: &[u8]) -> bool {
     message
         .get(2)
         .is_some_and(|flags| flags & FLAG_TRUNCATED != 0)
-}
-
-/// The UDP size the client accepts: assumes the advertised EDNS size when it sent any
-/// additional record (normally OPT), else the classic 512.
-fn udp_limit(query: &[u8]) -> usize {
-    let has_additional = query.get(10..12).is_some_and(|count| count != [0, 0]);
-    usize::from(if has_additional {
-        ADVERTISED_UDP_PAYLOAD
-    } else {
-        MIN_UDP_PAYLOAD
-    })
 }
 
 /// A SERVFAIL header for `query`, sent when no upstream answered.

@@ -9,7 +9,7 @@
 //!   each address gets a PTR record pointing at `<device>.<primary suffix>`.
 //! - **Custom records.** Users add A, AAAA, CNAME, TXT and SRV records anywhere inside
 //!   an authoritative suffix.
-//! - **Own domains.** A zone has one or more suffixes, such as the default
+//! - **Own domains.** A built zone has one or more suffixes, such as the default
 //!   `<network>.kith.internal` and a user's `home.example.com`.
 //! - **Split DNS.** [`SplitDns`] sends chosen domains to chosen upstream groups; the
 //!   longest matching suffix wins.
@@ -66,8 +66,7 @@ mod wire;
 mod zone;
 
 pub use answer::{
-    ADVERTISED_UDP_PAYLOAD, DnsError, MAX_CNAME_CHAIN, MIN_UDP_PAYLOAD, Outcome, Rcode, answer,
-    answer_stream,
+    DnsError, MAX_CNAME_CHAIN, Outcome, Rcode, answer, answer_stream, udp_payload_size,
 };
 pub use name::{DomainName, MAX_LABEL_LEN, MAX_NAME_LEN, NameError};
 pub use record::{
