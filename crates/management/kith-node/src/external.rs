@@ -8,10 +8,12 @@ use kith_dataplane::{ExternalInterface, ExternalPeer};
 use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NetworkId};
 
 use crate::network::NetworkRuntime;
+use crate::state::{StateDir, corrupt_value, decode_varint, encode_varint};
 use crate::types::NodeError;
 
 const GATEWAY_NAME: &str = "kith-gateway";
 const GATEWAY_RANGE: (Ipv4Addr, u8) = (Ipv4Addr::new(10, 225, 0, 0), 24);
+const MAX_IMPORT_NAME: usize = 64;
 const IMPORT_CONTEXT: Context = Context::new("kith-node external import network id v1");
 
 /// Standard WireGuard peers outside the mesh: imported exits and exported gateway clients.
@@ -35,13 +37,50 @@ struct Client {
 }
 
 impl ExternalPeers {
-    /// Adds or replaces an imported exit and returns the network id it is addressed by.
+    /// Restores the persisted gateway and imports from `state`.
+    pub(crate) async fn restore(state: &StateDir) -> Result<Self, NodeError> {
+        let mut peers = Self {
+            imported: BTreeMap::new(),
+            gateway: state
+                .load_gateway()?
+                .map(|b| Gateway::decode(&b))
+                .transpose()?,
+        };
+        for (name, bytes) in state.load_imports()? {
+            let config = core::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| WgQuickConfig::parse(text).ok());
+            let Some(config) = config else {
+                tracing::warn!(%name, "ignoring unreadable persisted import");
+                continue;
+            };
+            if let Err(error) = peers.insert_import(name.clone(), config).await {
+                tracing::warn!(%name, %error, "ignoring persisted import");
+            }
+        }
+        Ok(peers)
+    }
+
+    /// Adds or replaces an imported exit, persists it, and returns the network id it is addressed by.
     pub(crate) async fn import(
+        &mut self,
+        state: &StateDir,
+        name: String,
+        config: WgQuickConfig,
+    ) -> Result<NetworkId, NodeError> {
+        let network = self.insert_import(name.clone(), config).await?;
+        if let Some(interface) = self.imported.get(&name) {
+            state.save_import(&name, render_import(interface)?.as_bytes())?;
+        }
+        Ok(network)
+    }
+
+    async fn insert_import(
         &mut self,
         name: String,
         config: WgQuickConfig,
     ) -> Result<NetworkId, NodeError> {
-        if name.is_empty() || name == GATEWAY_NAME {
+        if name.is_empty() || name.len() > MAX_IMPORT_NAME || name == GATEWAY_NAME {
             return Err(NodeError::InvalidArgument(format!(
                 "invalid import name {name:?}"
             )));
@@ -77,9 +116,10 @@ impl ExternalPeers {
         Ok(network)
     }
 
-    /// Renders a wg-quick file for a gateway client of `runtime`'s network reached at `endpoint`.
+    /// Renders a wg-quick file for a gateway client of `runtime`'s network reached at `endpoint`, persisting the client.
     pub(crate) fn export(
         &mut self,
+        state: &StateDir,
         runtime: &NetworkRuntime,
         device_name: &str,
         endpoint: &str,
@@ -96,13 +136,20 @@ impl ExternalPeers {
         };
         let secret = AgreementSecret::generate().map_err(random_failed)?;
         let address = gateway.allocate(device_name)?;
-        gateway.clients.insert(
+        let previous = gateway.clients.insert(
             device_name.to_owned(),
             Client {
                 public_key: secret.public_key().to_bytes(),
                 address,
             },
         );
+        if let Err(error) = state.save_gateway(&gateway.encode()) {
+            match previous {
+                Some(client) => gateway.clients.insert(device_name.to_owned(), client),
+                None => gateway.clients.remove(device_name),
+            };
+            return Err(error);
+        }
         let map = runtime.netmap();
         let dns = map
             .resolver()
@@ -169,6 +216,40 @@ impl Gateway {
         })
     }
 
+    fn encode(&self) -> Vec<u8> {
+        let mut out = self.secret.to_bytes().to_vec();
+        for (name, client) in &self.clients {
+            encode_varint(&mut out, name.len());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&client.public_key);
+            out.extend_from_slice(&client.address.octets());
+        }
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, NodeError> {
+        let invalid = || corrupt_value("external/@gateway", "invalid gateway state");
+        let (secret, mut rest) = bytes.split_first_chunk::<32>().ok_or_else(invalid)?;
+        let mut gateway = Self::new()?;
+        gateway.secret = AgreementSecret::from_bytes(*secret);
+        while !rest.is_empty() {
+            let len = decode_varint(&mut rest).ok_or_else(invalid)?;
+            let (name, tail) = rest.split_at_checked(len).ok_or_else(invalid)?;
+            let (public_key, tail) = tail.split_first_chunk::<32>().ok_or_else(invalid)?;
+            let (address, tail) = tail.split_first_chunk::<4>().ok_or_else(invalid)?;
+            let name = core::str::from_utf8(name).map_err(|_| invalid())?;
+            gateway.clients.insert(
+                name.to_owned(),
+                Client {
+                    public_key: *public_key,
+                    address: Ipv4Addr::from(*address),
+                },
+            );
+            rest = tail;
+        }
+        Ok(gateway)
+    }
+
     fn own_address(&self) -> Ipv4Addr {
         Ipv4Addr::from(u32::from(self.range.addr()) | 1)
     }
@@ -208,6 +289,36 @@ impl Gateway {
             peers,
         })
     }
+}
+
+fn render_import(interface: &ExternalInterface) -> Result<String, NodeError> {
+    let mut out = String::new();
+    let render = (|| {
+        writeln!(out, "[Interface]")?;
+        writeln!(out, "PrivateKey = {}", WgPublicKey(interface.private_key))?;
+        for address in &interface.addresses {
+            writeln!(out, "Address = {address}")?;
+        }
+        for peer in &interface.peers {
+            writeln!(out, "\n[Peer]")?;
+            writeln!(out, "PublicKey = {}", WgPublicKey(peer.public_key))?;
+            if let Some(key) = peer.preshared_key {
+                writeln!(out, "PresharedKey = {}", WgPublicKey(key))?;
+            }
+            if let Some(endpoint) = peer.endpoint {
+                writeln!(out, "Endpoint = {endpoint}")?;
+            }
+            for prefix in &peer.allowed_ips {
+                writeln!(out, "AllowedIPs = {prefix}")?;
+            }
+            if let Some(keepalive) = peer.persistent_keepalive {
+                writeln!(out, "PersistentKeepalive = {keepalive}")?;
+            }
+        }
+        Ok::<(), core::fmt::Error>(())
+    })();
+    render.map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
+    Ok(out)
 }
 
 fn host_prefix(addr: IpAddr) -> Result<IpPrefix, NodeError> {

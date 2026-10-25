@@ -89,6 +89,41 @@ impl StateDir {
         Ok(())
     }
 
+    /// Loads every persisted WireGuard import as `(name, wg-quick bytes)`.
+    pub(crate) fn load_imports(&self) -> Result<Vec<(String, Vec<u8>)>, NodeError> {
+        let namespace = Namespace::new(IMPORTS_NAMESPACE).map_err(kith_store::Error::from)?;
+        let mut imports = Vec::new();
+        for key in self.store.list(&namespace)? {
+            let Some(name) = decode_hex(key.name.as_str()) else {
+                tracing::warn!(%key, "ignoring unrecognised import entry");
+                continue;
+            };
+            if let Some(bytes) = self.store.get(&key)? {
+                imports.push((name, bytes));
+            }
+        }
+        Ok(imports)
+    }
+
+    /// Persists an import's wg-quick text as a secret.
+    pub(crate) fn save_import(&self, name: &str, conf: &[u8]) -> Result<(), NodeError> {
+        let key =
+            Key::parse(IMPORTS_NAMESPACE, &encode_hex(name)).map_err(kith_store::Error::from)?;
+        self.store.put_secret(&key, conf)?;
+        Ok(())
+    }
+
+    /// Loads the persisted gateway key and clients, if any.
+    pub(crate) fn load_gateway(&self) -> Result<Option<Vec<u8>>, NodeError> {
+        Ok(self.store.get(&gateway_key()?)?)
+    }
+
+    /// Persists the gateway key and clients as a secret.
+    pub(crate) fn save_gateway(&self, bytes: &[u8]) -> Result<(), NodeError> {
+        self.store.put_secret(&gateway_key()?, bytes)?;
+        Ok(())
+    }
+
     /// Forgets a network's ledger.
     pub(crate) fn remove_network(&self, network: NetworkId) -> Result<(), NodeError> {
         self.store.delete(&network_key(network)?)?;
@@ -99,9 +134,49 @@ impl StateDir {
 const IDENTITY_NAMESPACE: &str = "identity";
 const DEVICE_NAME: &str = "device";
 const NETWORKS_NAMESPACE: &str = "networks";
+const IMPORTS_NAMESPACE: &str = "imports";
+const EXTERNAL_NAMESPACE: &str = "external";
+const GATEWAY_NAME: &str = "gateway";
+
+fn gateway_key() -> Result<Key, NodeError> {
+    Ok(Key::parse(EXTERNAL_NAMESPACE, GATEWAY_NAME).map_err(kith_store::Error::from)?)
+}
+
+fn encode_hex(text: &str) -> String {
+    text.bytes().fold(String::new(), |mut out, byte| {
+        for nibble in [byte >> 4, byte & 0x0f] {
+            out.extend(char::from_digit(u32::from(nibble), 16));
+        }
+        out
+    })
+}
+
+fn decode_hex(text: &str) -> Option<String> {
+    let nibble = |c: u8| {
+        char::from(c)
+            .to_digit(16)
+            .and_then(|d| u8::try_from(d).ok())
+    };
+    let bytes = text
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| match pair {
+            [high, low] => Some((nibble(*high)? << 4) | nibble(*low)?),
+            _ => None,
+        })
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
 
 fn network_key(network: NetworkId) -> Result<Key, NodeError> {
     Ok(Key::parse(NETWORKS_NAMESPACE, &network.to_string()).map_err(kith_store::Error::from)?)
+}
+
+pub(crate) fn corrupt_value(path: &str, reason: &'static str) -> NodeError {
+    NodeError::Store(kith_store::Error::Corrupt {
+        path: path.into(),
+        reason,
+    })
 }
 
 fn corrupt(key: &Key, reason: &'static str) -> NodeError {
@@ -111,7 +186,7 @@ fn corrupt(key: &Key, reason: &'static str) -> NodeError {
     })
 }
 
-fn encode_varint(out: &mut Vec<u8>, mut value: usize) {
+pub(crate) fn encode_varint(out: &mut Vec<u8>, mut value: usize) {
     loop {
         let [low, ..] = value.to_le_bytes();
         value >>= 7;
@@ -123,7 +198,7 @@ fn encode_varint(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
-fn decode_varint(input: &mut &[u8]) -> Option<usize> {
+pub(crate) fn decode_varint(input: &mut &[u8]) -> Option<usize> {
     let mut value = 0usize;
     for shift in (0..usize::BITS).step_by(7) {
         let (&byte, rest) = input.split_first()?;

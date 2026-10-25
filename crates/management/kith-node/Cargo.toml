@@ -31,12 +31,16 @@ kith-router.workspace = true
 kith-stun.workspace = true
 kith-store.workspace = true
 kith-sys.workspace = true
+kith-transport.workspace = true
+kith-transport-quic.workspace = true
 kith-transport-udp.workspace = true
+kith-transport-ws.workspace = true
 kith-tun.workspace = true
 kith-types.workspace = true
+rustls-pki-types.workspace = true
 toml.workspace = true
 thiserror = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["macros", "net", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

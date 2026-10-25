@@ -18,16 +18,23 @@ mod tests {
     const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
     async fn start() -> TestResult<NodeHandle> {
-        let mut config = Config::default();
-        config.network.listen_port = 0;
-        config.dns.enabled = true;
-        let options = NodeOptions::new(config, NoopSystem)
+        start_with(|config| config, |options| options).await
+    }
+
+    async fn start_with(
+        config: impl FnOnce(Config) -> Config,
+        options_fn: impl FnOnce(NodeOptions) -> NodeOptions,
+    ) -> TestResult<NodeHandle> {
+        let mut base = Config::default();
+        base.network.listen_port = 0;
+        base.dns.enabled = true;
+        let options = NodeOptions::new(config(base), NoopSystem)
             .tun(TunMode::Memory)
             .in_memory_state()
             .listen_ip(LOCALHOST)
             .dns_listen(SocketAddr::new(LOCALHOST, 0))
             .without_ipc();
-        Ok(Node::start(options).await?)
+        Ok(Node::start(options_fn(options)).await?)
     }
 
     async fn peer(node: &NodeHandle, network: NetworkId, name: &str) -> TestResult<Ipv4Addr> {
@@ -104,20 +111,26 @@ mod tests {
         Ok(Ipv4Addr::new(a, b, c, d))
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn two_nodes_join_exchange_packets_and_resolve_names() -> TestResult {
-        let a = start().await?;
-        let b = start().await?;
-        let Response::NetworkCreated { network } = a
+    async fn create(node: &NodeHandle, device_name: &str) -> TestResult<NetworkId> {
+        let created = node
             .request(Request::CreateNetwork {
                 name: "home".into(),
-                device_name: "alpha".into(),
+                device_name: device_name.into(),
             })
-            .await
-        else {
-            return Err("create failed".into());
+            .await;
+        let Response::NetworkCreated { network } = created else {
+            return Err(format!("create failed: {created:?}").into());
         };
-        let Response::Invite { invite_link } = a
+        Ok(network)
+    }
+
+    async fn join(
+        sponsor: &NodeHandle,
+        joiner: &NodeHandle,
+        network: NetworkId,
+        device_name: &str,
+    ) -> TestResult {
+        let Response::Invite { invite_link } = sponsor
             .request(Request::CreateInvite {
                 network,
                 expires_in_secs: 600,
@@ -127,15 +140,61 @@ mod tests {
         else {
             return Err("invite failed".into());
         };
-        let joined = b
+        let outcome = joiner
             .request(Request::Join {
                 invite_link,
-                device_name: "beta".into(),
+                device_name: device_name.into(),
             })
             .await;
-        if joined != (Response::Joined { network }) {
-            return Err(format!("join failed: {joined:?}").into());
+        if outcome != (Response::Joined { network }) {
+            return Err(format!("join failed: {outcome:?}").into());
         }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn relayed_packets_cross_a_server_when_direct_udp_is_off() -> TestResult {
+        let s = start_with(
+            |mut config| {
+                config.server.enabled = true;
+                config.server.relay = true;
+                config
+            },
+            |options| options,
+        )
+        .await?;
+        let a = start_with(|config| config, NodeOptions::without_direct_udp).await?;
+        let b = start_with(|config| config, NodeOptions::without_direct_udp).await?;
+        let network = create(&s, "server").await?;
+        s.advertise_relay(network, "main").await?;
+        join(&s, &a, network, "alpha").await?;
+        join(&s, &b, network, "beta").await?;
+        let beta = peer(&a, network, "beta").await?;
+        let alpha = peer(&b, network, "alpha").await?;
+
+        deliver(&a, &b, &udp_packet(alpha, beta, b"via relay")?).await?;
+        let Response::Peers(peers) = a.request(Request::Peers { network }).await else {
+            return Err("peers failed".into());
+        };
+        let endpoint = peers
+            .into_iter()
+            .find(|p| p.name == "beta")
+            .and_then(|p| p.endpoint);
+        if endpoint.as_deref() != Some("relay") {
+            return Err(format!("beta reached over {endpoint:?}, not the relay").into());
+        }
+        for node in [a, b, s] {
+            node.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_nodes_join_exchange_packets_and_resolve_names() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "beta").await?;
         let beta = peer(&a, network, "beta").await?;
         let alpha = peer(&b, network, "alpha").await?;
 

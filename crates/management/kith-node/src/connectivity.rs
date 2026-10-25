@@ -11,14 +11,16 @@ use kith_disco::{Event, Message, PathTarget, PeerPaths, RandomSource, Transmit};
 use kith_identity::DeviceIdentity;
 use kith_ipc::PathKind;
 use kith_netmon::{Change, NetworkSnapshot, PortMapConfig, PortMapper};
-use kith_relay::{Client, ClientOptions, SendError, Status};
+use kith_relay::{Client, SendError, Status};
 use kith_stun::{StunProbe, TransactionId, is_stun};
+use kith_transport_quic::QuicEndpoint;
 use kith_types::NodeId;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
+use crate::stealth::{self, LadderIo, QuicLinks, StealthOptions, Tasks};
 use crate::types::{Command, ConnectivityEvent, NodeError};
 
 const STUN_INTERVAL: Duration = Duration::from_secs(30);
@@ -68,21 +70,17 @@ impl fmt::Debug for DiscoSecret {
 }
 
 #[derive(Debug)]
-struct Tasks(Vec<JoinHandle<()>>);
-
-impl Drop for Tasks {
-    fn drop(&mut self) {
-        for task in &self.0 {
-            task.abort();
-        }
-    }
-}
-
-#[derive(Debug)]
 struct Peer {
     paths: PeerPaths,
     disco: [u8; 32],
     candidates: Vec<SocketAddr>,
+}
+
+#[derive(Debug)]
+struct PeerLadder {
+    address: String,
+    direct: watch::Sender<bool>,
+    _task: Tasks,
 }
 
 #[derive(Debug)]
@@ -112,6 +110,10 @@ pub(crate) struct Connectivity {
     observed: Vec<SocketAddr>,
     mapped: Option<SocketAddr>,
     advertised: Vec<SocketAddr>,
+    stealth: StealthOptions,
+    quic: Option<Arc<QuicEndpoint>>,
+    links: QuicLinks,
+    ladders: BTreeMap<NodeId, PeerLadder>,
     _tasks: Tasks,
 }
 
@@ -126,6 +128,7 @@ impl Connectivity {
         bound: SocketAddr,
         tun_name: Option<String>,
         commands: mpsc::Sender<Command>,
+        stealth: StealthOptions,
     ) -> Result<Self, NodeError> {
         let tun_name = tun_name.unwrap_or_default();
         let local_port = bound.port();
@@ -144,6 +147,11 @@ impl Connectivity {
         let signing = identity.signing_key();
         let secret = DiscoSecret(signing.to_agreement_secret());
         let relay_key = Arc::new(SigningKey::from_seed(&signing.to_seed()));
+        let quic = if stealth.wants_quic() {
+            stealth::client_endpoint(&relay_key)
+        } else {
+            None
+        };
         let mut connectivity = Self {
             identity,
             commands,
@@ -163,6 +171,10 @@ impl Connectivity {
             observed: Vec::new(),
             mapped: None,
             advertised: Vec::new(),
+            stealth,
+            quic,
+            links: QuicLinks::default(),
+            ladders: BTreeMap::new(),
             _tasks: tasks,
         };
         connectivity.refresh_advertised();
@@ -207,6 +219,58 @@ impl Connectivity {
             );
             self.pump(*node, now);
         }
+        self.sync_ladders();
+    }
+
+    /// The QUIC links carrying WireGuard datagrams, shared with server mode.
+    pub(crate) fn quic_links(&self) -> QuicLinks {
+        self.links.clone()
+    }
+
+    fn sync_ladders(&mut self) {
+        let Some(endpoint) = &self.quic else {
+            return;
+        };
+        let peers = &self.peers;
+        let relays = &self.relays;
+        self.ladders.retain(|node, ladder| {
+            peers.contains_key(node)
+                && relays
+                    .get(node)
+                    .is_some_and(|relay| relay.address == ladder.address)
+        });
+        for (node, relay) in relays {
+            let Some(peer) = peers.get(node) else {
+                continue;
+            };
+            if self.ladders.contains_key(node) {
+                continue;
+            }
+            let direct = matches!(peer.paths.best_path(), Some(PathTarget::Direct(_)));
+            let (sender, receiver) = watch::channel(direct);
+            let Some(task) = stealth::spawn_peer_ladder(
+                *node,
+                &relay.address,
+                &self.stealth,
+                receiver,
+                LadderIo {
+                    endpoint: Arc::clone(endpoint),
+                    links: self.links.clone(),
+                    commands: self.commands.clone(),
+                },
+            ) else {
+                continue;
+            };
+            debug!(peer = %node, "transport ladder started");
+            self.ladders.insert(
+                *node,
+                PeerLadder {
+                    address: relay.address.clone(),
+                    direct: sender,
+                    _task: Tasks(vec![task]),
+                },
+            );
+        }
     }
 
     /// Adds candidate addresses for a peer from gossip or its control connection.
@@ -249,11 +313,11 @@ impl Connectivity {
             if self.relays.contains_key(node) {
                 continue;
             }
-            let (client, incoming) = Client::tcp(
+            let (client, incoming) = stealth::relay_client(
                 relay.address().to_owned(),
                 *node,
                 Arc::clone(&self.relay_key),
-                ClientOptions::default(),
+                &self.stealth,
             );
             tokio::spawn(forward_relayed(incoming, self.commands.clone()));
             debug!(relay = %node, address = relay.address(), "relay client started");
@@ -287,6 +351,7 @@ impl Connectivity {
             }
             self.pump(node, now);
         }
+        self.sync_ladders();
         Ok(())
     }
 
@@ -327,12 +392,15 @@ impl Connectivity {
         Ok(())
     }
 
-    /// Sends a WireGuard datagram for `peer` through a connected relay.
+    /// Sends a WireGuard datagram for `peer` over its QUIC link, else through a connected relay.
     pub(crate) fn send_relayed(
         &mut self,
         peer: NodeId,
         datagram: Vec<u8>,
     ) -> Result<(), NodeError> {
+        if self.links.send(peer, &datagram) {
+            return Ok(());
+        }
         let mut clients: Vec<&RelayClient> = self.relays.values().collect();
         clients.sort_by_key(|relay| relay.client.status() != Status::Connected);
         let Some(relay) = clients
@@ -525,9 +593,16 @@ impl Connectivity {
         for event in events {
             match event {
                 Event::PathChanged(target) => {
-                    let endpoint = match target {
-                        Some(PathTarget::Direct(addr)) => Endpoint::Direct(addr),
-                        Some(PathTarget::Relay) | None => Endpoint::Relay,
+                    let direct = match target {
+                        Some(PathTarget::Direct(addr)) => Some(addr),
+                        Some(PathTarget::Relay) | None => None,
+                    };
+                    if let Some(ladder) = self.ladders.get(&node) {
+                        ladder.direct.send_replace(direct.is_some());
+                    }
+                    let endpoint = match direct {
+                        Some(addr) if !self.stealth.stealth_only() => Endpoint::Direct(addr),
+                        Some(_) | None => Endpoint::Relay,
                     };
                     debug!(peer = %node, ?endpoint, "path changed");
                     self.outputs.push(Output::PathChanged {

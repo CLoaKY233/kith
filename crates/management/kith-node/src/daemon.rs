@@ -25,8 +25,9 @@ use crate::external::ExternalPeers;
 use crate::ipc;
 use crate::network::{Change, NetworkRuntime, NetworkSet};
 use crate::os::{DynSystem, OsPlanner, PlanInputs};
-use crate::server::{ServerMode, stun_reply};
+use crate::server::{Listeners, ServerMode, stun_reply};
 use crate::state::StateDir;
+use crate::stealth::StealthOptions;
 use crate::types::{Action, ChannelEvent, Command, ConnectivityEvent, NodeError};
 
 const COMMAND_QUEUE: usize = 256;
@@ -102,6 +103,14 @@ impl NodeOptions {
         self.ipc = false;
         self
     }
+
+    /// Never sends WireGuard straight to peers, so every packet takes a relay.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub const fn without_direct_udp(mut self) -> Self {
+        self.config.network.transports.stealth_only = true;
+        self
+    }
 }
 
 /// The kith daemon.
@@ -120,6 +129,10 @@ impl Node {
             control_addr: started.control_addr,
             #[cfg(feature = "test-support")]
             tun: started.tun.map(tokio::sync::Mutex::new),
+            #[cfg(feature = "test-support")]
+            node: started.node,
+            #[cfg(feature = "test-support")]
+            relay_addr: started.relay_addr,
         })
     }
 }
@@ -133,6 +146,10 @@ pub struct NodeHandle {
     control_addr: SocketAddr,
     #[cfg(feature = "test-support")]
     tun: Option<tokio::sync::Mutex<kith_dataplane::MemoryTun>>,
+    #[cfg(feature = "test-support")]
+    node: NodeId,
+    #[cfg(feature = "test-support")]
+    relay_addr: Option<SocketAddr>,
 }
 
 impl NodeHandle {
@@ -169,6 +186,31 @@ impl NodeHandle {
     pub async fn recv_packet(&self) -> Result<Vec<u8>, NodeError> {
         let tun = self.tun.as_ref().ok_or(NodeError::NoMemoryTun)?;
         tun.lock().await.receive().await.ok_or(NodeError::Stopped)
+    }
+
+    /// Advertises this node's relay in `network` as `relay/<name>`.
+    #[cfg(feature = "test-support")]
+    pub async fn advertise_relay(&self, network: NetworkId, name: &str) -> Result<(), NodeError> {
+        let invalid =
+            |error: &dyn core::fmt::Display| NodeError::InvalidArgument(error.to_string());
+        let address = self
+            .relay_addr
+            .ok_or_else(|| NodeError::NotFound(String::from("relay")))?;
+        let relay = Relay::new(name.to_owned(), address.to_string(), self.node)
+            .map_err(|error| invalid(&error))?;
+        let record = kith_control::records::Record::Relay(relay);
+        let value = record.encode().map_err(|error| invalid(&error))?;
+        let action = Action::SetRecord {
+            network,
+            key: record.key(),
+            value,
+        };
+        let response = ipc::dispatch(&self.commands, action).await;
+        if response == Response::RecordSet {
+            Ok(())
+        } else {
+            Err(invalid(&format!("{response:?}")))
+        }
     }
 
     /// Reverts OS changes and stops the node.
@@ -218,6 +260,12 @@ pub(crate) struct Started {
     /// The test end of the in-memory TUN.
     #[cfg(feature = "test-support")]
     pub(crate) tun: Option<kith_dataplane::MemoryTun>,
+    /// This node's identity.
+    #[cfg(feature = "test-support")]
+    pub(crate) node: NodeId,
+    /// The relay listener, in server mode.
+    #[cfg(feature = "test-support")]
+    pub(crate) relay_addr: Option<SocketAddr>,
 }
 
 /// The event loop's state; owned by one task, so nothing is locked.
@@ -229,6 +277,9 @@ pub(crate) struct Daemon {
     channel: ChannelLayer,
     connectivity: Connectivity,
     dns: Option<DnsService>,
+    dns_upstreams: Option<Vec<SocketAddr>>,
+    addresses: BTreeMap<NetworkId, Vec<(IpAddr, u8)>>,
+    commands: mpsc::Sender<Command>,
     os: OsPlanner,
     server: Option<ServerMode>,
     relay_listen: SocketAddr,
@@ -268,7 +319,6 @@ fn start_dataplane(
     link: UdpLink,
     tun: TunMode,
     config: &Config,
-    networks: &NetworkSet,
 ) -> Result<Dataplanes, NodeError> {
     let spawn = |dataplane: Dataplane| {
         tokio::spawn(async move {
@@ -279,15 +329,11 @@ fn start_dataplane(
     };
     match tun {
         TunMode::System => {
-            let local = networks
-                .maps()
-                .iter()
-                .find_map(|(_, map)| map.local_addresses().map(|a| (a, map)));
             let tun = kith_tun::Tun::create(&kith_tun::TunConfig {
                 name: config.network.tun_name.clone(),
                 mtu: config.network.mtu,
-                ipv4: local.map(|(a, map)| (a.v4, map.ipv4_range().prefix_len())),
-                ipv6: local.map(|(a, map)| (a.v6, map.ipv6_range().prefix_len())),
+                ipv4: None,
+                ipv6: None,
                 offload: true,
             })?;
             let tun_name = Some(tun.name().to_owned());
@@ -333,17 +379,44 @@ fn load_networks(state: &StateDir, local: NodeId) -> Result<NetworkSet, NodeErro
     Ok(networks)
 }
 
+fn local_addresses(map: &NetMap) -> Vec<(IpAddr, u8)> {
+    let mut addresses = Vec::new();
+    if let Some(local) = map.local_addresses() {
+        addresses.push((IpAddr::V4(local.v4), map.ipv4_range().prefix_len()));
+        addresses.push((IpAddr::V6(local.v6), map.ipv6_range().prefix_len()));
+    }
+    for resolver in map.resolver() {
+        let host = if resolver.is_ipv4() { 32 } else { 128 };
+        if !addresses.iter().any(|(address, _)| *address == resolver) {
+            addresses.push((resolver, host));
+        }
+    }
+    addresses
+}
+
 async fn start_dns(
     config: &Config,
     listen: Option<SocketAddr>,
-) -> Result<Option<DnsService>, NodeError> {
-    match listen.filter(|_| config.dns.enabled) {
-        Some(listen) => {
-            let upstreams = config.dns.fallback_upstreams.iter().map(|u| u.0).collect();
-            Ok(Some(DnsService::start(listen, upstreams).await?))
-        }
-        None => Ok(None),
+) -> Result<(Option<Vec<SocketAddr>>, Option<DnsService>), NodeError> {
+    if !config.dns.enabled {
+        return Ok((None, None));
     }
+    let upstreams: Vec<SocketAddr> = config.dns.fallback_upstreams.iter().map(|u| u.0).collect();
+    let dns = match listen {
+        Some(listen) => Some(DnsService::start(listen, upstreams.clone()).await?),
+        None => None,
+    };
+    Ok((Some(upstreams), dns))
+}
+
+async fn restore_external(state: &StateDir, config: &Config) -> Result<ExternalPeers, NodeError> {
+    let mut external = ExternalPeers::restore(state).await?;
+    for import in &config.import_wireguard {
+        external
+            .import(state, import.name.clone(), import.load()?)
+            .await?;
+    }
+    Ok(external)
 }
 
 fn start_ipc(
@@ -380,7 +453,7 @@ impl Daemon {
             config.network.listen_port,
         ))?;
         let bound = link.local_addr();
-        let dataplanes = start_dataplane(&identity, link, options.tun, config, &networks)?;
+        let dataplanes = start_dataplane(&identity, link, options.tun, config)?;
         let channel = ChannelLayer::start(
             Arc::clone(&identity),
             networks.registry(),
@@ -393,15 +466,9 @@ impl Daemon {
             bound,
             dataplanes.tun_name.clone(),
             commands.clone(),
+            StealthOptions::from_config(config),
         )?;
-        let dns_listen = options.dns_listen.or_else(|| {
-            networks
-                .maps()
-                .iter()
-                .find(|(_, map)| map.is_member())
-                .map(|(_, map)| SocketAddr::new(map.resolver()[0], 53))
-        });
-        let dns = start_dns(config, dns_listen).await?;
+        let (dns_upstreams, dns) = start_dns(config, options.dns_listen).await?;
         let interface = Interface::new(dataplanes.tun_name.as_deref().unwrap_or(MEMORY_INTERFACE))?;
         let os = OsPlanner::new(
             options.system,
@@ -413,22 +480,21 @@ impl Daemon {
         let server = if config.server.enabled {
             Some(
                 ServerMode::start(
-                    local,
-                    config.server.relay.then_some(relay_listen),
+                    &identity,
+                    Listeners::from_config(&config.server, relay_listen),
                     config.server.exit,
+                    connectivity.quic_links(),
+                    commands.clone(),
                 )
                 .await?,
             )
         } else {
             None
         };
-        let mut external = ExternalPeers::default();
-        for import in &config.import_wireguard {
-            external.import(import.name.clone(), import.load()?).await?;
-        }
+        let external = restore_external(&state, config).await?;
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
         let ipc_task = if options.ipc {
-            Some(start_ipc(config, commands, events.clone())?)
+            Some(start_ipc(config, commands.clone(), events.clone())?)
         } else {
             None
         };
@@ -437,6 +503,10 @@ impl Daemon {
             control_addr: channel.local_addr(),
             #[cfg(feature = "test-support")]
             tun: dataplanes.memory,
+            #[cfg(feature = "test-support")]
+            node: local,
+            #[cfg(feature = "test-support")]
+            relay_addr: server.as_ref().and_then(ServerMode::relay_addr),
         };
         let mut daemon = Self {
             identity,
@@ -445,6 +515,9 @@ impl Daemon {
             channel,
             connectivity,
             dns,
+            dns_upstreams,
+            addresses: BTreeMap::new(),
+            commands,
             os,
             server,
             relay_listen,
@@ -586,7 +659,7 @@ impl Daemon {
             Action::UseExit { network, node } => self.use_exit(network, node).await,
             Action::ServerMode { exit, relay } => self.server_mode(exit, relay).await,
             Action::ImportWireGuard { name, config } => {
-                let network = self.external.import(name, *config).await?;
+                let network = self.external.import(&self.state, name, *config).await?;
                 self.refresh(None).await?;
                 Ok(Response::Imported { network })
             }
@@ -679,6 +752,7 @@ impl Daemon {
         }
         self.state.remove_network(network)?;
         self.dataplane.remove_network(network).await?;
+        self.addresses.remove(&network);
         if self.exit.is_some_and(|(exit, _)| exit == network) {
             self.exit = None;
             self.dataplane.set_exit(None).await?;
@@ -711,9 +785,11 @@ impl Daemon {
         if exit || relay {
             self.server = Some(
                 ServerMode::start(
-                    self.identity.node_id(),
-                    relay.then_some(self.relay_listen),
+                    &self.identity,
+                    Listeners::relay_only(relay.then_some(self.relay_listen)),
                     exit,
+                    self.connectivity.quic_links(),
+                    self.commands.clone(),
                 )
                 .await?,
             );
@@ -738,7 +814,9 @@ impl Daemon {
             .networks
             .get(&network)
             .ok_or_else(|| NodeError::NotFound(network.to_string()))?;
-        let conf_text = self.external.export(runtime, device_name, &endpoint)?;
+        let conf_text = self
+            .external
+            .export(&self.state, runtime, device_name, &endpoint)?;
         self.refresh(None).await?;
         Ok(Response::WireGuardConfig { conf_text })
     }
@@ -996,6 +1074,13 @@ impl Daemon {
                 .await?;
             self.dataplane.set_filter(*id, map.filter().clone()).await?;
         }
+        for (id, map) in member_maps_with_ids(maps) {
+            let wanted = local_addresses(map);
+            if self.addresses.get(&id) != Some(&wanted) {
+                self.dataplane.set_addresses(id, wanted.clone()).await?;
+                self.addresses.insert(id, wanted);
+            }
+        }
         let peers: Vec<NodeId> = member_maps(maps)
             .flat_map(|map| map.peers().keys().copied())
             .collect();
@@ -1013,6 +1098,7 @@ impl Daemon {
                 .collect();
             server.set_members(members).await?;
         }
+        self.ensure_dns().await;
         if let Some(dns) = &self.dns {
             dns.update(self.networks.maps())?;
         }
@@ -1020,6 +1106,23 @@ impl Daemon {
         self.apply_os()?;
         self.gossiped.clear();
         self.gossip()
+    }
+
+    async fn ensure_dns(&mut self) {
+        let Some(upstreams) = self.dns_upstreams.as_ref().filter(|_| self.dns.is_none()) else {
+            return;
+        };
+        let Some((_, map)) = member_maps_with_ids(self.networks.maps()).next() else {
+            return;
+        };
+        let listen = SocketAddr::new(map.resolver()[0], 53);
+        match DnsService::start(listen, upstreams.clone()).await {
+            Ok(dns) => {
+                tracing::debug!(%listen, "DNS listening");
+                self.dns = Some(dns);
+            }
+            Err(error) => tracing::warn!(%listen, %error, "DNS server did not start"),
+        }
     }
 
     async fn push_peers(&self) -> Result<(), NodeError> {
@@ -1153,6 +1256,12 @@ fn member_maps(maps: &Networks) -> impl Iterator<Item = &NetMap> {
     maps.iter()
         .map(|(_, map)| map)
         .filter(|map| map.is_member())
+}
+
+fn member_maps_with_ids(maps: &Networks) -> impl Iterator<Item = (NetworkId, &NetMap)> {
+    maps.iter()
+        .filter(|(_, map)| map.is_member())
+        .map(|(id, map)| (*id, map))
 }
 
 fn relays(maps: &Networks) -> Vec<Relay> {
