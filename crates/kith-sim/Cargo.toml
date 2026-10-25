@@ -9,5 +9,16 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[dependencies]
+kith-crypto.workspace = true
+kith-disco.workspace = true
+
+[dev-dependencies]
+kith-ledger.workspace = true
+kith-relay-proto.workspace = true
+kith-sync.workspace = true
+kith-types.workspace = true
+proptest.workspace = true
+
 [lints]
 workspace = true

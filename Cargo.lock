@@ -929,6 +929,15 @@ dependencies = [
 [[package]]
 name = "kith-sim"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-disco",
+ "kith-ledger",
+ "kith-relay-proto",
+ "kith-sync",
+ "kith-types",
+ "proptest",
+]
 
 [[package]]
 name = "kith-store"
