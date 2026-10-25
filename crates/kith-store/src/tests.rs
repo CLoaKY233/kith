@@ -206,7 +206,7 @@ fn keys_cannot_express_path_traversal() {
         "a\\b",
         "a\0b",
         "Upper",
-        "caf\u{e9}",
+        "\u{e9}t\u{e9}",
         "a b",
         "@x",
         &too_long,
