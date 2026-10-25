@@ -1,17 +1,11 @@
 //! A sans-IO STUN client that retransmits until answered or out of attempts.
-//!
-//! STUN runs over UDP, so the request or its answer may be lost. The prober
-//! owns only the schedule; the caller owns the socket and the clock and
-//! drives it with `poll_transmit`, `poll_timeout` and `handle_response`.
 
 use core::net::SocketAddr;
 use core::time::Duration;
 
 use crate::message::{REQUEST_LEN, TransactionId, encode_binding_request, parse_binding_response};
 
-/// When each transmission is sent, measured from probe creation. The gaps
-/// double (100, 200, 400 ms) so a lossy path gets several chances while a
-/// dead server costs little.
+/// When each transmission is sent, measured from probe creation; the gaps double.
 pub const RETRANSMIT_SCHEDULE: [Duration; 4] = [
     Duration::ZERO,
     Duration::from_millis(100),
@@ -19,8 +13,7 @@ pub const RETRANSMIT_SCHEDULE: [Duration; 4] = [
     Duration::from_millis(700),
 ];
 
-/// How long after creation the probe stops waiting for an answer: one more
-/// doubled gap (800 ms) after the last transmission.
+/// How long after creation the probe stops waiting for an answer.
 pub const GIVE_UP_AFTER: Duration = Duration::from_millis(1500);
 
 /// Where a probe is in its lifecycle.
@@ -34,10 +27,7 @@ enum State {
     TimedOut,
 }
 
-/// One STUN binding probe to one server.
-///
-/// Time is always supplied by the caller as a monotonic `Duration`; the probe
-/// never reads a clock.
+/// One STUN binding probe to one server, driven by caller-supplied monotonic time.
 #[derive(Debug, Clone)]
 pub struct StunProbe {
     txid: TransactionId,
@@ -82,7 +72,6 @@ impl StunProbe {
         if !due {
             return None;
         }
-        // Skip every slot that is already in the past so a late poll does not burst.
         let skipped = RETRANSMIT_SCHEDULE
             .iter()
             .skip(next)
@@ -107,9 +96,7 @@ impl StunProbe {
         Some(self.at(offset))
     }
 
-    /// Offers a received datagram. Returns the reflexive address the first
-    /// time a valid response with this probe's transaction ID arrives; anything
-    /// else (other transactions, garbage, duplicates) returns `None`.
+    /// Offers a received datagram; returns the reflexive address on the first matching response.
     pub fn handle_response(&mut self, packet: &[u8]) -> Option<SocketAddr> {
         let State::Pending { .. } = self.state else {
             return None;

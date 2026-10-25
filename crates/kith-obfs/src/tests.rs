@@ -287,7 +287,6 @@ fn validation_rules() {
         |r| r.header_transport = r.header_cookie,
         ParamsError::DuplicateHeaders,
     );
-    // Jmin/Jmax are validated even with Jc = 0.
     check(
         |r| {
             r.junk_count = 0;

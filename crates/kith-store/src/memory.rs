@@ -19,12 +19,8 @@ impl MemoryStore {
         Self::default()
     }
 
-    /// Locks the map, recovering from poisoning.
-    ///
-    /// Every critical section is a single `BTreeMap` call, which either
-    /// completes or leaves the map unchanged, so a panic elsewhere in a
-    /// holder's thread cannot leave a half-applied update behind. Recovering
-    /// is therefore sound and keeps one panicking test from cascading.
+    /// Locks the map, recovering from poisoning; sound because each critical
+    /// section is a single `BTreeMap` call that cannot half-apply.
     fn lock(&self) -> MutexGuard<'_, BTreeMap<Key, Vec<u8>>> {
         self.values.lock().unwrap_or_else(PoisonError::into_inner)
     }

@@ -198,8 +198,6 @@ fn merges_and_is_deterministic() {
     }
 }
 
-// ---- Property test: compiled filter agrees with a naive evaluation. ----
-
 fn reference(
     policy: &Policy,
     members: &Members,

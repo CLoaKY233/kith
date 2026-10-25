@@ -1,28 +1,9 @@
 //! A longest-prefix-match table for IPv4 and IPv6.
 //!
-//! Each address family has its own path-compressed binary trie (a Patricia trie). Nodes live
-//! in one `Vec` and refer to each other by `u32` index, so the structure is a flat arena:
-//! there is no `Box` recursion, and lookup is a plain loop with no recursion and no
-//! allocation.
-//!
-//! Why this structure: for tens to tens of thousands of routes, a path-compressed trie visits
-//! at most one node per distinct prefix length on the path to the address (in practice a
-//! handful), each visit being one mask, one compare and one bit test. A sorted `Vec` per
-//! prefix length would need up to 33 or 129 binary searches; a multibit trie would be faster
-//! still but uses far more memory per route and is harder to keep correct on removal.
-//!
-//! Complexity, with `W` the address width (32 or 128) and `n` the number of prefixes:
-//!
-//! | Operation | Time | Allocates |
-//! |---|---|---|
-//! | [`PrefixTable::lookup`] | `O(W)` worst case, `O(depth)` typical | never |
-//! | [`PrefixTable::get`] | `O(W)` | never |
-//! | [`PrefixTable::insert`] | `O(W)` | at most two arena nodes (amortized) |
-//! | [`PrefixTable::remove`] | `O(W)` | never |
-//! | [`PrefixTable::iter`] | `O(n)` total | a stack of at most `W + 1` indices |
-//!
-//! Memory is `O(n)`: path compression bounds the arena at `2n + 1` live nodes per family.
-//! Freed nodes go on a free list and are reused by later inserts.
+//! One path-compressed binary trie per address family, stored as a `u32`-indexed arena with
+//! a free list. Every operation is `O(W)` (`W` = 32 or 128); only `insert` allocates. A
+//! multibit trie would be faster but costs more memory and is harder to keep correct on
+//! removal.
 
 use alloc::vec::Vec;
 use core::net::IpAddr;
@@ -311,9 +292,6 @@ struct Path {
 }
 
 /// A longest-prefix-match table mapping IPv4 and IPv6 prefixes to values.
-///
-/// Lookups never allocate. See the [module documentation](self) for the data structure and
-/// complexity.
 #[derive(Debug, Clone)]
 pub struct PrefixTable<V> {
     v4: Trie<u32, V>,

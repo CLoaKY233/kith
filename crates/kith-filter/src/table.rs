@@ -246,7 +246,6 @@ impl Table {
                 None => {
                     let (victim, was_live) = self.eviction_victim(&entry.key, now).ok_or(Full)?;
                     self.remove(victim);
-                    // There is room now, and no stale slot on the path: plain insert.
                     return self.insert(entry, now).map(|inserted| {
                         if was_live {
                             Inserted::Evicted

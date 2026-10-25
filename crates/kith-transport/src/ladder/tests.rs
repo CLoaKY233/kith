@@ -1,5 +1,4 @@
-//! Simulated-time tests. A tiny harness plays the driver: it advances the
-//! clock to each deadline the ladder asks for and records every action.
+//! Simulated-time tests; the harness plays the driver.
 
 #![expect(clippy::arithmetic_side_effects, reason = "test counters stay tiny")]
 
@@ -195,7 +194,6 @@ fn recovered_cheaper_rung_is_adopted_and_costlier_link_closed_after_grace() {
     sim.run_until(ms(1));
     sim.up(1, Quic);
 
-    // The upgrade probe retries UDP one interval after QUIC came up.
     let probe_at = ms(1).saturating_add(UPGRADE_PROBE_INTERVAL);
     assert_eq!(sim.run_until(probe_at), [Act::Start(Udp)]);
     sim.up(2, Udp);
@@ -237,7 +235,6 @@ fn backoff_doubles_per_failure_up_to_the_cap() {
     let times: Vec<u64> = sim.starts().iter().map(|(at, _)| at.as_secs()).collect();
     let gaps: Vec<u64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
     assert_eq!(gaps, [1, 2, 4, 8, 16, 32, 60, 60]);
-    // With one rung, every retry is a whole-ladder restart.
     assert_eq!(sim.ladder.restarts(), 8);
 }
 
@@ -459,7 +456,6 @@ proptest! {
                     inputs += 1;
                 }
             }
-            // Flush work due now, then account for closes.
             sim.run_until(sim.now);
             for (_, action) in &sim.log[checked..] {
                 match *action {
@@ -490,7 +486,6 @@ proptest! {
             }
         }
 
-        // Attempt ids are strictly increasing.
         let ids: Vec<AttemptId> = sim.attempts().map(|(attempt, _)| attempt).collect();
         prop_assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
 

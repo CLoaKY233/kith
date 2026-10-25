@@ -13,8 +13,7 @@ use crate::{
     parse_binding_response,
 };
 
-/// RFC 5769 §2.2: IPv4 response with SOFTWARE, XOR-MAPPED-ADDRESS,
-/// MESSAGE-INTEGRITY and FINGERPRINT.
+/// RFC 5769 §2.2 IPv4 response.
 const RFC5769_IPV4_RESPONSE: [u8; 80] = [
     0x01, 0x01, 0x00, 0x3c, 0x21, 0x12, 0xa4, 0x42, 0xb7, 0xe7, 0xa7, 0x01, 0xbc, 0x34, 0xd6, 0x86,
     0xfa, 0x87, 0xdf, 0xae, 0x80, 0x22, 0x00, 0x0b, 0x74, 0x65, 0x73, 0x74, 0x20, 0x76, 0x65, 0x63,
@@ -23,7 +22,7 @@ const RFC5769_IPV4_RESPONSE: [u8; 80] = [
     0x2a, 0xf9, 0xba, 0x53, 0xf0, 0x6b, 0xe7, 0xd7, 0x80, 0x28, 0x00, 0x04, 0xc0, 0x7d, 0x4c, 0x96,
 ];
 
-/// RFC 5769 §2.3: the same with an IPv6 XOR-MAPPED-ADDRESS.
+/// RFC 5769 §2.3 IPv6 response.
 const RFC5769_IPV6_RESPONSE: [u8; 92] = [
     0x01, 0x01, 0x00, 0x48, 0x21, 0x12, 0xa4, 0x42, 0xb7, 0xe7, 0xa7, 0x01, 0xbc, 0x34, 0xd6, 0x86,
     0xfa, 0x87, 0xdf, 0xae, 0x80, 0x22, 0x00, 0x0b, 0x74, 0x65, 0x73, 0x74, 0x20, 0x76, 0x65, 0x63,
@@ -147,7 +146,6 @@ fn mapped_address_fallback_and_preference() {
     let expected = SocketAddr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 0x1234);
     assert_eq!(parse_binding_response(&packet), Ok((TXID, expected)));
 
-    // XOR-MAPPED-ADDRESS wins even when it comes second.
     let mut both = mapped.to_vec();
     both.extend_from_slice(&[
         0x00, 0x20, 0x00, 0x08, 0x00, 0x01, 0xa1, 0x47, 0xe1, 0x12, 0xa6, 0x43,
@@ -181,7 +179,6 @@ fn malformed_messages() {
         parse_binding_response(&with_attributes(&[])),
         Err(StunError::MissingAddress)
     );
-    // Value longer than the message.
     assert_eq!(
         parse_binding_response(&with_attributes(&[0x00, 0x01, 0x00, 0x08])),
         Err(StunError::TruncatedAttribute)
@@ -193,14 +190,12 @@ fn malformed_messages() {
         ])),
         Err(StunError::TruncatedAttribute)
     );
-    // Bad address family.
     assert_eq!(
         parse_binding_response(&with_attributes(&[
             0x00, 0x01, 0x00, 0x08, 0, 3, 0, 0, 0, 0, 0, 0
         ])),
         Err(StunError::BadAddress)
     );
-    // Anything after FINGERPRINT.
     let mut packet = request(TXID).to_vec();
     packet.extend_from_slice(&[0x80, 0x99, 0, 0]);
     packet[3] = 12;
@@ -223,7 +218,6 @@ fn is_stun_rejects_non_stun() {
     let mut length = valid;
     length[3] = 4;
     assert!(!is_stun(&length));
-    // A WireGuard handshake initiation header.
     let mut wireguard = [0_u8; 148];
     wireguard[0] = 1;
     assert!(!is_stun(&wireguard));

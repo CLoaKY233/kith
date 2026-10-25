@@ -1,25 +1,13 @@
 //! Deterministic mesh address allocation.
 //!
-//! Every device computes every member's addresses itself, from the replicated member list,
-//! so no coordinator hands out leases and all devices agree without talking.
-//!
-//! Each member's first candidate is a BLAKE3 hash of its [`NodeId`] under
-//! [`ALLOCATION_CONTEXT`], reduced into the assignable part of the range. If an earlier
-//! member already holds that address, the member probes upward one address at a time,
-//! wrapping around at the end of the range.
+//! A member's candidate is a BLAKE3 hash of its [`NodeId`] under [`ALLOCATION_CONTEXT`];
+//! on collision it probes upward, wrapping at the end of the range.
 //!
 //! # Stability
 //!
-//! Members are placed in admission order, and a member's address depends only on its own
-//! hash and the addresses of members admitted before it. So appending members to the list
-//! never moves anyone already in it: existing devices keep their addresses as the network
-//! grows.
-//!
-//! **Caveat:** the order is the ledger's admission order. If two admins admit members
-//! concurrently, the ledger's deterministic merge may sort a newly learned member *before*
-//! one a device already placed. When both members' candidates collide, the later-sorted one
-//! moves. Collisions are rare in practice (and practically impossible in the IPv6 range),
-//! but callers must treat addresses as derived state and recompute them after every merge.
+//! Members are placed in admission order, so appending never moves existing members. A
+//! concurrent-admission merge can reorder members, and on a collision the later-sorted one
+//! moves, so callers must recompute addresses after every merge.
 //!
 //! # Reserved addresses
 //!
@@ -94,7 +82,6 @@ struct Space {
 
 impl Space {
     fn new(family: Family, base: u128, width: u8, prefix_len: u8) -> Result<Self, AllocationError> {
-        // Reserved offsets: network and resolver, plus broadcast for IPv4.
         let (reserved, max) = match family {
             Family::V4 => (3, 30),
             Family::V6 => (2, 126),
@@ -176,8 +163,7 @@ pub fn resolver_address(range: IpPrefix) -> Result<IpAddr, AllocationError> {
 
 /// Assigns IPv4 and IPv6 addresses to every member, listed in admission order.
 ///
-/// Deterministic: the same inputs give the same map on every device. See the module docs
-/// for the stability guarantee and its caveat.
+/// Deterministic. See the module docs for the stability caveat.
 pub fn allocate(
     v4: Ipv4Prefix,
     v6: Ipv6Prefix,

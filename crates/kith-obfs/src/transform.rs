@@ -1,8 +1,4 @@
-//! The outbound and inbound packet transforms.
-//!
-//! Outbound works on WireGuard messages that are already sealed. Inbound
-//! classifies datagrams by size and header word, exactly as amneziawg-go
-//! does, so the two interoperate. Neither direction allocates or panics.
+//! Packet transforms. Inbound classification mirrors amneziawg-go exactly, for interop.
 
 use crate::params::{
     ObfsParams, WG_COOKIE_LEN, WG_INITIATION_LEN, WG_RESPONSE_LEN, WG_TRANSPORT_MIN_LEN,
@@ -37,9 +33,6 @@ impl MessageType {
     }
 
     /// Classifies a plain WireGuard message by its header word and size.
-    ///
-    /// Returns `None` unless the header is a standard type (with zero reserved
-    /// bytes) and the size is valid for it.
     pub fn of_wireguard(message: &[u8]) -> Option<Self> {
         let kind = match read_header(message, 0)? {
             1 => Self::Initiation,
@@ -93,21 +86,14 @@ pub enum Inbound<'a> {
     },
     /// No message matched, and the size fits the junk range: drop it.
     Junk,
-    /// No message matched, and it is not junk-sized: drop it (and perhaps
-    /// count it).
+    /// No message matched, and it is not junk-sized: drop it.
     Unrecognized,
 }
 
 impl ObfsParams {
-    /// Obfuscates a sealed WireGuard `message` into `out`.
+    /// Obfuscates a sealed WireGuard `message` into `out`, returning the bytes written.
     ///
-    /// Writes the padding (random bytes) and then the message with its header
-    /// remapped. Returns the number of bytes written. Callers send the
-    /// [`junk_count`](Self::junk_count) junk packets from
-    /// [`junk_packet`](Self::junk_packet) before each initiation.
-    ///
-    /// For transport data prefer [`encode_in_place`](Self::encode_in_place),
-    /// which does not copy.
+    /// Callers send [`junk_packet`](Self::junk_packet)s before each initiation.
     pub fn encode(
         &self,
         message: &[u8],
@@ -131,8 +117,7 @@ impl ObfsParams {
         Ok(needed)
     }
 
-    /// Obfuscates a message that needs no padding by rewriting its header in
-    /// place. This is the transport-data hot path: a 4-byte write.
+    /// Obfuscates a message that needs no padding by rewriting its header in place.
     ///
     /// Fails with [`EncodeError::NeedsPadding`] for handshake messages when
     /// `S1`/`S2` are non-zero.
@@ -175,8 +160,6 @@ impl ObfsParams {
     /// 4. size at least 32 with `H4` at offset 0: transport data;
     /// 5. otherwise junk if `Jc > 0` and the size is in `[Jmin, Jmax]`,
     ///    else unrecognized.
-    ///
-    /// Never panics, for any input.
     pub fn decode<'a>(&self, datagram: &'a mut [u8]) -> Inbound<'a> {
         let len = datagram.len();
         let matched = [

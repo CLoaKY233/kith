@@ -153,9 +153,7 @@ impl CompiledFilter {
     /// Whether an inbound packet from `source` with `protocol` and destination port
     /// `destination_port` (`None` for port-less protocols) is allowed.
     ///
-    /// Never allocates. Cost is `O(log s + g · log r)` for `s` distinct allowed sources,
-    /// `g` entries that name this source (bounded by the distinct protocol and port
-    /// combinations in the policy) and `r` ≤ 64 port ranges per entry.
+    /// Never allocates; `O(log s + g · log r)` for `s` sources, `g` grants per source and `r` port ranges.
     #[must_use]
     pub fn allows(
         &self,
@@ -213,7 +211,6 @@ pub fn compile(policy: &Policy, members: &Members, local: NodeId) -> CompiledFil
             if !selects(target.selector(), &local, local_member) {
                 continue;
             }
-            // Resolve the rule's sources once, on the first target that applies.
             let hosts = sources.get_or_insert_with(|| {
                 members
                     .iter()

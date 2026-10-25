@@ -104,8 +104,7 @@ fn reopen_after_crash_mid_write_keeps_old_value_and_removes_temp_file() {
     let store = FsStore::open(dir.path()).unwrap();
     store.put(&target, b"old").unwrap();
 
-    // Simulate a crash mid-overwrite: a half-written temp file next to the
-    // target, never renamed.
+    // A half-written temp file left by a crash mid-overwrite.
     let namespace_dir = dir.path().join("ledger").join("ab12");
     let stale = namespace_dir.join(".tmp.@ops.999.0");
     fs::write(&stale, &encode(b"new", 3)[..7]).unwrap();

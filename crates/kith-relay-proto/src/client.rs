@@ -1,9 +1,7 @@
 //! The relay client state machine.
 //!
-//! Sans-IO: the driver decodes frames from the stream and passes them to
-//! [`RelayClient::handle_frame`], writes whatever [`RelayClient::poll_transmit`] returns, and
-//! reacts to [`RelayClient::poll_event`]. Packets sent before the relay accepts us are held
-//! (up to [`MAX_PENDING_BYTES`]) and released in order on acceptance.
+//! Packets sent before the relay accepts us are held (up to [`MAX_PENDING_BYTES`]) and
+//! released in order on acceptance.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

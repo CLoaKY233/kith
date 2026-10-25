@@ -1,8 +1,6 @@
 //! Peer discovery messages, endpoint candidates and path selection.
 //!
-//! Plane: connectivity. Sans-IO core: no I/O, no clock, no runtime. See `docs/architecture.md`.
-//!
-//! This is kith's equivalent of Tailscale's disco protocol and magicsock path logic:
+//! Sans-IO: no I/O, no clock, no runtime. kith's equivalent of Tailscale's disco and magicsock:
 //!
 //! - [`message`]: [`Ping`], [`Pong`] and [`CallMeMaybe`], with a byte-stable encoding.
 //! - [`seal`](mod@seal): authenticated encryption between two nodes' disco keys, so a pong cannot be

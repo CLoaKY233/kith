@@ -178,7 +178,6 @@ fn hello_needs_own_key_signature_over_this_nonce_and_relay() {
         CloseReason::Rejected(RejectReason::BAD_SIGNATURE),
     )];
 
-    // Garbage signature.
     let hello = Frame::ClientHello {
         node: key(1).node_id(),
         signature: Signature::from_bytes([7; 64]),
@@ -201,7 +200,6 @@ fn hello_needs_own_key_signature_over_this_nonce_and_relay() {
     };
     assert_eq!(hello_rejection(hello), (reject, closed));
 
-    // Sanity: the right answer passes.
     let hello = Frame::ClientHello {
         node: key(1).node_id(),
         signature: sign_challenge(&key(1), &nonce, &relay_id()),

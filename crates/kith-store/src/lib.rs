@@ -2,10 +2,6 @@
 //!
 //! Plane: management. Library. See `docs/architecture.md`.
 //!
-//! A kith device must come back from a restart or a power cut with its
-//! device key, its ledger operations and its cached settings intact, even on
-//! a cheap router with unreliable flash. This crate is that guarantee:
-//!
 //! - [`Store`] is a small synchronous key-value trait. Keys are a validated
 //!   [`Namespace`] plus a validated [`Name`]; the character set is so narrow
 //!   that a key can never name a path outside the store (no `..`, no
@@ -18,8 +14,7 @@
 //!   [`Error::Corrupt`] instead of being returned.
 //! - [`MemoryStore`] implements the same trait in memory, for tests.
 //!
-//! The on-disk format is documented in [`format`](crate#on-disk-format)
-//! below and pinned by a golden-bytes test; changing it is a format break.
+//! The format below is pinned by a golden-bytes test; changing it is a format break.
 //!
 //! # On-disk format
 //!

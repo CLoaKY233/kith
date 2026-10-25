@@ -1,55 +1,25 @@
 //! Stateful packet filter that evaluates compiled policy rules.
 //!
-//! Plane: data. Sans-IO core: no I/O, no clock, no runtime. See `docs/architecture.md`.
+//! Sans-IO data-plane core. The policy ([`kith_policy::CompiledFilter`]) only says
+//! who may open traffic *to* this device, so [`Filter`] adds connection tracking to
+//! let replies to our own flows back in:
 //!
-//! # Why this crate exists
+//! - **Outbound** is always allowed (each remote enforces its own inbound policy);
+//!   packets that open a flow are recorded.
+//! - **Inbound** is accepted if it replies to a live tracked flow or the policy allows it.
 //!
-//! The policy ([`kith_policy::CompiledFilter`]) says which peers may open traffic *to*
-//! this device. That alone would break every connection this device opens to a peer
-//! the policy does not trust: the replies would be dropped. [`Filter`] adds connection
-//! tracking so replies to our own flows come back in.
+//! TCP flows start only on an outbound SYN without ACK, so answering a peer the policy
+//! no longer admits never reopens the door. UDP flows start on any outbound datagram.
+//! ICMP echo is tracked by identifier. Everything else is judged by the policy alone.
+//! Timeouts follow Linux conntrack; see [`timeouts`].
 //!
-//! - **Outbound** traffic is always allowed: each remote enforces its own inbound
-//!   policy. Outbound packets that open a flow are recorded.
-//! - **Inbound** traffic is accepted if it is the reply direction of a live tracked
-//!   flow, or if the policy allows it. Everything else is dropped.
+//! Inbound fragments and unparsable packets are dropped as [`DropReason::Malformed`]:
+//! a later fragment carries no ports. Outbound ones pass untracked.
 //!
-//! # What is tracked
-//!
-//! - **TCP** flows start only on an outbound SYN without ACK. Mid-stream outbound
-//!   packets with no tracked flow (after a restart, or an eviction) are not picked up:
-//!   otherwise replying to a peer the policy no longer admits would reopen the door for
-//!   it. States are SYN sent, established, closing (FIN) and closed (RST).
-//! - **UDP** flows start on any outbound datagram and become a stream once a reply is
-//!   seen. A UDP reply to an inbound-allowed datagram therefore keeps that flow open.
-//! - **ICMP echo** requests are tracked by identifier; only an echo *reply* matches.
-//!
-//! Inbound ICMP errors, and protocols other than TCP, UDP and ICMP, are judged by the
-//! policy alone. Timeouts follow Linux conntrack; see [`timeouts`].
-//!
-//! # Fragments and malformed packets
-//!
-//! Inbound IP fragments are dropped as [`DropReason::Malformed`]: an IPv4 later
-//! fragment carries no ports, so it can be matched neither against a flow nor against
-//! port rules. That covers IPv4 packets with the more-fragments flag or a non-zero
-//! offset, and IPv6 packets whose first next header is a Fragment header. The tunnel
-//! MTU makes fragments rare; senders should use path MTU discovery. Inbound packets
-//! that do not parse are dropped the same way. Outbound fragments and unparsable
-//! packets are passed through untracked.
-//!
-//! # Memory and performance
-//!
-//! The connection table holds at most a fixed number of flows ([`DEFAULT_MAX_ENTRIES`],
-//! or [`Filter::with_capacity`]) and allocates all its memory up front. Per packet the
-//! filter allocates nothing. When the table is full, the soonest-expiring flow that
-//! never became two-way, near the new flow's hash slot, is evicted. If there is none,
-//! the new outbound flow is dropped with [`DropReason::TableFull`], as Linux does:
-//! established connections are never sacrificed to new ones.
-//!
-//! The hash is fast and unkeyed. Only outbound packets create flows, so a remote peer
-//! cannot fill the table, and since the table is bounded, deliberate collisions cost
-//! longer probes and evictions, never memory. The policy still applies to every
-//! packet that does not match a flow.
+//! The table is bounded ([`DEFAULT_MAX_ENTRIES`]) and allocates up front. When full,
+//! the soonest-expiring flow that never became two-way near the hash slot is evicted;
+//! otherwise the new flow is dropped with [`DropReason::TableFull`]. Only outbound
+//! packets create flows, so the unkeyed hash cannot be used by a remote to fill it.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -216,7 +186,6 @@ impl Filter {
             }
         };
         if let Some(entry) = self.table.get_mut(&key, now) {
-            // UDP and ICMP: outbound traffic only keeps the flow alive.
             let state = entry.state;
             entry.refresh(state, now);
             return Verdict::Accept;
@@ -351,7 +320,6 @@ impl Parsed {
             return None;
         }
         let flow = FlowKey::extract(packet).ok()?;
-        // (protocol, echo request type, echo reply type) for the packet's family.
         let (icmp, echo_request, echo_reply) = match ip {
             IpPacket::V4(_) => (ip_protocol::ICMP, ICMPV4_ECHO_REQUEST, ICMPV4_ECHO_REPLY),
             IpPacket::V6(_) => (ip_protocol::ICMPV6, ICMPV6_ECHO_REQUEST, ICMPV6_ECHO_REPLY),

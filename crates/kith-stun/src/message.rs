@@ -182,7 +182,6 @@ fn parse_header(packet: &[u8]) -> Result<(u16, TransactionId, &[u8]), StunError>
     }
 }
 
-/// Validates the whole message and walks its attributes.
 fn parse_message(packet: &[u8]) -> Result<Message<'_>, StunError> {
     let (kind, txid, attributes) = parse_header(packet)?;
     let mut message = Message {
@@ -313,9 +312,7 @@ impl<'a> Writer<'a> {
         Self { buffer, len: 0 }
     }
 
-    /// Appends `bytes`. Encoders size their buffers at compile time and the
-    /// golden tests pin every layout, so running out of room is unreachable;
-    /// should it ever happen the output is visibly truncated rather than a panic.
+    /// Appends `bytes`. Overflow is unreachable (golden tests pin every layout); it truncates rather than panics.
     fn put(&mut self, bytes: &[u8]) {
         let Some(end) = self.len.checked_add(bytes.len()) else {
             return;
@@ -328,7 +325,6 @@ impl<'a> Writer<'a> {
 
     /// Writes the header. `attributes_len` excludes FINGERPRINT, which is added here.
     fn header(&mut self, kind: u16, txid: TransactionId, attributes_len: u16) {
-        // FINGERPRINT_ATTRIBUTE_LEN is 8, so this cannot overflow for our attribute sizes.
         let length = attributes_len.saturating_add(8);
         self.put(&kind.to_be_bytes());
         self.put(&length.to_be_bytes());

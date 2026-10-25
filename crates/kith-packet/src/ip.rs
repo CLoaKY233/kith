@@ -114,7 +114,6 @@ impl PseudoHeader {
             }
         }
         sum.add_value(u64::from(protocol));
-        // usize -> u64 is lossless on every supported target.
         sum.add_value(u64::try_from(segment.len()).unwrap_or(u64::MAX));
         sum.add_bytes(segment);
         sum.finish()

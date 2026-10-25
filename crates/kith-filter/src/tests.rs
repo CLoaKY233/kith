@@ -217,7 +217,6 @@ fn tcp_reply_passes_a_denying_policy_but_unsolicited_traffic_does_not() {
 
     let reply = packet(v4(1), v4(0), tcp(22, 40000, SYN_ACK));
     assert_eq!(filter.inbound(&reply, secs(1)), Verdict::Accept);
-    // Same peer, other port; and another peer on the same ports.
     let other_port = packet(v4(1), v4(0), tcp(22, 40001, SYN_ACK));
     assert_eq!(filter.inbound(&other_port, secs(1)), POLICY);
     assert_eq!(
@@ -233,7 +232,6 @@ fn tcp_reply_passes_a_denying_policy_but_unsolicited_traffic_does_not() {
         POLICY
     );
 
-    // Even a reply is dropped when it arrives as a fragment.
     let mut fragment = reply;
     fragment[6] = 0x20; // more fragments
     assert_eq!(
@@ -323,7 +321,6 @@ fn flows_expire_and_fin_or_rst_shortens_them() {
     assert_eq!(filter.inbound(&reply(1), secs(14398)), Verdict::Accept);
     assert_eq!(filter.inbound(&reply(1), secs(21598)), POLICY);
 
-    // RST: ten seconds. FIN: two minutes.
     open(&mut filter, 2);
     filter.outbound(&packet(v4(0), v4(1), tcp(2, 80, RST)), secs(0));
     assert_eq!(filter.inbound(&reply(2), secs(9)), Verdict::Accept);
@@ -333,7 +330,6 @@ fn flows_expire_and_fin_or_rst_shortens_them() {
     assert_eq!(filter.inbound(&reply(3), secs(119)), Verdict::Accept);
     assert_eq!(filter.inbound(&reply(3), secs(239)), POLICY);
 
-    // Unanswered UDP: thirty seconds.
     let udp = Probe::Udp {
         source: 4,
         destination: 80,
@@ -344,7 +340,6 @@ fn flows_expire_and_fin_or_rst_shortens_them() {
         POLICY
     );
 
-    // `expire` frees every stale slot.
     assert_eq!(filter.len(), 4);
     filter.expire(secs(21598));
     assert!(filter.is_empty());

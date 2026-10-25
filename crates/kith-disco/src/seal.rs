@@ -5,16 +5,9 @@
 //! ```
 //!
 //! The key is `derive_key("kith 2026-10 disco seal v1", X25519(sender, receiver) || nonce)`.
-//! Because every packet carries a fresh random 24-byte nonce, every packet is encrypted under its
-//! own key, so ChaCha20-Poly1305 runs with an all-zero nonce: a (key, nonce) pair can only repeat
-//! if a 192-bit random value repeats. This gives XChaCha-like nonce safety with the plain
-//! ChaCha20-Poly1305 that `kith-crypto` exposes.
-//!
-//! Everything before the ciphertext (header, sender key and nonce) is associated data, so no
-//! byte of the packet can be changed without failing authentication.
-//!
-//! The four header bytes also let the UDP demultiplexer tell disco from other traffic (see
-//! [`is_disco`]).
+//! Each packet's random 24-byte nonce gives it its own key, so ChaCha20-Poly1305 runs with an
+//! all-zero nonce: XChaCha-like nonce safety from plain ChaCha20-Poly1305. Everything before the
+//! ciphertext is associated data. The header also lets [`is_disco`] demultiplex the socket.
 
 use alloc::vec::Vec;
 

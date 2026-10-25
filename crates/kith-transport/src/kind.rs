@@ -1,17 +1,12 @@
 //! Transport kinds and sets of them.
 //!
-//! The ladder order is the declaration order of [`TransportKind`]: cheaper and
-//! faster rungs first, stealthier and costlier rungs later. Every scheduling
-//! decision in [`crate::Ladder`] is phrased in terms of that order, so it is
-//! encoded once here, in the derived `Ord`.
+//! The ladder order is the derived `Ord` of [`TransportKind`].
 
 use core::fmt;
 
 /// One rung of the transport ladder.
 ///
-/// Totally ordered by ladder position: `Udp < UdpObfuscated < Quic < WebSocket < Reality`.
-/// A smaller kind is cheaper (less overhead, lower latency) and a larger kind
-/// is harder to block.
+/// Ordered by ladder position: smaller is cheaper, larger is harder to block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TransportKind {
     /// Plain WireGuard over UDP.
@@ -52,9 +47,6 @@ impl TransportKind {
     ///   record 22 (header 5, content type 1, tag 16) + masked WebSocket
     ///   frame header up to 8 + 2-byte length prefix.
     /// - `Reality`: 96. Same as `WebSocket` without the WebSocket frame header.
-    ///
-    /// The stream-based kinds do not fragment on the path, but keeping
-    /// packets under the path MTU avoids splitting one packet over two TCP segments.
     pub const fn carrier_overhead(self) -> u16 {
         match self {
             Self::Udp => 48,
@@ -99,9 +91,7 @@ impl fmt::Display for TransportKind {
 
 /// A set of enabled transport kinds.
 ///
-/// The default is every kind except [`TransportKind::Reality`]. Users or
-/// policy restrict it, for example to [`TransportSet::STEALTH`] on networks
-/// where plain WireGuard must never be seen.
+/// The default is every kind except [`TransportKind::Reality`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransportSet(u8);
 

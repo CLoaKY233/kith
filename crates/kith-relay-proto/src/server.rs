@@ -1,9 +1,7 @@
 //! The relay server state machine.
 //!
-//! Sans-IO: the driver owns the sockets and feeds events in; the server answers with
-//! [`Action`]s, pulled with [`RelayServer::poll_action`]. Connections are named by a
-//! driver-chosen [`ConnId`], and the driver supplies the challenge randomness, so the server
-//! itself never touches I/O, clocks or entropy.
+//! The driver feeds events in, supplies challenge randomness, and pulls [`Action`]s with
+//! [`RelayServer::poll_action`].
 //!
 //! Rules the server enforces:
 //!

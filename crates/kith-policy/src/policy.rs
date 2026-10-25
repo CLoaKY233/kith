@@ -20,10 +20,7 @@ pub const MAX_RULES: usize = 256;
 /// The most source selectors, and separately the most destination targets, in one rule.
 pub const MAX_SELECTORS_PER_RULE: usize = 64;
 
-/// The envelope message type of an encoded [`Policy`].
-///
-/// An alias of [`registry::POLICY_DOCUMENT`], the value assigned in the central `kith-wire`
-/// registry. The ledger stores these bytes opaquely.
+/// The envelope message type of an encoded [`Policy`], from [`registry::POLICY_DOCUMENT`].
 pub const POLICY_MESSAGE_TYPE: MessageType = registry::POLICY_DOCUMENT;
 
 /// The envelope version this crate writes and the newest it reads.
@@ -284,11 +281,7 @@ impl Policy {
         Self { rules: Vec::new() }
     }
 
-    /// The policy for a brand-new network: every member may reach every other member on
-    /// every port.
-    ///
-    /// A personal network should just work the moment a second device joins, without the
-    /// owner writing rules first. The owner narrows it later by replacing this policy.
+    /// The policy for a brand-new network: every member may reach every other on every port.
     #[must_use]
     pub fn default_allow_all() -> Self {
         Self {
@@ -314,9 +307,7 @@ impl Policy {
 
     /// Decodes and fully re-validates a policy written by [`Policy::to_bytes`].
     ///
-    /// Rejects the wrong message type, an unknown version, trailing bytes, and any value
-    /// that breaks an invariant (limits, tag syntax, unnormalized ports). Input is bounded
-    /// by [`kith_wire::MAX_MESSAGE_LEN`] before anything is decoded.
+    /// Rejects the wrong type or version, trailing bytes, and any broken invariant.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, WireError> {
         let (version, policy) = envelope::decode(bytes, POLICY_MESSAGE_TYPE, POLICY_VERSION)?;
         if version == POLICY_VERSION {
@@ -404,7 +395,6 @@ mod tests {
     #[test]
     fn decoding_revalidates() {
         let bytes = sample().to_bytes().unwrap();
-        // Corrupt the tag: 's' becomes 'S'.
         let mut bad_tag = bytes.clone();
         let tag_at = bad_tag.iter().position(|&byte| byte == b's').unwrap();
         bad_tag[tag_at] = b'S';
@@ -424,10 +414,8 @@ mod tests {
         let mut icmp_ports = bytes.clone();
         icmp_ports[len - 10] = 3;
         assert_eq!(Policy::from_bytes(&icmp_ports), Err(WireError::Decode));
-        // A rule with no sources.
         let empty_sources = [b'k', b't', 0x30, 1, 1, 0, 1, 0, 0, 0];
         assert_eq!(Policy::from_bytes(&empty_sources), Err(WireError::Decode));
-        // Version 2 and the wrong message type.
         let v2 = envelope::encode(POLICY_MESSAGE_TYPE, 2, &Policy::deny_all()).unwrap();
         assert!(matches!(
             Policy::from_bytes(&v2),

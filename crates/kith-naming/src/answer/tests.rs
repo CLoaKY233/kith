@@ -15,10 +15,6 @@ use super::*;
 use crate::record::{Srv, Txt};
 use crate::zone::{DEFAULT_NEGATIVE_TTL, ZoneBuilder};
 
-// ---------------------------------------------------------------------------
-// Fixtures.
-// ---------------------------------------------------------------------------
-
 const LAPTOP_V4: Ipv4Addr = Ipv4Addr::new(100, 64, 0, 1);
 const LAPTOP_V6: Ipv6Addr = Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 1);
 
@@ -148,10 +144,8 @@ fn ask(qname: &str, qtype: RecordType) -> Message {
     Message::parse(&out[..len]).unwrap()
 }
 
-// ---------------------------------------------------------------------------
-// A strict, independent response parser. It rejects forward or looping pointers,
-// compressed SRV targets, rdlength mismatches and trailing bytes.
-// ---------------------------------------------------------------------------
+// Strict, independent response parser: rejects forward/looping pointers, compressed
+// SRV targets, rdlength mismatches and trailing bytes.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Rd {
@@ -381,10 +375,6 @@ fn read_rr(bytes: &[u8], at: &mut usize) -> Result<Rr, String> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Behaviour.
-// ---------------------------------------------------------------------------
-
 /// Changing these bytes is a protocol break.
 #[test]
 fn a_query_produces_golden_response_bytes() {
@@ -456,7 +446,6 @@ fn cname_chain_stops_at_zone_edge_and_at_depth_limit() {
     assert_eq!(looped.answers.len(), MAX_CNAME_CHAIN + 1);
     assert_eq!(looped.rcode(), 0);
 
-    // Asking for the CNAME itself does not follow it.
     let direct = ask("www.home.example.com", RecordType::Cname);
     assert_eq!(direct.answers.len(), 1);
 }
@@ -538,7 +527,6 @@ fn device_addresses_get_ptr_records_to_the_primary_suffix() {
         v4.answers[0].data,
         Rd::Name("laptop.home.example.com".into())
     );
-    // Written out independently of the implementation.
     let v6 = ask(
         "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.e.1.a.c.5.1.1.a.7.d.f.ip6.arpa",
         RecordType::Ptr,
@@ -680,7 +668,6 @@ fn malformed_and_unsupported_queries_get_the_right_error_or_are_dropped() {
         len: 12,
         rcode: Rcode::FormErr,
     };
-    // A header followed by garbage.
     assert_eq!(
         run(&[0xAB, 0xCD, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF]),
         Ok(formerr)
@@ -731,10 +718,6 @@ fn malformed_and_unsupported_queries_get_the_right_error_or_are_dropped() {
     );
     assert_eq!(message.id, 1);
 }
-
-// ---------------------------------------------------------------------------
-// Properties.
-// ---------------------------------------------------------------------------
 
 /// Arbitrary bytes, plus well-formed queries with random bytes flipped, which reach
 /// deeper than pure noise does.
@@ -808,7 +791,6 @@ proptest! {
                 prop_assert!(message.authoritative());
                 prop_assert_eq!(&message.question, &Some((qname.clone(), qtype)));
                 prop_assert!(len <= usize::from(udp.map_or(512, |u| u.max(512))));
-                // The first answer, if any, is for the question name.
                 if let Some(first) = message.answers.first() {
                     prop_assert_eq!(&first.name, &qname);
                 }

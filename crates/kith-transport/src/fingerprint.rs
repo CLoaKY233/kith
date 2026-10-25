@@ -1,9 +1,7 @@
 //! Network identity and the per-network memory of which rung worked.
 //!
-//! Censorship is a property of the network, not of the peer: if a café blocks
-//! UDP for one peer it blocks it for all of them, and it will still block it
-//! tomorrow. Remembering the winning rung per network lets the ladder skip
-//! straight to it instead of paying the stagger delays again.
+//! Blocking is a property of the network, not the peer, so the winning rung is
+//! cached per network to skip the stagger delays next time.
 
 use alloc::vec::Vec;
 use core::{fmt, time::Duration};
@@ -11,9 +9,6 @@ use core::{fmt, time::Duration};
 use crate::TransportKind;
 
 /// Opaque identifier of the local network the device is attached to.
-///
-/// Computed by the driver, for example as a hash over the gateway MAC
-/// address and Wi-Fi SSID. The ladder only compares fingerprints for equality.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NetworkFingerprint(pub [u8; 32]);
 
@@ -37,9 +32,7 @@ struct Entry {
 
 /// Bounded least-recently-used map from network to winning rung, with a TTL.
 ///
-/// Holds at most `capacity` entries. The `Vec` is kept in recency order,
-/// least recently used first; with a capacity of a few dozen a linear scan
-/// beats any map.
+/// The `Vec` is in recency order, least recent first; at this size a linear scan beats a map.
 #[derive(Debug, Clone)]
 pub(crate) struct NetworkCache {
     entries: Vec<Entry>,

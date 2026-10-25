@@ -1,36 +1,15 @@
 //! The ladder scheduler: which rungs to try, when, and which link to keep.
 //!
-//! # Why it works this way
+//! Blocking is usually silent, so rungs race happy-eyeballs style (RFC 8305):
+//! a new rung starts every [`STAGGER`] without a working link, or at once on a
+//! failure report. A cheaper link that comes up later still wins; the costlier
+//! one closes after [`SUPERSEDE_GRACE`]. Failed rungs back off from
+//! [`BACKOFF_BASE`] to [`BACKOFF_CAP`], which bounds the action rate. On a
+//! known [`NetworkFingerprint`] the race starts at the last winner, and a
+//! cheaper rung is probed every [`UPGRADE_PROBE_INTERVAL`].
 //!
-//! Blocking rarely announces itself. A censored UDP port usually drops
-//! packets silently, so waiting for a cheap rung to time out before trying the
-//! next one would cost seconds on every connect. Instead the ladder races
-//! rungs happy-eyeballs style (RFC 8305): it starts the cheapest rung, and
-//! every [`STAGGER`] that passes without a working link it starts the next
-//! one. The first link to come up wins and racing stops. A failure report
-//! starts the next rung at once instead of waiting out the stagger.
-//!
-//! A cheaper link that comes up after a costlier one is still preferred: the
-//! ladder switches to it and closes the costlier link after
-//! [`SUPERSEDE_GRACE`], so in-flight packets drain and there is a fallback if
-//! the newcomer dies immediately.
-//!
-//! Failed rungs back off exponentially from [`BACKOFF_BASE`] to
-//! [`BACKOFF_CAP`]. When every rung of a round has failed, the round
-//! restarts from the beginning once a backoff expires. Backoff is what keeps
-//! the action rate bounded on hostile networks.
-//!
-//! Networks are remembered by [`NetworkFingerprint`]. On a known network the
-//! race begins at the rung that won last time, and while a link is up the
-//! ladder probes one cheaper rung every [`UPGRADE_PROBE_INTERVAL`], so a
-//! network that later unblocks UDP gets the fast path back. Roaming to another
-//! network starts over.
-//!
-//! The scheduler is deterministic: no randomness, no clock. Every collection
-//! is bounded: per-kind state is a fixed array, the close queue holds only
-//! links the driver reported up and still holds open (each is queued at most
-//! once and leaves the queue when closed or reported down), and the network
-//! cache holds at most
+//! Deterministic and bounded: per-kind state is a fixed array, the close queue
+//! holds each open link at most once, and the cache holds at most
 //! [`LadderConfig::cache_capacity`] entries.
 
 use alloc::collections::VecDeque;
@@ -466,7 +445,6 @@ impl Ladder {
         };
         match self.active {
             Some((_, active_kind)) if active_kind < kind => {
-                // A costlier racer finished after the winner. Not needed.
                 let rung = self.rungs.get_mut(kind);
                 rung.phase = Phase::Idle;
                 rung.failures = 0;
@@ -494,7 +472,6 @@ impl Ladder {
     }
 
     fn on_down(&mut self, now: Duration, link: LinkId, _reason: FailureReason) {
-        // A link waiting to be closed is already forgotten; just stop waiting.
         self.closes.retain(|queued| *queued != link);
         let Some(kind) = self.rungs.kind_of(link) else {
             return;

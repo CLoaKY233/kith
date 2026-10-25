@@ -21,12 +21,8 @@
 //! | `0x22` | `Health`          | empty when healthy, else one problem code (u8)  |
 //!
 //! Decoding is strict: a known frame whose body is not exactly the expected shape is an
-//! error, and the stream must then be closed. Unknown frame types are skipped whole, which
-//! keeps the protocol forward-compatible: a newer peer may send frames this version does not
-//! understand, and they are ignored rather than tearing down the connection. Unknown reason
-//! and problem codes are likewise carried through rather than rejected.
-//!
-//! Payloads are opaque, already-encrypted WireGuard packets. The relay never sees plaintext.
+//! error, and the stream must then be closed. Unknown frame types are skipped whole and
+//! unknown reason and problem codes are preserved, for forward compatibility.
 
 use alloc::vec::Vec;
 
@@ -349,10 +345,8 @@ impl Reader<'_> {
 
 /// Reassembles frames from arbitrary chunks of the byte stream.
 ///
-/// Sans-IO: [`push`](Self::push) whatever bytes arrived, then call
-/// [`next_frame`](Self::next_frame) until it returns `Ok(None)`. The buffer holds only what
-/// was pushed and not yet consumed, so a driver that reads in bounded chunks and drains
-/// after each push never buffers more than one maximum-size frame plus one chunk.
+/// Drain with [`next_frame`](Self::next_frame) after each [`push`](Self::push) to bound the
+/// buffer to one maximum-size frame plus one chunk.
 #[derive(Debug, Default)]
 pub struct Decoder {
     buffer: Vec<u8>,

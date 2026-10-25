@@ -23,9 +23,6 @@
 //!    networks may overlap, and longest-prefix match decides. Two networks holding the
 //!    identical prefix is still a conflict: [`ConflictKind::SamePrefix`].
 //!
-//! Rules 1 and 2 together mean host routes of different networks can never collide, and
-//! rule 3 means no other network can capture traffic for a mesh address.
-//!
 //! The default routes `0.0.0.0/0` and `::/0` are never accepted as ordinary routes. They
 //! belong to the exit-node mechanism: each network may name one exit peer
 //! ([`Router::set_exit_peer`]) and at most one network is the active exit
@@ -240,7 +237,6 @@ impl Router {
             .iter()
             .filter(|(other_id, _)| **other_id != id)
         {
-            // Rule 1: mesh ranges are exclusive.
             for (ours, theirs) in mesh.both().into_iter().zip(other.mesh.both()) {
                 if overlaps(&ours, &theirs) {
                     return Err(conflict(ConflictKind::MeshRanges, ours, other_id, theirs).into());
@@ -266,14 +262,12 @@ impl Router {
         }
         for route in routes.keys() {
             let own = mesh.for_family(route);
-            // Rule 2: host routes stay inside their own mesh range.
             if is_host(route) && !overlaps(&own, route) {
                 return Err(SetNetworkError::HostOutsideMesh {
                     route: *route,
                     mesh: own,
                 });
             }
-            // Rule 4: identical prefixes in two networks conflict.
             if let Some(&(owner, _)) = self.table.get(route)
                 && owner != id
             {
@@ -628,7 +622,6 @@ mod tests {
                 existing_prefix: p("192.168.1.0/24"),
             })
         );
-        // The failed update changed nothing.
         assert_eq!(
             hop(&router, "100.64.2.1"),
             Some((net(2), node(3), p("100.64.2.1/32")))

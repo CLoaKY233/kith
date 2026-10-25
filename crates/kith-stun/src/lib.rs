@@ -1,27 +1,12 @@
-//! Minimal STUN binding request and response codec.
+//! Minimal STUN (RFC 8489) binding request and response codec, sans-IO and allocation-free.
 //!
-//! Plane: connectivity. Sans-IO core: no I/O, no clock, no runtime. See `docs/architecture.md`.
+//! Implements only what NAT traversal needs, the same scope as Tailscale's `net/stun`:
+//! a client ([`StunProbe`]), a server side, and [`is_stun`] to demultiplex STUN
+//! from WireGuard on one socket.
 //!
-//! NAT traversal needs each device to learn its public `ip:port` as seen from
-//! the internet. STUN (RFC 8489, formerly RFC 5389) answers exactly that with a
-//! single round trip: the client sends a Binding request and the server echoes
-//! the source address it observed. Kith needs nothing else from STUN, so this
-//! crate implements only that subset, the same scope as Tailscale's `net/stun`:
-//!
-//! - **Client:** [`encode_binding_request`], [`parse_binding_response`] and the
-//!   retransmitting prober [`StunProbe`].
-//! - **Server:** [`parse_binding_request`] and [`encode_binding_response`], so
-//!   any kith node can answer STUN for its peers.
-//! - **Demultiplexing:** [`is_stun`] cheaply separates STUN from WireGuard
-//!   traffic arriving on the same UDP socket.
-//!
-//! There is no authentication (MESSAGE-INTEGRITY is skipped, never verified):
-//! a forged reply can only mislead us about our own address, and disco
-//! verifies every path end to end before it is used. FINGERPRINT is always
-//! sent and is verified whenever it is present.
-//!
-//! Everything is allocation-free: encoders write into caller-provided
-//! fixed-size buffers and parsers borrow the packet.
+//! MESSAGE-INTEGRITY is never verified: a forged reply can only mislead us about
+//! our own address, and disco verifies every path end to end. FINGERPRINT is
+//! always sent and verified when present.
 
 #![no_std]
 #![forbid(unsafe_code)]

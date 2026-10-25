@@ -1,9 +1,5 @@
 //! CRC-32 (IEEE 802.3, reflected polynomial `0xEDB88320`), as FINGERPRINT requires.
-//!
-//! Hand-rolled with a compile-time table: it is twenty lines, and a dependency
-//! for it would be a larger audit surface than the code itself.
 
-/// Reflected CRC-32 polynomial.
 const POLYNOMIAL: u32 = 0xEDB8_8320;
 
 /// Byte-at-a-time lookup table, built at compile time.
@@ -51,7 +47,6 @@ mod tests {
 
     #[test]
     fn check_value() {
-        // The standard CRC-32 check value.
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         assert_eq!(crc32(b""), 0);
     }

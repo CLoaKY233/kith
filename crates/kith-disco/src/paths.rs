@@ -43,9 +43,8 @@ pub const DISCO_PING_INTERVAL: Duration = Duration::from_secs(5);
 pub const UPGRADE_INTERVAL: Duration = Duration::from_secs(60);
 /// How long after the last data packet pinging continues. Tailscale: `sessionActiveTimeout`.
 pub const SESSION_ACTIVE_TIMEOUT: Duration = Duration::from_secs(45);
-/// The minimum gap between two call-me-maybes, so hole punching cannot flood the relay.
-/// Tailscale has no single constant here; this matches [`DISCO_PING_INTERVAL`] because a punch
-/// cannot usefully repeat faster than its pings can.
+/// The minimum gap between two call-me-maybes. Matches [`DISCO_PING_INTERVAL`] (no Tailscale
+/// equivalent): a punch cannot usefully repeat faster than its pings.
 pub const CALL_ME_MAYBE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The most candidates kept from the control plane.
@@ -553,7 +552,6 @@ impl PeerPaths {
 }
 
 /// Tailscale's `betterAddr`: whether `candidate` should replace `incumbent`.
-///
 /// The faster path earns its percentage improvement as points; private addresses earn 20,
 /// link-local 30, loopback 50 and IPv6 a further 10. A candidate whose only edge is at most one
 /// point (a 1% improvement) never displaces an incumbent: that is the hysteresis.
@@ -728,7 +726,6 @@ mod tests {
         paths.set_local_endpoints(&[ours]);
         paths.note_activity(ms(0));
         paths.set_candidates(ms(0), &[direct]);
-        // While relayed, every ping round also sends a call-me-maybe over the relay.
         let round = DISCO_PING_INTERVAL;
         let mut tx_id = [0; 12];
         for at in [ms(0), round] {
@@ -783,7 +780,6 @@ mod tests {
         paths.set_candidates(ms(0), &[slow, fast]);
         let sent = pings(&mut paths, ms(0));
         assert!(pong(&mut paths, ms(50), slow, sent[0].1));
-        // 1% faster is noise: no flap.
         assert!(pong(&mut paths, ms(50) + ms(1) / 2, fast, sent[1].1));
         assert_eq!(paths.best_path(), Some(PathTarget::Direct(slow)));
 
@@ -821,7 +817,6 @@ mod tests {
             .map(|(to, _)| to)
             .collect();
         assert_eq!(sent, endpoints);
-        // Idle, so the punch is one-shot.
         assert_eq!(pings(&mut paths, ms(60_000)), []);
     }
 

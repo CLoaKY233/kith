@@ -1,31 +1,13 @@
 //! Zero-copy IPv4, IPv6, TCP, UDP and ICMP header views and checksums.
 //!
-//! Plane: data. Sans-IO core: no I/O, no clock, no runtime. See `docs/architecture.md`.
+//! Sans-IO, `no_std`, no `alloc`. Each view wraps a caller-owned `T: AsRef<[u8]>`
+//! (setters need `AsMut`). `new_checked` validates every length a getter relies
+//! on; getters avoid indexing so a validation bug yields a wrong value, not a panic.
 //!
-//! # Why this crate exists
+//! Checksums: RFC 1071 (full) and RFC 1624 (incremental), see [`checksum`].
 //!
-//! Every packet that crosses the tunnel is inspected by the packet filter and
-//! the router. That inspection must not copy, allocate or panic, so this crate
-//! offers thin *views* over a caller-owned buffer in the style of smoltcp's
-//! `Packet<T>` wrappers:
-//!
-//! - Each view is generic over `T: AsRef<[u8]>`. Setters additionally need
-//!   `T: AsMut<[u8]>`.
-//! - `new_checked` validates every length a getter relies on, once. Getters
-//!   then read fixed offsets and never fail. They are still written without
-//!   indexing, so a bug degrades to a wrong value rather than a panic.
-//! - The crate is `no_std` with no `alloc`: it runs unchanged on routers and
-//!   microcontrollers.
-//!
-//! [`FlowKey::extract`] is the one-call entry point for the hot path. The
-//! checksum helpers in [`checksum`] implement RFC 1071 (full) and RFC 1624
-//! (incremental) arithmetic.
-//!
-//! # Scope (v1)
-//!
-//! IPv6 extension headers are not walked: [`Ipv6Packet::next_header`] is the
-//! first next-header value, and [`FlowKey`] carries no ports when it is not
-//! TCP or UDP. IP options are skipped, not parsed. IPv6 jumbograms are rejected.
+//! Scope (v1): IPv6 extension headers are not walked, IP options are skipped,
+//! IPv6 jumbograms are rejected.
 
 #![no_std]
 #![forbid(unsafe_code)]

@@ -1,9 +1,5 @@
-//! Obfuscation parameters and their validation.
-//!
-//! The parameters are shared by every peer in a network, because both ends
-//! must agree on them. They therefore arrive from the network (the ledger, or
-//! a stock AmneziaWG config), so every constructor validates them, and so
-//! does deserialization.
+//! Obfuscation parameters. They arrive from the network (ledger or AmneziaWG
+//! config), so every constructor and deserialization validates them.
 
 use serde::{Deserialize, Serialize};
 
@@ -28,11 +24,7 @@ const MAX_SEGMENT_SIZE: usize = 65_535;
 /// hostile config amplify every handshake.
 pub const MAX_JUNK_COUNT: u8 = 128;
 
-/// Unvalidated obfuscation parameters, in AmneziaWG terms.
-///
-/// This is plain data: convert it to [`ObfsParams`] with
-/// [`ObfsParams::new`] (or `TryFrom`) to validate it. [`Default`] is plain
-/// WireGuard.
+/// Unvalidated obfuscation parameters, in AmneziaWG terms. [`Default`] is plain WireGuard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RawObfsParams {
     /// `Jc`: junk packets sent before each handshake initiation.
@@ -161,7 +153,6 @@ impl ObfsParams {
         if usize::from(raw.junk_max) >= MAX_SEGMENT_SIZE {
             return Err(ParamsError::JunkTooLarge { max: raw.junk_max });
         }
-        // u16 + small constant cannot overflow usize; saturate to stay lint-clean.
         let init_size = usize::from(raw.init_padding).saturating_add(WG_INITIATION_LEN);
         if init_size >= MAX_SEGMENT_SIZE {
             return Err(ParamsError::InitPaddingTooLarge {
@@ -195,12 +186,9 @@ impl ObfsParams {
         Ok(Self { raw })
     }
 
-    /// Generates a random valid parameter set.
+    /// Generates a random valid parameter set within the AmneziaWG recommended ranges.
     ///
-    /// Values follow the AmneziaWG recommendations: `Jc` in `4..=12`, junk
-    /// sizes within `40..=1000`, `S1`/`S2` in `15..=150`, and headers in
-    /// `5..=u32::MAX` so none collides with a standard WireGuard type.
-    /// Always terminates, even with a degenerate source.
+    /// Headers are drawn from `5..=u32::MAX` so none collides with a standard WireGuard type.
     pub fn random(rng: &mut impl RandomSource) -> Self {
         let junk_count = u8::try_from(uniform_u32(rng, 4, 12)).unwrap_or(4);
         let junk_min = uniform_u16(rng, 40, 100);

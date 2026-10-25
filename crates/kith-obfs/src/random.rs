@@ -1,11 +1,4 @@
-//! The caller-supplied randomness source.
-//!
-//! A trait rather than a dependency keeps the core sans-IO and lets tests use
-//! a deterministic source.
-
 /// A source of random bytes supplied by the caller.
-///
-/// Drivers back it with the system CSPRNG. Tests back it with a fixed stream.
 pub trait RandomSource {
     /// Fills `buf` entirely with random bytes.
     fn fill(&mut self, buf: &mut [u8]);
@@ -24,9 +17,7 @@ pub(crate) fn next_u64(rng: &mut impl RandomSource) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-/// Draws a value uniformly (up to negligible modulo bias) from `low..=high`.
-///
-/// Returns `low` if the range is empty.
+/// Draws a value uniformly (up to negligible modulo bias) from `low..=high`; `low` if empty.
 pub(crate) fn uniform_u32(rng: &mut impl RandomSource, low: u32, high: u32) -> u32 {
     let Some(width) = high.checked_sub(low) else {
         return low;

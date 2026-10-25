@@ -10,17 +10,13 @@ pub struct LinkId(pub u64);
 
 /// Ladder-assigned identifier of one attempt, carried by [`crate::Action::Start`].
 ///
-/// Strictly increasing within one [`crate::Ladder`]. Drivers echo it in
-/// [`LinkEvent::Up`] and [`LinkEvent::Failed`], so the ladder can tell a
-/// late answer to an abandoned attempt (for example one started before
-/// roaming) from an answer to the attempt it is waiting for.
+/// Strictly increasing, so the ladder can tell late answers to abandoned attempts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AttemptId(pub u64);
 
 /// Why a link attempt failed or an established link went down.
 ///
-/// The ladder treats every reason the same today. The distinction exists for
-/// logs and for future policy (for example, a TLS interception verdict).
+/// The ladder treats every reason the same; the distinction is for logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FailureReason {

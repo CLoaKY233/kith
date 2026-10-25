@@ -5,8 +5,6 @@ use core::net::IpAddr;
 use crate::{Error, IpPacket, field, ip_protocol};
 
 /// The five-tuple identifying a flow.
-///
-/// Plain data: any combination of fields is a valid key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FlowKey {
     /// Source address.
@@ -24,9 +22,7 @@ pub struct FlowKey {
 impl FlowKey {
     /// Extracts the flow key from a raw IPv4 or IPv6 packet.
     ///
-    /// Ports are read only from the first four transport bytes; the rest of
-    /// the transport header is not validated. Ports are `None` for protocols
-    /// other than TCP and UDP, for non-first IPv4 fragments, and for IPv6
+    /// Ports are `None` for non-TCP/UDP, non-first IPv4 fragments, and IPv6
     /// packets whose first next header is an extension header.
     ///
     /// Returns [`Error::Truncated`] for a TCP or UDP packet too short to carry ports.
