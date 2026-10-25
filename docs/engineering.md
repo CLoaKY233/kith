@@ -26,6 +26,11 @@ These hold for every crate. CI enforces most of them; review enforces the rest.
 - **Sans-IO cores.** Core crates are `#![no_std]` + `alloc`: no sockets, no threads, no clock, no async.
   - Drivers wrap them.
   - CI builds every core crate for `thumbv7em-none-eabihf`.
+- **Minimal public surface.**
+  - Expose only what callers need.
+  - Modules are private; the crate root re-exports the few items that make up the API.
+  - Prefer `pub(crate)`. Fields stay private unless the type is plain data.
+- **Split only where it pays.** A crate exists for a real boundary: a plane, sans-IO core vs driver, a feature-gated transport, or the one `unsafe` crate. Otherwise, use a module.
 - **One crate, one job.** Depend only on lower layers. External crates are declared once in the root `Cargo.toml` with default features off.
 - **Cryptography only through `kith-crypto`.** Every signature and hash takes a `Context`. Each new context string is unique, follows the convention, and is listed in the crate that owns it.
 - **Errors:**
