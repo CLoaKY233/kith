@@ -240,12 +240,12 @@ Banned: `openssl`, `ring` (MIPS risk), `regex` in the daemon, and git or unknown
 |---|---|---|
 | **M0** | Workspace, all crates as documented stubs, lints, CI, deny | `cargo xtask ci` is green locally and on GitHub |
 | **M1** | Foundation + trust plane: types, crypto, wire, identity, ledger, policy | Ledger property tests pass for concurrent add/remove, partitions and backdating; golden vectors exist |
-| **M2** | Data plane between two hosts with static peers | `kith up` with a manual peer pings across Linux and macOS; throughput benchmark exists |
+| **M2** | Data plane between two hosts with static peers, plus exit-node routing | `kith up` with a manual peer pings across Linux and macOS; all traffic can route through a peer; throughput benchmark exists |
 | **M3** | Connectivity: STUN, disco, UDP transport, relay, hole punching | `kith-sim` passes the NAT matrix; a real relay fallback works |
 | **M4** | Control: invite/join, sync, netmap, persistence, multi-network | Three devices join by link, survive restarts and work offline on a LAN |
 | **M5** | Naming: stub DNS + custom records | `nas.home` and custom records resolve on all three hosts |
-| **M6** | Stealth: obfs + QUIC/WS transports + ladder | Connects with UDP blocked and with a WG-fingerprinting firewall |
-| **M7** | OpenWrt + budgets + benchmarks vs tailscaled | Binary < 5 MB, idle RAM < 10 MB, published comparison chart |
+| **M6** | Stealth: obfs + QUIC/WS transports + ladder; **server mode** (`kith server --exit --stealth`: one command turns a VPS into exit + relay + always-on member) | Connects with UDP blocked and with a WG-fingerprinting firewall; a fresh EC2 box becomes a stealth exit in one command |
+| **M7** | OpenWrt + budgets + benchmarks vs tailscaled; **WireGuard gateway** (export standard WG configs for devices that can't run kith) | Binary < 5 MB, idle RAM < 10 MB, published comparison chart; a stock WireGuard app connects through a kith node |
 
 **Parallelism:** once M1's foundation crates are stable, each plane's core crates are independent. They can be built in parallel (one agent per plane, each in its own worktree) and integrated in `kith-node`.
 
