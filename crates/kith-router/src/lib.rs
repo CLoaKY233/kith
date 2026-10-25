@@ -17,8 +17,8 @@
 
 extern crate alloc;
 
-mod router;
-mod table;
+pub mod router;
+pub mod table;
 
 pub use router::{
     ConflictError, ConflictKind, ExitError, MeshRanges, Route, Router, SetNetworkError,
