@@ -5,7 +5,7 @@
 //! This is kith's equivalent of Tailscale's disco protocol and magicsock path logic:
 //!
 //! - [`message`]: [`Ping`], [`Pong`] and [`CallMeMaybe`], with a byte-stable encoding.
-//! - [`seal`]: authenticated encryption between two nodes' disco keys, so a pong cannot be
+//! - [`seal`](mod@seal): authenticated encryption between two nodes' disco keys, so a pong cannot be
 //!   forged by anyone on the path, plus [`is_disco`] for demultiplexing the UDP socket.
 //! - [`paths`]: [`PeerPaths`], the per-peer state machine that probes candidate endpoints,
 //!   measures latency and picks direct UDP over the relay.
