@@ -86,6 +86,30 @@ Background: [`research/tailscale-market-research.md`](research/tailscale-market-
 
 ## 3. Crates
 
+Crates live in one folder per plane, so the layout mirrors the architecture:
+
+```
+crates/
+  foundation/    types, crypto, wire
+  trust/         identity, ledger, policy
+  control/       sync, control
+  connectivity/  stun, disco, transport, obfs, relay-proto, relay, transport-{udp,quic,ws}, netmon, tls
+  data/          packet, filter, router, wg, tun, dataplane
+  naming/        naming, dns
+  platform/      sys
+  management/    config, store, ipc, node, cli
+  tools/         sim
+```
+
+A crate exists only for a real boundary:
+- a plane;
+- a sans-IO core vs its driver;
+- a feature-gated transport;
+- the single `unsafe` crate.
+
+Smaller concerns are modules.
+
+
 `[core]` means sans-IO, `#![no_std] + alloc`, `forbid(unsafe)`. `[drv]` means it's a driver and uses tokio. Every crate is `publish = false` except the future `kith` facade.
 
 ### Foundation
@@ -120,7 +144,8 @@ Background: [`research/tailscale-market-research.md`](research/tailscale-market-
 | `kith-transport-quic` `[drv]` | QUIC-on-443 link (quinn + rustls), feature-gated |
 | `kith-transport-ws` `[drv]` | TLS/WebSocket-on-443 link (CDN-able), feature-gated |
 | `kith-relay` `[drv]` | Relay server + client drivers (any node can relay) |
-| `kith-netmon` `[drv]` | Interface/route change monitoring, port mapping (netwatch, portmapper) |
+| `kith-netmon` `[drv]` | Network change detection and port mapping (PCP, NAT-PMP) |
+| `kith-tls` | TLS 1.3 authenticated by kith identities (raw public keys), shared by QUIC and the control channel |
 
 ### Data plane
 | Crate | Purpose |

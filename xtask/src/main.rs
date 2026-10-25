@@ -165,11 +165,16 @@ fn ci() -> Result<(), Error> {
     Ok(())
 }
 
-/// Finds the core crates: every `crates/*` whose `src/lib.rs` declares `#![no_std]`.
+/// Finds the core crates: every `crates/*/*` whose `src/lib.rs` declares `#![no_std]`.
 fn core_crates() -> Result<Vec<String>, Error> {
     let mut names = Vec::new();
-    for entry in fs::read_dir(workspace_root().join("crates"))? {
-        let dir = entry?.path();
+    let mut dirs = Vec::new();
+    for group in fs::read_dir(workspace_root().join("crates"))? {
+        for entry in fs::read_dir(group?.path())? {
+            dirs.push(entry?.path());
+        }
+    }
+    for dir in dirs {
         let lib = dir.join("src").join("lib.rs");
         let Ok(source) = fs::read_to_string(&lib) else {
             continue;

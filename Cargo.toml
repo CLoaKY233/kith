@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
-default-members = ["crates/*"]
+members = ["crates/*/*", "xtask"]
+default-members = ["crates/*/*"]
 
 [workspace.package]
 version = "0.0.0"
@@ -18,38 +18,38 @@ publish = false
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
 # Internal crates.
-kith-types = { path = "crates/kith-types" }
-kith-crypto = { path = "crates/kith-crypto" }
-kith-wire = { path = "crates/kith-wire" }
-kith-identity = { path = "crates/kith-identity" }
-kith-ledger = { path = "crates/kith-ledger" }
-kith-policy = { path = "crates/kith-policy" }
-kith-packet = { path = "crates/kith-packet" }
-kith-naming = { path = "crates/kith-naming" }
-kith-obfs = { path = "crates/kith-obfs" }
-kith-control = { path = "crates/kith-control" }
-kith-disco = { path = "crates/kith-disco" }
-kith-filter = { path = "crates/kith-filter" }
-kith-relay-proto = { path = "crates/kith-relay-proto" }
-kith-router = { path = "crates/kith-router" }
-kith-store = { path = "crates/kith-store" }
-kith-stun = { path = "crates/kith-stun" }
-kith-sync = { path = "crates/kith-sync" }
-kith-transport = { path = "crates/kith-transport" }
-kith-transport-udp = { path = "crates/kith-transport-udp" }
-kith-tun = { path = "crates/kith-tun" }
-kith-wg = { path = "crates/kith-wg" }
-kith-sys = { path = "crates/kith-sys" }
-kith-config = { path = "crates/kith-config" }
-kith-ipc = { path = "crates/kith-ipc" }
-kith-dns = { path = "crates/kith-dns" }
-kith-netmon = { path = "crates/kith-netmon" }
-kith-transport-quic = { path = "crates/kith-transport-quic" }
-kith-transport-ws = { path = "crates/kith-transport-ws" }
-kith-relay = { path = "crates/kith-relay" }
-kith-dataplane = { path = "crates/kith-dataplane" }
-kith-node = { path = "crates/kith-node" }
-kith-tls = { path = "crates/kith-tls" }
+kith-types = { path = "crates/foundation/kith-types" }
+kith-crypto = { path = "crates/foundation/kith-crypto" }
+kith-wire = { path = "crates/foundation/kith-wire" }
+kith-identity = { path = "crates/trust/kith-identity" }
+kith-ledger = { path = "crates/trust/kith-ledger" }
+kith-policy = { path = "crates/trust/kith-policy" }
+kith-packet = { path = "crates/data/kith-packet" }
+kith-naming = { path = "crates/naming/kith-naming" }
+kith-obfs = { path = "crates/connectivity/kith-obfs" }
+kith-control = { path = "crates/control/kith-control" }
+kith-disco = { path = "crates/connectivity/kith-disco" }
+kith-filter = { path = "crates/data/kith-filter" }
+kith-relay-proto = { path = "crates/connectivity/kith-relay-proto" }
+kith-router = { path = "crates/data/kith-router" }
+kith-store = { path = "crates/management/kith-store" }
+kith-stun = { path = "crates/connectivity/kith-stun" }
+kith-sync = { path = "crates/control/kith-sync" }
+kith-transport = { path = "crates/connectivity/kith-transport" }
+kith-transport-udp = { path = "crates/connectivity/kith-transport-udp" }
+kith-tun = { path = "crates/data/kith-tun" }
+kith-wg = { path = "crates/data/kith-wg" }
+kith-sys = { path = "crates/platform/kith-sys" }
+kith-config = { path = "crates/management/kith-config" }
+kith-ipc = { path = "crates/management/kith-ipc" }
+kith-dns = { path = "crates/naming/kith-dns" }
+kith-netmon = { path = "crates/connectivity/kith-netmon" }
+kith-transport-quic = { path = "crates/connectivity/kith-transport-quic" }
+kith-transport-ws = { path = "crates/connectivity/kith-transport-ws" }
+kith-relay = { path = "crates/connectivity/kith-relay" }
+kith-dataplane = { path = "crates/data/kith-dataplane" }
+kith-node = { path = "crates/management/kith-node" }
+kith-tls = { path = "crates/connectivity/kith-tls" }
 
 # Cryptography (pure Rust, no C toolchain).
 blake2 = { version = "0.11.0", default-features = false }
