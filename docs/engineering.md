@@ -40,8 +40,11 @@ These hold for every crate. CI enforces most of them; review enforces the rest.
 
 ## Style
 
-- **Every public item has a doc comment** saying what it is and any invariant. Module docs explain *why*.
-- **Names are full words.** Comments explain intent, not mechanics.
+- **Comments are minimal.** A clean codebase is worth more than narration.
+  - Public items get one short, factual doc line (`missing_docs` requires it), plus any invariant.
+  - Module docs stay brief, and only explain design decisions.
+  - Inline comments only for a non-obvious *why*; never restate the code. When a spec says it, cite the section.
+- **Names are full words**, so the code reads without comments.
 - **Secrets:** no `Clone`, `Debug` prints `<redacted>`, and memory is zeroized on drop.
 
 ## Testing
