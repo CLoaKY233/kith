@@ -1,6 +1,6 @@
 [package]
 name = "kith-cli"
-description = "The `kith` binary: daemon and command line in one executable"
+description = "The kith binary: daemon and command line in one executable"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +12,13 @@ publish.workspace = true
 [[bin]]
 name = "kith"
 path = "src/main.rs"
+
+[dependencies]
+bpaf.workspace = true
+kith-config.workspace = true
+kith-ipc.workspace = true
+kith-types.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true
