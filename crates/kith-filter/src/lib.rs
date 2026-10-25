@@ -34,7 +34,7 @@
 //! port rules. That covers IPv4 packets with the more-fragments flag or a non-zero
 //! offset, and IPv6 packets whose first next header is a Fragment header. The tunnel
 //! MTU makes fragments rare; senders should use path MTU discovery. Inbound packets
-//! that do not parse are dropped the same way. Outbound fragments and unparseable
+//! that do not parse are dropped the same way. Outbound fragments and unparsable
 //! packets are passed through untracked.
 //!
 //! # Memory and performance
@@ -107,7 +107,7 @@ pub enum Verdict {
 pub enum DropReason {
     /// Inbound, matches no tracked flow, and the policy does not allow it.
     Policy,
-    /// Inbound, and unparseable or an IP fragment.
+    /// Inbound, and unparsable or an IP fragment.
     Malformed,
     /// Outbound, opens a new flow, and the full table has nothing evictable.
     TableFull,
