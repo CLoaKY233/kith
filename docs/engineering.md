@@ -33,6 +33,11 @@ These hold for every crate. CI enforces most of them; review enforces the rest.
   - Mark error enums `#[non_exhaustive]` when they may grow.
   - `anyhow` is allowed only in `kith-cli`.
 
+## Commits
+
+- **Messages read like a person wrote them:** a short, plain subject in the imperative ("Add STUN codec and prober"), and if needed a few sentences of body saying what and why. No bullet walls, no buzzwords.
+- **No attribution trailers.** No `Co-Authored-By` lines.
+
 ## Style
 
 - **Every public item has a doc comment** saying what it is and any invariant. Module docs explain *why*.
@@ -41,7 +46,10 @@ These hold for every crate. CI enforces most of them; review enforces the rest.
 
 ## Testing
 
-- Every public behaviour has a test.
+- **Fewer tests, each high quality.** A test exists only if it would catch a real bug that no other test catches.
+  - No trivial, redundant or count-padding tests.
+  - Prefer one strong property test over many examples.
+- **Each test's name** states the behaviour it protects.
 - Every parser has:
   - a golden-bytes test, because changing those bytes is a protocol break;
   - a "never panics on arbitrary input" property test.
