@@ -12,6 +12,8 @@
 
 mod api;
 mod engine;
+#[cfg(any(test, feature = "test-support"))]
+mod memory_tun;
 mod packet;
 mod timers;
 mod tun_device;
@@ -21,5 +23,7 @@ mod tests;
 
 pub use api::{
     Dataplane, DataplaneConfig, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event,
-    PeerSpec, PeerStats, Stats,
+    ExternalInterface, ExternalPeer, ExternalPeerStats, PeerSpec, PeerStats, Stats,
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use memory_tun::MemoryTun;

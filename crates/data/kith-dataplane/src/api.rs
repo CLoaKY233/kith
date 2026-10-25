@@ -13,6 +13,7 @@ use kith_wg::WgError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::engine::Engine;
+use crate::tun_device::AnyTun;
 
 const COMMAND_QUEUE: usize = 64;
 const EVENT_QUEUE: usize = 1024;
@@ -52,6 +53,60 @@ pub struct PeerSpec {
     pub persistent_keepalive: Option<u16>,
 }
 
+/// A standard WireGuard interface for peers outside the mesh, sharing the TUN and UDP socket.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ExternalInterface {
+    /// Identifies the interface across updates.
+    pub name: String,
+    /// The interface's X25519 private key.
+    pub private_key: [u8; 32],
+    /// The interface's own addresses; packets from them prefer its peers on equal routes.
+    pub addresses: Vec<IpPrefix>,
+    /// The interface's peers.
+    pub peers: Vec<ExternalPeer>,
+}
+
+impl core::fmt::Debug for ExternalInterface {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ExternalInterface")
+            .field("name", &self.name)
+            .field("addresses", &self.addresses)
+            .field("peers", &self.peers)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One standard WireGuard peer of an [`ExternalInterface`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct ExternalPeer {
+    /// The peer's X25519 public key.
+    pub public_key: [u8; 32],
+    /// A preshared key mixed into every handshake.
+    pub preshared_key: Option<[u8; 32]>,
+    /// Where to send; `None` waits for the peer to send first.
+    pub endpoint: Option<SocketAddr>,
+    /// Prefixes routed to the peer and accepted from it.
+    pub allowed_ips: Vec<IpPrefix>,
+    /// Persistent keepalive interval in seconds.
+    pub persistent_keepalive: Option<u16>,
+}
+
+impl core::fmt::Debug for ExternalPeer {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ExternalPeer")
+            .field(
+                "public_key",
+                &kith_crypto::AgreementPublic::from_bytes(self.public_key),
+            )
+            .field("endpoint", &self.endpoint)
+            .field("allowed_ips", &self.allowed_ips)
+            .field("persistent_keepalive", &self.persistent_keepalive)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Something the control plane must act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -88,8 +143,28 @@ pub enum Event {
 pub struct Stats {
     /// Every peer, in `NodeId` order.
     pub peers: Vec<PeerStats>,
+    /// Every external peer, by interface name, then public key.
+    pub external: Vec<ExternalPeerStats>,
     /// Drops since the dataplane started.
     pub drops: DropCounters,
+}
+
+/// One external peer's session and traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExternalPeerStats {
+    /// The interface's name.
+    pub interface: String,
+    /// The peer's X25519 public key.
+    pub public_key: [u8; 32],
+    /// Where its datagrams go, if known.
+    pub endpoint: Option<SocketAddr>,
+    /// When its latest session was established.
+    pub last_handshake: Option<Instant>,
+    /// Bytes of authenticated WireGuard datagrams received from it.
+    pub rx_bytes: u64,
+    /// Bytes of WireGuard datagrams produced for it.
+    pub tx_bytes: u64,
 }
 
 /// One peer's session and traffic.
@@ -145,6 +220,9 @@ pub enum DataplaneError {
     /// A peer's `NodeId` is not a valid Ed25519 key.
     #[error("peer {0} has an invalid key")]
     InvalidPeerKey(NodeId),
+    /// A public key appears twice in one external interface.
+    #[error("external interface {0} lists a peer twice")]
+    DuplicateExternalPeer(String),
     /// The routes were rejected; nothing changed.
     #[error("routes rejected")]
     Routes(#[from] SetNetworkError),
@@ -181,13 +259,15 @@ pub(crate) enum Command {
     SendRaw(SocketAddr, Vec<u8>),
     AcceptRelayed(NodeId, Vec<u8>),
     RemoveNetwork(NetworkId, Reply),
+    SetExternal(ExternalInterface, Reply),
+    RemoveExternal(String, Reply),
     Stats(oneshot::Sender<Stats>),
 }
 
 /// The packet loop. Drive it with [`Dataplane::run`].
 #[derive(Debug)]
 pub struct Dataplane {
-    engine: Engine<Tun>,
+    engine: Engine<AnyTun>,
 }
 
 impl Dataplane {
@@ -195,8 +275,28 @@ impl Dataplane {
     pub fn new(
         config: DataplaneConfig,
     ) -> Result<(Self, DataplaneHandle, mpsc::Receiver<Event>), DataplaneError> {
-        let (engine, handle, events) = Engine::new(&config.signing_key, config.tun, config.link)?;
+        let (engine, handle, events) =
+            Engine::new(&config.signing_key, AnyTun::Os(config.tun), config.link)?;
         Ok((Self { engine }, handle, events))
+    }
+
+    /// Like [`Dataplane::new`], over an in-memory TUN driven through the returned [`crate::MemoryTun`].
+    #[cfg(feature = "test-support")]
+    pub fn with_memory_tun(
+        signing_key: &SigningKey,
+        link: UdpLink,
+    ) -> Result<
+        (
+            Self,
+            DataplaneHandle,
+            mpsc::Receiver<Event>,
+            crate::MemoryTun,
+        ),
+        DataplaneError,
+    > {
+        let (device, tun) = crate::memory_tun::memory_tun();
+        let (engine, handle, events) = Engine::new(signing_key, AnyTun::Memory(device), link)?;
+        Ok((Self { engine }, handle, events, tun))
     }
 
     /// Runs until every [`DataplaneHandle`] is dropped or the TUN or UDP read fails.
@@ -284,6 +384,18 @@ impl DataplaneHandle {
     /// Forgets `network`: its peers and their sessions, its routes, exit and filter.
     pub async fn remove_network(&self, network: NetworkId) -> Result<(), DataplaneError> {
         self.request(|reply| Command::RemoveNetwork(network, reply))
+            .await
+    }
+
+    /// Adds or replaces the external interface named `interface.name`; unchanged peers keep their sessions.
+    pub async fn set_external(&self, interface: ExternalInterface) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::SetExternal(interface, reply))
+            .await
+    }
+
+    /// Removes the external interface `name` and its sessions.
+    pub async fn remove_external(&self, name: String) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::RemoveExternal(name, reply))
             .await
     }
 

@@ -7,20 +7,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use kith_crypto::{SigningKey, VerifyingKey};
 use kith_filter::{Counters, Filter, Verdict};
 use kith_policy::CompiledFilter;
-use kith_router::Router;
+use kith_router::{PrefixTable, Router};
 use kith_transport_udp::{Kind, MAX_SLOT_LEN, RecvBatch, SendBatch, UdpLink, classify};
 use kith_tun::{MAX_PACKET_CAPACITY, PacketBatch};
 use kith_types::{IpPrefix, NetworkId, NodeId};
 use kith_wg::{
     CookieChecker, Decapsulated, Device, Encapsulated, Now, PeerConfig, PeerEvent, PeerId,
-    RandomSource, Tai64N, Transmit, WgError, required_output_len,
+    RandomSource, StaticIdentity, Tai64N, Transmit, WgError, required_output_len,
 };
 use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::api::{
-    Command, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event, PeerSpec, PeerStats,
-    Stats, channels,
+    Command, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface,
+    ExternalPeerStats, PeerSpec, PeerStats, Stats, channels,
 };
 use crate::packet;
 use crate::timers::Timers;
@@ -61,8 +61,11 @@ struct State {
     filters: BTreeMap<NetworkId, Filter>,
     peers: BTreeMap<NodeId, PeerEntry>,
     by_index: BTreeMap<PeerId, NodeId>,
-    timers: Timers<NodeId>,
-    touched: Vec<NodeId>,
+    externals: BTreeMap<u64, External>,
+    external_slots: BTreeMap<String, u64>,
+    next_slot: u64,
+    timers: Timers<Key>,
+    touched: Vec<Key>,
     tun_out: PacketBatch,
     out: Output,
     scratch: Vec<u8>,
@@ -75,6 +78,29 @@ struct PeerEntry {
     endpoint: Option<Endpoint>,
     keepalive: Option<u16>,
     touched: bool,
+}
+
+struct External {
+    name: String,
+    device: Device,
+    addresses: Vec<IpPrefix>,
+    routes: PrefixTable<PeerId>,
+    peers: BTreeMap<PeerId, ExternalEntry>,
+}
+
+struct ExternalEntry {
+    public_key: [u8; 32],
+    preshared_key: Option<[u8; 32]>,
+    allowed_ips: Vec<IpPrefix>,
+    endpoint: Option<SocketAddr>,
+    keepalive: Option<u16>,
+    touched: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    Mesh(NodeId),
+    External(u64, PeerId),
 }
 
 struct Output {
@@ -104,11 +130,7 @@ impl<T: TunDevice> Engine<T> {
     ) -> Result<(Self, DataplaneHandle, mpsc::Receiver<Event>), DataplaneError> {
         let (handle, commands, events, event_receiver) = channels();
         let secret = signing_key.to_agreement_secret().to_bytes();
-        let device = Device::new(
-            *secret,
-            CookieChecker::new(HANDSHAKES_PER_SECOND),
-            Box::new(OsRandom),
-        );
+        let device = new_device(*secret);
         let engine = Self {
             state: State {
                 device,
@@ -116,6 +138,9 @@ impl<T: TunDevice> Engine<T> {
                 filters: BTreeMap::new(),
                 peers: BTreeMap::new(),
                 by_index: BTreeMap::new(),
+                externals: BTreeMap::new(),
+                external_slots: BTreeMap::new(),
+                next_slot: 0,
                 timers: Timers::new(),
                 touched: Vec::with_capacity(kith_tun::BATCH_SIZE),
                 tun_out: tun.new_batch()?,
@@ -235,6 +260,13 @@ impl State {
                 self.remove_network(network);
                 reply.send(Ok(())).ok();
             }
+            Command::SetExternal(interface, reply) => {
+                reply.send(self.set_external(interface)).ok();
+            }
+            Command::RemoveExternal(name, reply) => {
+                self.remove_external(&name);
+                reply.send(Ok(())).ok();
+            }
             Command::Stats(reply) => {
                 reply.send(self.stats(clock)).ok();
             }
@@ -280,7 +312,12 @@ impl State {
             if let Some(seconds) = spec.persistent_keepalive {
                 config = config.with_persistent_keepalive(seconds);
             }
-            let id = self.device.add_peer(&config, Box::new(OsRandom))?;
+            let externals = &self.externals;
+            let id = add_unique(&mut self.device, &config, |id| {
+                externals
+                    .values()
+                    .any(|external| external.peers.contains_key(&id))
+            })?;
             debug!(peer = %node.short(), network = %spec.network.short(), "WireGuard peer added");
             self.by_index.insert(id, node);
             self.peers.insert(
@@ -294,7 +331,7 @@ impl State {
                     touched: true,
                 },
             );
-            self.touched.push(node);
+            self.touched.push(Key::Mesh(node));
         }
         Ok(())
     }
@@ -305,7 +342,7 @@ impl State {
         };
         self.device.remove_peer(entry.id);
         self.by_index.remove(&entry.id);
-        self.timers.cancel(node);
+        self.timers.cancel(Key::Mesh(node));
         debug!(peer = %node.short(), network = %entry.network.short(), "WireGuard peer removed");
     }
 
@@ -363,17 +400,49 @@ impl State {
                 tx_bytes: peer.tx_bytes(),
             });
         }
+        let mut external = Vec::new();
+        for interface in self.externals.values_mut() {
+            for (id, entry) in &interface.peers {
+                let Some(peer) = interface.device.peer_mut(*id) else {
+                    continue;
+                };
+                external.push(ExternalPeerStats {
+                    interface: interface.name.clone(),
+                    public_key: entry.public_key,
+                    endpoint: entry.endpoint,
+                    last_handshake: peer.last_handshake().and_then(|at| clock.at(at)),
+                    rx_bytes: peer.rx_bytes(),
+                    tx_bytes: peer.tx_bytes(),
+                });
+            }
+        }
+        external.sort_by(|a, b| (&a.interface, a.public_key).cmp(&(&b.interface, b.public_key)));
         let mut drops = self.out.drops;
         for filter in self.filters.values() {
             absorb(&mut drops, filter.counters());
         }
-        Stats { peers, drops }
+        Stats {
+            peers,
+            external,
+            drops,
+        }
     }
 
     fn outbound(&mut self, now: Now, batch: &PacketBatch) {
         for packet in batch.iter() {
-            let Some(route) = packet::destination(packet).and_then(|dst| self.router.route(dst))
-            else {
+            let Some(destination) = packet::destination(packet) else {
+                count(&mut self.out.drops.no_route);
+                continue;
+            };
+            let route = self.router.route(destination);
+            let mesh_rank = route.map(|route| (route.prefix.prefix_len(), false));
+            if let Some((slot, id)) =
+                self.external_route(packet::source(packet), destination, mesh_rank)
+            {
+                self.outbound_external(now, packet, slot, id);
+                continue;
+            }
+            let Some(route) = route else {
                 count(&mut self.out.drops.no_route);
                 continue;
             };
@@ -402,7 +471,232 @@ impl State {
                 Ok(Encapsulated::Queued) => {}
                 Err(_) => count(&mut self.out.drops.invalid),
             }
-            touch(&mut self.touched, route.peer, entry);
+            touch(&mut self.touched, Key::Mesh(route.peer), &mut entry.touched);
+        }
+    }
+
+    fn external_route(
+        &self,
+        source: Option<IpAddr>,
+        destination: IpAddr,
+        mesh_rank: Option<(u8, bool)>,
+    ) -> Option<(u64, PeerId)> {
+        let mut best: Option<((u8, bool), u64, PeerId)> = None;
+        for (slot, external) in &self.externals {
+            let Some((prefix, id)) = external.routes.lookup(destination) else {
+                continue;
+            };
+            let owns_source = source.is_some_and(|source| {
+                external
+                    .addresses
+                    .iter()
+                    .any(|address| address.contains(source))
+            });
+            let rank = (prefix.prefix_len(), owns_source);
+            if best.is_none_or(|(current, _, _)| rank > current) {
+                best = Some((rank, *slot, *id));
+            }
+        }
+        best.filter(|(rank, _, _)| mesh_rank.is_none_or(|mesh| *rank > mesh))
+            .map(|(_, slot, id)| (slot, id))
+    }
+
+    fn outbound_external(&mut self, now: Now, packet: &[u8], slot: u64, id: PeerId) {
+        let Some(external) = self.externals.get_mut(&slot) else {
+            return;
+        };
+        let (Some(entry), Some(peer)) = (external.peers.get_mut(&id), external.device.peer_mut(id))
+        else {
+            count(&mut self.out.drops.no_route);
+            return;
+        };
+        let sealed = match self.scratch.get_mut(..required_output_len(packet.len())) {
+            Some(out) => peer.encapsulate(now, packet, out),
+            None => Err(WgError::BufferTooSmall),
+        };
+        match sealed {
+            Ok(Encapsulated::Transport(len) | Encapsulated::HandshakeInitiation(len)) => {
+                self.out
+                    .send_external(entry.endpoint, self.scratch.get(..len));
+            }
+            Ok(Encapsulated::Queued) => {}
+            Err(_) => count(&mut self.out.drops.invalid),
+        }
+        touch(
+            &mut self.touched,
+            Key::External(slot, id),
+            &mut entry.touched,
+        );
+    }
+
+    fn receive_external(&mut self, now: Now, source: SocketAddr, datagram: &[u8]) {
+        let mut address = [0; 18];
+        let encoded = encode_address(source, &mut address);
+        for (slot, external) in &mut self.externals {
+            let output =
+                match external
+                    .device
+                    .decapsulate(now, encoded, datagram, &mut self.scratch)
+                {
+                    Ok(output) => output,
+                    Err(WgError::UnknownIndex | WgError::InvalidMac) => continue,
+                    Err(_) => break,
+                };
+            let Some(id) = output.peer else {
+                if let Decapsulated::Reply(len) = output.result {
+                    self.out.send_direct(source, self.scratch.get(..len));
+                }
+                return;
+            };
+            let Some(entry) = external.peers.get_mut(&id) else {
+                return;
+            };
+            if entry.endpoint != Some(source) {
+                debug!(interface = %external.name, %source, "external peer endpoint learned");
+                entry.endpoint = Some(source);
+            }
+            match output.result {
+                Decapsulated::Packet(len) => {
+                    if let Some(packet) = self.scratch.get(..len) {
+                        if !packet::source(packet).is_some_and(|address| {
+                            entry
+                                .allowed_ips
+                                .iter()
+                                .any(|prefix| prefix.contains(address))
+                        }) {
+                            count(&mut self.out.drops.source_not_allowed);
+                        } else if self.tun_out.push(packet).is_err() {
+                            count(&mut self.out.drops.overflow);
+                        }
+                    }
+                }
+                Decapsulated::Reply(len) => self.out.send_direct(source, self.scratch.get(..len)),
+                Decapsulated::Nothing => {}
+            }
+            touch(
+                &mut self.touched,
+                Key::External(*slot, id),
+                &mut entry.touched,
+            );
+            return;
+        }
+        count(&mut self.out.drops.invalid);
+    }
+
+    fn set_external(&mut self, spec: ExternalInterface) -> Result<(), DataplaneError> {
+        let mut wanted = BTreeMap::new();
+        for peer in spec.peers {
+            if wanted.insert(peer.public_key, peer).is_some() {
+                return Err(DataplaneError::DuplicateExternalPeer(spec.name));
+            }
+        }
+        let (slot, mut external) = self.take_external(&spec.name, spec.private_key);
+        let stale: Vec<PeerId> = external
+            .peers
+            .iter()
+            .filter(|(_, entry)| {
+                wanted.get(&entry.public_key).is_none_or(|peer| {
+                    peer.preshared_key != entry.preshared_key
+                        || peer.persistent_keepalive != entry.keepalive
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            external.peers.remove(&id);
+            external.device.remove_peer(id);
+            self.timers.cancel(Key::External(slot, id));
+        }
+        let mut result = Ok(());
+        for (public_key, peer) in wanted {
+            if let Some(id) = external.device.peer_by_public_key(&public_key)
+                && let Some(entry) = external.peers.get_mut(&id)
+            {
+                entry.allowed_ips = peer.allowed_ips;
+                if peer.endpoint.is_some() {
+                    entry.endpoint = peer.endpoint;
+                }
+                continue;
+            }
+            let mut config = PeerConfig::new(public_key);
+            if let Some(key) = peer.preshared_key {
+                config = config.with_preshared_key(key);
+            }
+            if let Some(seconds) = peer.persistent_keepalive {
+                config = config.with_persistent_keepalive(seconds);
+            }
+            let (by_index, externals) = (&self.by_index, &self.externals);
+            let id = match add_unique(&mut external.device, &config, |id| {
+                by_index.contains_key(&id)
+                    || externals
+                        .values()
+                        .any(|other| other.peers.contains_key(&id))
+            }) {
+                Ok(id) => id,
+                Err(error) => {
+                    result = Err(error.into());
+                    break;
+                }
+            };
+            external.peers.insert(
+                id,
+                ExternalEntry {
+                    public_key,
+                    preshared_key: peer.preshared_key,
+                    allowed_ips: peer.allowed_ips,
+                    endpoint: peer.endpoint,
+                    keepalive: peer.persistent_keepalive,
+                    touched: true,
+                },
+            );
+            self.touched.push(Key::External(slot, id));
+        }
+        external.addresses = spec.addresses;
+        external.routes = PrefixTable::new();
+        for (id, entry) in &external.peers {
+            for prefix in &entry.allowed_ips {
+                external.routes.insert(*prefix, *id);
+            }
+        }
+        debug!(interface = %external.name, peers = external.peers.len(), "external interface set");
+        self.external_slots.insert(spec.name, slot);
+        self.externals.insert(slot, external);
+        result
+    }
+
+    fn take_external(&mut self, name: &str, private_key: [u8; 32]) -> (u64, External) {
+        let public = StaticIdentity::from_secret_bytes(private_key).public_key();
+        if let Some(&slot) = self.external_slots.get(name)
+            && self
+                .externals
+                .get(&slot)
+                .is_some_and(|external| external.device.public_key() == public)
+            && let Some(external) = self.externals.remove(&slot)
+        {
+            return (slot, external);
+        }
+        self.remove_external(name);
+        let slot = self.next_slot;
+        self.next_slot = slot.wrapping_add(1);
+        let external = External {
+            name: name.to_owned(),
+            device: new_device(private_key),
+            addresses: Vec::new(),
+            routes: PrefixTable::new(),
+            peers: BTreeMap::new(),
+        };
+        (slot, external)
+    }
+
+    fn remove_external(&mut self, name: &str) {
+        let Some(slot) = self.external_slots.remove(name) else {
+            return;
+        };
+        if let Some(external) = self.externals.remove(&slot) {
+            for id in external.peers.keys() {
+                self.timers.cancel(Key::External(slot, *id));
+            }
+            debug!(interface = %name, "external interface removed");
         }
     }
 
@@ -412,12 +706,23 @@ impl State {
             Via::Udp(source) => encode_address(*source, &mut address),
             Via::Relay(peer) => peer.as_bytes().as_slice(),
         };
-        let Ok(output) = self
+        let output = match self
             .device
             .decapsulate(now, source, datagram, &mut self.scratch)
-        else {
-            count(&mut self.out.drops.invalid);
-            return;
+        {
+            Ok(output) => output,
+            Err(WgError::UnknownIndex | WgError::InvalidMac) if !self.externals.is_empty() => {
+                if let Via::Udp(source) = via {
+                    self.receive_external(now, source, datagram);
+                } else {
+                    count(&mut self.out.drops.invalid);
+                }
+                return;
+            }
+            Err(_) => {
+                count(&mut self.out.drops.invalid);
+                return;
+            }
         };
         let Some(id) = output.peer else {
             if let Decapsulated::Reply(len) = output.result {
@@ -456,18 +761,29 @@ impl State {
             Decapsulated::Reply(len) => self.out.reply(via, self.scratch.get(..len)),
             Decapsulated::Nothing => {}
         }
-        touch(&mut self.touched, node, entry);
+        touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
     }
 
     fn service(&mut self, now: Now) -> Option<Duration> {
-        while let Some(node) = self.timers.pop_due(now.monotonic) {
-            if let Some(entry) = self.peers.get_mut(&node) {
-                touch(&mut self.touched, node, entry);
+        while let Some(key) = self.timers.pop_due(now.monotonic) {
+            let flag = match key {
+                Key::Mesh(node) => self.peers.get_mut(&node).map(|entry| &mut entry.touched),
+                Key::External(slot, id) => self
+                    .externals
+                    .get_mut(&slot)
+                    .and_then(|external| external.peers.get_mut(&id))
+                    .map(|entry| &mut entry.touched),
+            };
+            if let Some(flag) = flag {
+                touch(&mut self.touched, key, flag);
             }
         }
         let mut touched = core::mem::take(&mut self.touched);
-        for node in touched.drain(..) {
-            self.service_peer(now, node);
+        for key in touched.drain(..) {
+            match key {
+                Key::Mesh(node) => self.service_peer(now, node),
+                Key::External(slot, id) => self.service_external(now, slot, id),
+            }
         }
         self.touched = touched;
         self.timers.next_deadline()
@@ -492,16 +808,68 @@ impl State {
         }
         if let Some(due) = peer.poll_timeout() {
             self.timers
-                .schedule(node, due.max(at.saturating_add(MIN_TIMER_DELAY)));
+                .schedule(Key::Mesh(node), due.max(at.saturating_add(MIN_TIMER_DELAY)));
+        }
+    }
+
+    fn service_external(&mut self, now: Now, slot: u64, id: PeerId) {
+        let Some(external) = self.externals.get_mut(&slot) else {
+            return;
+        };
+        let (Some(entry), Some(peer)) = (external.peers.get_mut(&id), external.device.peer_mut(id))
+        else {
+            return;
+        };
+        entry.touched = false;
+        let at = now.monotonic;
+        if peer.poll_timeout().is_some_and(|due| due <= at) {
+            while let Ok(Transmit::Send(len)) = peer.poll_transmit(now, &mut self.scratch) {
+                self.out
+                    .send_external(entry.endpoint, self.scratch.get(..len));
+            }
+        }
+        while let Some(event) = peer.poll_event() {
+            debug!(interface = %external.name, ?event, "external WireGuard session event");
+        }
+        if let Some(due) = peer.poll_timeout() {
+            self.timers.schedule(
+                Key::External(slot, id),
+                due.max(at.saturating_add(MIN_TIMER_DELAY)),
+            );
         }
     }
 }
 
-fn touch(touched: &mut Vec<NodeId>, node: NodeId, entry: &mut PeerEntry) {
-    if !entry.touched {
-        entry.touched = true;
-        touched.push(node);
+fn touch(touched: &mut Vec<Key>, key: Key, flag: &mut bool) {
+    if !*flag {
+        *flag = true;
+        touched.push(key);
     }
+}
+
+fn new_device(secret: [u8; 32]) -> Device {
+    Device::new(
+        secret,
+        CookieChecker::new(HANDSHAKES_PER_SECOND),
+        Box::new(OsRandom),
+    )
+}
+
+const UNIQUE_ATTEMPTS: usize = 8;
+
+fn add_unique(
+    device: &mut Device,
+    config: &PeerConfig,
+    taken: impl Fn(PeerId) -> bool,
+) -> Result<PeerId, WgError> {
+    for _ in 0..UNIQUE_ATTEMPTS {
+        let id = device.add_peer(config, Box::new(OsRandom))?;
+        if !taken(id) {
+            return Ok(id);
+        }
+        device.remove_peer(id);
+    }
+    Err(WgError::PeerRejected)
 }
 
 fn count(counter: &mut u64) {
@@ -553,6 +921,13 @@ impl Output {
                 peer,
                 datagram: datagram.to_vec(),
             }),
+            None => count(&mut self.drops.no_endpoint),
+        }
+    }
+
+    fn send_external(&mut self, endpoint: Option<SocketAddr>, datagram: Option<&[u8]>) {
+        match endpoint {
+            Some(destination) => self.send_direct(destination, datagram),
             None => count(&mut self.drops.no_endpoint),
         }
     }

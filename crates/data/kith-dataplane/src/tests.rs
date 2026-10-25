@@ -8,48 +8,19 @@ use kith_crypto::SigningKey;
 use kith_policy::{Addresses, Member, Members, Policy, compile};
 use kith_router::MeshRanges;
 use kith_transport_udp::UdpLink;
-use kith_tun::{BatchError, PacketBatch, TunError};
 use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::engine::Engine;
-use crate::tun_device::TunDevice;
-use crate::{Dataplane, DataplaneHandle, DropCounters, Endpoint, Event, PeerSpec};
+use crate::memory_tun::{MemoryTun, memory_tun};
+use crate::{
+    Dataplane, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface, ExternalPeer,
+    PeerSpec,
+};
 
 const NETWORK: NetworkId = NetworkId::from_bytes([7; 32]);
 const PATIENCE: Duration = Duration::from_secs(5);
-
-struct MemoryTun {
-    incoming: Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
-    outgoing: mpsc::UnboundedSender<Vec<u8>>,
-}
-
-impl TunDevice for MemoryTun {
-    fn new_batch(&self) -> Result<PacketBatch, BatchError> {
-        PacketBatch::new(1420)
-    }
-
-    async fn recv_batch(&self, batch: &mut PacketBatch) -> Result<usize, TunError> {
-        batch.clear();
-        let Some(packet) = self.incoming.lock().await.recv().await else {
-            return core::future::pending().await;
-        };
-        batch.push(&packet).unwrap();
-        Ok(batch.len())
-    }
-
-    fn send_batch(
-        &self,
-        batch: &mut PacketBatch,
-    ) -> impl Future<Output = Result<(), TunError>> + Send {
-        for packet in batch.iter() {
-            self.outgoing.send(packet.to_vec()).unwrap();
-        }
-        batch.clear();
-        core::future::ready(Ok(()))
-    }
-}
 
 struct Node {
     id: NodeId,
@@ -57,21 +28,15 @@ struct Node {
     udp: SocketAddr,
     handle: DataplaneHandle,
     events: mpsc::Receiver<Event>,
-    tun_in: mpsc::UnboundedSender<Vec<u8>>,
-    tun_out: mpsc::UnboundedReceiver<Vec<u8>>,
+    tun: MemoryTun,
 }
 
 fn spawn_node(index: u8) -> Node {
     let key = SigningKey::from_seed(&[index; 32]);
     let link = UdpLink::bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let udp = link.local_addr();
-    let (tun_in, incoming) = mpsc::unbounded_channel();
-    let (outgoing, tun_out) = mpsc::unbounded_channel();
-    let tun = MemoryTun {
-        incoming: Mutex::new(incoming),
-        outgoing,
-    };
-    let (engine, handle, events) = Engine::new(&key, tun, link).unwrap();
+    let (device, tun) = memory_tun();
+    let (engine, handle, events) = Engine::new(&key, device, link).unwrap();
     tokio::spawn(engine.run());
     Node {
         id: key.node_id(),
@@ -82,8 +47,7 @@ fn spawn_node(index: u8) -> Node {
         udp,
         handle,
         events,
-        tun_in,
-        tun_out,
+        tun,
     }
 }
 
@@ -147,7 +111,7 @@ fn udp_packet(source: &Node, destination: &Node, payload: &[u8]) -> Vec<u8> {
 }
 
 async fn next_packet(node: &mut Node) -> Vec<u8> {
-    timeout(PATIENCE, node.tun_out.recv())
+    timeout(PATIENCE, node.tun.receive())
         .await
         .unwrap()
         .unwrap()
@@ -174,18 +138,18 @@ async fn packets_cross_loopback_intact_and_denied_ones_drop() {
     connect(&b, &a, Endpoint::Direct(a.udp), &Policy::deny_all()).await;
 
     // The first packet confirms the session at B, which announces it only after filtering it.
-    a.tun_in.send(udp_packet(&a, &b, b"denied")).unwrap();
+    a.tun.inject(udp_packet(&a, &b, b"denied")).unwrap();
     while next_event(&mut b).await != (Event::HandshakeCompleted { peer: a.id }) {}
     assert_eq!(b.handle.stats().await.unwrap().drops.policy, 1);
 
     let allow = compile(&Policy::default_allow_all(), &members(&[&b, &a]), b.id);
     b.handle.set_filter(NETWORK, allow).await.unwrap();
     let request = udp_packet(&a, &b, b"allowed");
-    a.tun_in.send(request.clone()).unwrap();
+    a.tun.inject(request.clone()).unwrap();
     assert_eq!(next_packet(&mut b).await, request);
 
     let reply = udp_packet(&b, &a, b"reply");
-    b.tun_in.send(reply.clone()).unwrap();
+    b.tun.inject(reply.clone()).unwrap();
     assert_eq!(next_packet(&mut a).await, reply);
 }
 
@@ -197,7 +161,7 @@ async fn stats_track_a_peer_until_its_network_is_removed() {
     connect(&a, &b, Endpoint::Direct(b.udp), &allow).await;
     connect(&b, &a, Endpoint::Direct(a.udp), &allow).await;
     let request = udp_packet(&a, &b, b"counted");
-    a.tun_in.send(request.clone()).unwrap();
+    a.tun.inject(request.clone()).unwrap();
     assert_eq!(next_packet(&mut b).await, request);
 
     let stats = b.handle.stats().await.unwrap();
@@ -212,8 +176,8 @@ async fn stats_track_a_peer_until_its_network_is_removed() {
     assert!(peer.rx_bytes > u64::try_from(request.len()).unwrap() && peer.tx_bytes > 0);
 
     b.handle.remove_network(NETWORK).await.unwrap();
-    a.tun_in.send(udp_packet(&a, &b, b"orphaned")).unwrap();
-    b.tun_in.send(udp_packet(&b, &a, b"unroutable")).unwrap();
+    a.tun.inject(udp_packet(&a, &b, b"orphaned")).unwrap();
+    b.tun.inject(udp_packet(&b, &a, b"unroutable")).unwrap();
     let drops = timeout(PATIENCE, async {
         loop {
             let stats = b.handle.stats().await.unwrap();
@@ -232,7 +196,7 @@ async fn stats_track_a_peer_until_its_network_is_removed() {
         ..DropCounters::default()
     };
     assert_eq!(drops, expected);
-    assert!(b.tun_out.try_recv().is_err());
+    assert!(b.tun.try_receive().is_none());
 }
 
 #[tokio::test]
@@ -243,7 +207,7 @@ async fn relayed_peers_exchange_datagrams_through_events() {
     connect(&b, &a, Endpoint::Relay, &Policy::default_allow_all()).await;
 
     let packet = udp_packet(&a, &b, b"via relay");
-    a.tun_in.send(packet.clone()).unwrap();
+    a.tun.inject(packet.clone()).unwrap();
     let delivered = timeout(PATIENCE, async {
         loop {
             tokio::select! {
@@ -255,7 +219,7 @@ async fn relayed_peers_exchange_datagrams_through_events() {
                     assert_eq!(peer, a.id);
                     a.handle.accept_relayed(b.id, datagram).await.unwrap();
                 },
-                Some(delivered) = b.tun_out.recv() => break delivered,
+                Some(delivered) = b.tun.receive() => break delivered,
             }
         }
     })
@@ -279,6 +243,61 @@ async fn raw_sends_arrive_as_control_events() {
             datagram: stun
         }
     );
+}
+
+#[tokio::test]
+async fn external_interfaces_interoperate_beside_the_mesh() {
+    let mut a = spawn_node(9);
+    let mut b = spawn_node(10);
+    let mesh_peer = spawn_node(11);
+    connect(
+        &a,
+        &mesh_peer,
+        Endpoint::Direct(mesh_peer.udp),
+        &Policy::default_allow_all(),
+    )
+    .await;
+    let (a_key, b_key, psk) = ([21; 32], [22; 32], Some([23; 32]));
+    let public = |secret| kith_wg::StaticIdentity::from_secret_bytes(secret).public_key();
+    let host = |node: &Node| IpPrefix::V4(Ipv4Prefix::new(node.addresses.v4, 32).unwrap());
+    let interface = |key, peer_key, peer: &Node, own: &Node| ExternalInterface {
+        name: "wg0".into(),
+        private_key: key,
+        addresses: vec![host(own)],
+        peers: vec![ExternalPeer {
+            public_key: public(peer_key),
+            preshared_key: psk,
+            endpoint: Some(peer.udp),
+            allowed_ips: vec![host(peer)],
+            persistent_keepalive: Some(25),
+        }],
+    };
+    a.handle
+        .set_external(interface(a_key, b_key, &b, &a))
+        .await
+        .unwrap();
+    b.handle
+        .set_external(interface(b_key, a_key, &a, &b))
+        .await
+        .unwrap();
+
+    let request = udp_packet(&a, &b, b"external");
+    a.tun.inject(request.clone()).unwrap();
+    assert_eq!(next_packet(&mut b).await, request);
+    let reply = udp_packet(&b, &a, b"external reply");
+    b.tun.inject(reply.clone()).unwrap();
+    assert_eq!(next_packet(&mut a).await, reply);
+
+    let stats = b.handle.stats().await.unwrap();
+    let [peer] = stats.external.as_slice() else {
+        panic!("expected one external peer, got {:?}", stats.external);
+    };
+    assert_eq!(
+        (peer.public_key, peer.endpoint),
+        (public(a_key), Some(a.udp))
+    );
+    assert!(peer.last_handshake.is_some());
+    assert_eq!(stats.drops, DropCounters::default());
 }
 
 fn _dataplane_task_is_send(dataplane: Dataplane) -> impl Send {

@@ -35,3 +35,35 @@ impl TunDevice for Tun {
         Self::send_batch(self, batch)
     }
 }
+
+pub(crate) enum AnyTun {
+    Os(Tun),
+    #[cfg(feature = "test-support")]
+    Memory(crate::memory_tun::MemoryDevice),
+}
+
+impl TunDevice for AnyTun {
+    fn new_batch(&self) -> Result<PacketBatch, BatchError> {
+        match self {
+            Self::Os(tun) => tun.new_batch(),
+            #[cfg(feature = "test-support")]
+            Self::Memory(tun) => tun.new_batch(),
+        }
+    }
+
+    async fn recv_batch(&self, batch: &mut PacketBatch) -> Result<usize, TunError> {
+        match self {
+            Self::Os(tun) => tun.recv_batch(batch).await,
+            #[cfg(feature = "test-support")]
+            Self::Memory(tun) => TunDevice::recv_batch(tun, batch).await,
+        }
+    }
+
+    async fn send_batch(&self, batch: &mut PacketBatch) -> Result<(), TunError> {
+        match self {
+            Self::Os(tun) => tun.send_batch(batch).await,
+            #[cfg(feature = "test-support")]
+            Self::Memory(tun) => TunDevice::send_batch(tun, batch).await,
+        }
+    }
+}
