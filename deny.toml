@@ -6,7 +6,9 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but sound; it only reaches us through tun-rs' netlink dependencies" },
+]
 
 [licenses]
 version = 2
