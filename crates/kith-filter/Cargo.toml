@@ -12,9 +12,9 @@ publish.workspace = true
 [dependencies]
 kith-packet.workspace = true
 kith-policy.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
+kith-types.workspace = true
 proptest.workspace = true
 
 [lints]
