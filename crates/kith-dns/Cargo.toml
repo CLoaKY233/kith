@@ -9,5 +9,13 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[dependencies]
+getrandom.workspace = true
+kith-naming.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
 [lints]
 workspace = true
