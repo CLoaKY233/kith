@@ -384,12 +384,13 @@ mod tests {
         MAX_LINK_PAYLOAD_LEN, checksum,
     };
     use crate::message_types;
-    use crate::{Bootstrap, BootstrapError, Hostname};
+    use crate::{Bootstrap, BootstrapAddr, BootstrapError, Hostname};
     use kith_types::{NetworkId, NodeId, Timestamp};
     use kith_wire::{WireError, envelope};
 
     const SECRET: [u8; 32] = [2; 32];
     const SPONSOR: NodeId = NodeId::from_bytes([3; 32]);
+    const RELAY: NodeId = NodeId::from_bytes([4; 32]);
 
     fn sample() -> InviteToken {
         InviteToken::from_parts(
@@ -397,8 +398,14 @@ mod tests {
             SPONSOR,
             &SECRET,
             vec![
-                Bootstrap::Socket("192.0.2.1:41641".parse().unwrap()),
-                Bootstrap::Host(Hostname::new("relay.example").unwrap(), 443),
+                Bootstrap::new(
+                    SPONSOR,
+                    BootstrapAddr::Socket("192.0.2.1:41641".parse().unwrap()),
+                ),
+                Bootstrap::new(
+                    RELAY,
+                    BootstrapAddr::Host(Hostname::new("relay.example").unwrap(), 443),
+                ),
             ],
             Timestamp::from_millis(1_800_000_000_000),
             "home".into(),
@@ -434,8 +441,9 @@ mod tests {
     const GOLDEN: &str = concat!(
         "kith://join/",
         "nn2ccaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaebqgaydambqgaydambqgaydam",
-        "bqgaydambqgaydambqgaydambqgaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaiam",
-        "aaacagu4kaqcbvzgk3dbpexgk6dbnvygyzn3aoakb4ocwe2ai2dpnvsvpjazhy",
+        "bqgaydambqgaydambqgaydambqgaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibq",
+        "gaydambqgaydambqgaydambqgaydambqgaydambqgaydambqgagaaabadkofaicaibaeaqcaibaeaqcaib",
+        "aeaqcaibaeaqcaibaeaqcaibaeaqcaiaqnojswyylzfzsxqylnobwgloydqcqpdqvrgqcgq33nmv5rk7rc",
     );
 
     #[test]
@@ -587,7 +595,10 @@ mod tests {
     fn rejects_invalid_fields() {
         let network = NetworkId::from_bytes([1; 32]);
         let expires = Timestamp::from_millis(1);
-        let endpoint = Bootstrap::Socket("192.0.2.1:1".parse().unwrap());
+        let endpoint = Bootstrap::new(
+            SPONSOR,
+            BootstrapAddr::Socket("192.0.2.1:1".parse().unwrap()),
+        );
         assert_eq!(
             InviteToken::from_parts(
                 network,
@@ -608,12 +619,15 @@ mod tests {
                 Some(InviteError::InvalidNetworkName)
             );
         }
-        let scoped = Bootstrap::Socket(SocketAddr::V6(core::net::SocketAddrV6::new(
-            Ipv6Addr::LOCALHOST,
-            1,
-            0,
-            7,
-        )));
+        let scoped = Bootstrap::new(
+            SPONSOR,
+            BootstrapAddr::Socket(SocketAddr::V6(core::net::SocketAddrV6::new(
+                Ipv6Addr::LOCALHOST,
+                1,
+                0,
+                7,
+            ))),
+        );
         assert_eq!(
             InviteToken::from_parts(
                 network,
@@ -633,7 +647,7 @@ mod tests {
                 network,
                 SPONSOR,
                 &SECRET,
-                vec![Bootstrap::Host(long_host, 1); MAX_BOOTSTRAP],
+                vec![Bootstrap::new(SPONSOR, BootstrapAddr::Host(long_host, 1)); MAX_BOOTSTRAP],
                 expires,
                 String::new()
             ),
@@ -656,7 +670,7 @@ mod tests {
             [1_u8; 32],
             [3_u8; 32],
             SECRET,
-            vec![Wire::Host("RELAY.example".into(), 1)],
+            vec![([3_u8; 32], Wire::Host("RELAY.example".into(), 1))],
             1_u64,
             "",
         );
@@ -696,11 +710,18 @@ mod tests {
     }
 
     fn bootstrap_strategy() -> impl Strategy<Value = Bootstrap> {
+        (any::<[u8; 32]>(), addr_strategy())
+            .prop_map(|(node, addr)| Bootstrap::new(NodeId::from_bytes(node), addr))
+    }
+
+    fn addr_strategy() -> impl Strategy<Value = BootstrapAddr> {
         prop_oneof![
-            (any::<[u8; 4]>(), any::<u16>())
-                .prop_map(|(ip, port)| Bootstrap::Socket(SocketAddr::new(IpAddr::from(ip), port))),
-            (any::<[u8; 16]>(), any::<u16>())
-                .prop_map(|(ip, port)| Bootstrap::Socket(SocketAddr::new(IpAddr::from(ip), port))),
+            (any::<[u8; 4]>(), any::<u16>()).prop_map(|(ip, port)| BootstrapAddr::Socket(
+                SocketAddr::new(IpAddr::from(ip), port)
+            )),
+            (any::<[u8; 16]>(), any::<u16>()).prop_map(|(ip, port)| BootstrapAddr::Socket(
+                SocketAddr::new(IpAddr::from(ip), port)
+            )),
             (
                 "[a-z0-9]([a-z0-9-]{0,4}[a-z0-9])?(\\.[a-z]{1,6}){0,2}",
                 any::<u16>()
@@ -708,7 +729,7 @@ mod tests {
                 .prop_filter_map("valid hostname", |(name, port)| {
                     Hostname::new(&name)
                         .ok()
-                        .map(|host| Bootstrap::Host(host, port))
+                        .map(|host| BootstrapAddr::Host(host, port))
                 }),
         ]
     }

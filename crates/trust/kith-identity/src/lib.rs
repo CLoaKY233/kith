@@ -18,7 +18,7 @@ mod invite;
 mod keystore;
 pub mod message_types;
 
-pub use bootstrap::{Bootstrap, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
+pub use bootstrap::{Bootstrap, BootstrapAddr, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
 pub use identity::{DeviceIdentity, IdentityError, SECRET_KEY_VERSION};
 pub use invite::{
     INVITE_VERSION, InviteError, InviteToken, LINK_PREFIX, MAX_BOOTSTRAP, MAX_LINK_PAYLOAD_LEN,

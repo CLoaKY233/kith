@@ -5,6 +5,7 @@ use core::fmt;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use core::str::FromStr;
 
+use kith_types::NodeId;
 use serde::{Deserialize, Serialize};
 
 /// The longest hostname accepted, in bytes (RFC 1035 presentation form, no trailing dot).
@@ -77,7 +78,6 @@ impl<'de> Deserialize<'de> for Hostname {
         if name.0 == raw {
             Ok(name)
         } else {
-            // Only the canonical lowercase form has a valid encoding.
             Err(serde::de::Error::custom("hostname is not lowercase"))
         }
     }
@@ -103,16 +103,16 @@ impl fmt::Debug for Hostname {
     }
 }
 
-/// An endpoint a joining device contacts first: a member or relay reachable from outside.
+/// Where a bootstrap member listens: a socket address or a hostname and port.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Bootstrap {
+pub enum BootstrapAddr {
     /// A literal IPv4 or IPv6 socket address. IPv6 addresses carry no flow label or scope.
     Socket(SocketAddr),
     /// A hostname resolved by the joining device, and a port.
     Host(Hostname, u16),
 }
 
-impl Bootstrap {
+impl BootstrapAddr {
     /// Checks that an IPv6 address carries no flow label or scope id.
     pub fn validate(&self) -> Result<(), BootstrapError> {
         match self {
@@ -126,7 +126,7 @@ impl Bootstrap {
     }
 }
 
-impl fmt::Display for Bootstrap {
+impl fmt::Display for BootstrapAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Socket(address) => write!(f, "{address}"),
@@ -144,7 +144,46 @@ enum BootstrapWire {
     Host(Hostname, u16),
 }
 
-impl Serialize for Bootstrap {
+/// An endpoint a joining device contacts first, and the member listening there, whose
+/// `NodeId` pins the control connection.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Bootstrap {
+    node: NodeId,
+    addr: BootstrapAddr,
+}
+
+impl Bootstrap {
+    /// Pairs the member `node` with the address `addr` it listens on.
+    #[must_use]
+    pub const fn new(node: NodeId, addr: BootstrapAddr) -> Self {
+        Self { node, addr }
+    }
+
+    /// The member listening at this endpoint.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// Where the member listens.
+    #[must_use]
+    pub const fn addr(&self) -> &BootstrapAddr {
+        &self.addr
+    }
+
+    /// Checks the address; see [`BootstrapAddr::validate`].
+    pub fn validate(&self) -> Result<(), BootstrapError> {
+        self.addr.validate()
+    }
+}
+
+impl fmt::Display for Bootstrap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}@{}", self.node, self.addr)
+    }
+}
+
+impl Serialize for BootstrapAddr {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let wire = match self {
             Self::Socket(SocketAddr::V4(address)) => {
@@ -159,7 +198,7 @@ impl Serialize for Bootstrap {
     }
 }
 
-impl<'de> Deserialize<'de> for Bootstrap {
+impl<'de> Deserialize<'de> for BootstrapAddr {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(match BootstrapWire::deserialize(deserializer)? {
             BootstrapWire::V4(octets, port) => {
@@ -181,7 +220,7 @@ mod tests {
     use alloc::string::ToString;
     use core::net::{SocketAddr, SocketAddrV6};
 
-    use super::{Bootstrap, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
+    use super::{BootstrapAddr, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
 
     #[test]
     fn accepts_and_lowercases_hostnames() {
@@ -217,22 +256,22 @@ mod tests {
 
     #[test]
     fn rejects_scoped_ipv6() {
-        let scoped = Bootstrap::Socket(SocketAddr::V6(SocketAddrV6::new(
+        let scoped = BootstrapAddr::Socket(SocketAddr::V6(SocketAddrV6::new(
             "fe80::1".parse().unwrap(),
             1,
             0,
             3,
         )));
         assert_eq!(scoped.validate(), Err(BootstrapError::ScopedAddress));
-        let plain = Bootstrap::Socket("[2001:db8::1]:41641".parse().unwrap());
+        let plain = BootstrapAddr::Socket("[2001:db8::1]:41641".parse().unwrap());
         assert_eq!(plain.validate(), Ok(()));
     }
 
     #[test]
     fn displays_endpoints() {
         let endpoints = [
-            Bootstrap::Socket("192.0.2.1:41641".parse().unwrap()),
-            Bootstrap::Host(Hostname::new("relay.example").unwrap(), 443),
+            BootstrapAddr::Socket("192.0.2.1:41641".parse().unwrap()),
+            BootstrapAddr::Host(Hostname::new("relay.example").unwrap(), 443),
         ];
         assert_eq!(endpoints[0].to_string(), "192.0.2.1:41641");
         assert_eq!(endpoints[1].to_string(), "relay.example:443");
