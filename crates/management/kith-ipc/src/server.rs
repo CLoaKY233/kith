@@ -131,11 +131,6 @@ impl Connection {
         self.peer
     }
 
-    /// The client's software version, once it has said hello.
-    pub fn client_version(&self) -> Option<&str> {
-        self.client_version.as_deref()
-    }
-
     /// The next request after the handshake, or `None` when the client hangs up.
     ///
     /// `Hello` is answered here; a version mismatch is reported to the client and returned.

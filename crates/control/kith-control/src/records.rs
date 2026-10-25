@@ -27,16 +27,16 @@ use serde::{Deserialize, Serialize};
 pub const POLICY: &str = "policy";
 
 /// The prefix of subnet route advertisements: `route/<prefix>`.
-pub const ROUTE_PREFIX: &str = "route/";
+pub(crate) const ROUTE_PREFIX: &str = "route/";
 
 /// The prefix of relay server advertisements: `relay/<name>`.
-pub const RELAY_PREFIX: &str = "relay/";
+pub(crate) const RELAY_PREFIX: &str = "relay/";
 
 /// The prefix of custom DNS records: `dns/<name>`.
 pub const DNS_PREFIX: &str = "dns/";
 
 /// The prefix of exit node grants: `exit/<node hex>`.
-pub const EXIT_PREFIX: &str = "exit/";
+pub(crate) const EXIT_PREFIX: &str = "exit/";
 
 const RECORD_VERSION: u64 = 1;
 

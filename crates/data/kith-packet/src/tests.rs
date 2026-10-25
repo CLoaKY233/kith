@@ -12,7 +12,7 @@ use proptest::prelude::*;
 use crate::checksum::{Checksum, checksum, update_u16};
 use crate::{
     Error, FlowKey, IcmpPacket, IpPacket, Ipv4Packet, Ipv6Packet, PseudoHeader, TcpFlags,
-    TcpPacket, UdpPacket, ip_protocol,
+    TcpPacket, ip_protocol,
 };
 
 /// IPv4/UDP DNS query: 192.168.1.10:53000 -> 8.8.8.8:53, `example.com A`.
@@ -79,22 +79,9 @@ fn dns_query_golden() {
     assert_eq!(ip.dst(), Ipv4Addr::new(8, 8, 8, 8));
     assert!(ip.verify_checksum());
 
-    let udp = UdpPacket::new_checked(ip.payload()).unwrap();
-    assert_eq!(udp.src_port(), 53000);
-    assert_eq!(udp.dst_port(), 53);
-    assert_eq!(udp.length(), 37);
-    assert_eq!(udp.checksum(), 0x750b);
-    assert_eq!(udp.payload(), &DNS_QUERY[28..]);
-    let pseudo = IpPacket::new_checked(&DNS_QUERY[..])
-        .unwrap()
-        .pseudo_header();
-    assert!(udp.verify_checksum(&pseudo));
-
     let mut copy = DNS_QUERY;
     let mut ip = Ipv4Packet::new_checked(&mut copy[..]).unwrap();
     ip.fill_checksum();
-    let mut udp = UdpPacket::new_checked(ip.payload_mut()).unwrap();
-    udp.fill_checksum(&pseudo);
     assert_eq!(copy, DNS_QUERY);
 }
 
@@ -135,38 +122,6 @@ fn tcp_syn_golden() {
         .unwrap()
         .fill_checksum(&ip.pseudo_header());
     assert_eq!(copy, TCP_SYN);
-}
-
-#[test]
-fn ipv6_udp_golden() {
-    let ip = Ipv6Packet::new_checked(&IPV6_UDP[..]).unwrap();
-    let src: Ipv6Addr = "fd7a:115c:a1e0::a1".parse().unwrap();
-    let dst: Ipv6Addr = "fd7a:115c:a1e0::b2".parse().unwrap();
-    assert_eq!(ip.traffic_class(), 0);
-    assert_eq!(ip.dscp(), 0);
-    assert_eq!(ip.ecn(), 0);
-    assert_eq!(ip.flow_label(), 0x12345);
-    assert_eq!(ip.payload_len(), 12);
-    assert_eq!(ip.next_header(), ip_protocol::UDP);
-    assert_eq!(ip.hop_limit(), 64);
-    assert_eq!(ip.src(), src);
-    assert_eq!(ip.dst(), dst);
-
-    let pseudo = PseudoHeader::V6 { src, dst };
-    let udp = UdpPacket::new_checked(ip.payload()).unwrap();
-    assert_eq!(udp.src_port(), 41641);
-    assert_eq!(udp.dst_port(), 41641);
-    assert_eq!(udp.length(), 12);
-    assert_eq!(udp.checksum(), 0x77ef);
-    assert_eq!(udp.payload(), b"kith");
-    assert!(udp.verify_checksum(&pseudo));
-
-    let mut copy = IPV6_UDP;
-    let mut ip = Ipv6Packet::new_checked(&mut copy[..]).unwrap();
-    UdpPacket::new_checked(ip.payload_mut())
-        .unwrap()
-        .fill_checksum(&pseudo);
-    assert_eq!(copy, IPV6_UDP);
 }
 
 #[test]
@@ -279,14 +234,6 @@ fn rejects_malformed_headers() {
         Ipv6Packet::new_checked(&IPV6_UDP[..51]),
         Err(Error::Truncated)
     );
-    assert_eq!(
-        UdpPacket::new_checked(&DNS_QUERY[20..27]),
-        Err(Error::Truncated)
-    );
-    assert_eq!(
-        UdpPacket::new_checked(&[0, 0, 0, 0, 0, 7, 0, 0][..]),
-        Err(Error::BadTotalLength)
-    );
     let mut short_offset = TCP_SYN;
     short_offset[32] = 0x40;
     assert_eq!(
@@ -310,24 +257,6 @@ fn trailing_link_padding_is_ignored() {
     padded[..57].copy_from_slice(&DNS_QUERY);
     let ip = Ipv4Packet::new_checked(&padded[..]).unwrap();
     assert_eq!(ip.payload().len(), 37);
-}
-
-#[test]
-fn ipv4_udp_zero_checksum_means_none() {
-    let mut packet = DNS_QUERY;
-    packet[26] = 0;
-    packet[27] = 0;
-    let udp = UdpPacket::new_checked(&packet[20..]).unwrap();
-    let v4 = PseudoHeader::V4 {
-        src: Ipv4Addr::LOCALHOST,
-        dst: Ipv4Addr::LOCALHOST,
-    };
-    let v6 = PseudoHeader::V6 {
-        src: Ipv6Addr::LOCALHOST,
-        dst: Ipv6Addr::LOCALHOST,
-    };
-    assert!(udp.verify_checksum(&v4));
-    assert!(!udp.verify_checksum(&v6));
 }
 
 #[test]
@@ -424,9 +353,6 @@ proptest! {
         }
         if let Ok(ip) = Ipv6Packet::new_checked(&bytes[..]) {
             let _ = (ip.payload(), ip.flow_label(), ip.traffic_class());
-        }
-        if let Ok(udp) = UdpPacket::new_checked(&bytes[..]) {
-            let _ = (udp.payload(), udp.verify_checksum(&pseudo));
         }
         if let Ok(tcp) = TcpPacket::new_checked(&bytes[..]) {
             let _ = (tcp.payload(), tcp.options(), tcp.verify_checksum(&pseudo));

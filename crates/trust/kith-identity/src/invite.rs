@@ -25,7 +25,7 @@ use crate::bootstrap::{Bootstrap, BootstrapError};
 use crate::{contexts, message_types};
 
 /// The current (and only) invite version.
-pub const INVITE_VERSION: u64 = 1;
+pub(crate) const INVITE_VERSION: u64 = 1;
 
 /// The scheme and path every invite link starts with (matched case-insensitively).
 pub const LINK_PREFIX: &str = "kith://join/";

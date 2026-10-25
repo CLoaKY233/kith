@@ -13,9 +13,9 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, warn};
 
 /// Most queries forwarded at once; further queries get SERVFAIL.
-pub const MAX_IN_FLIGHT: usize = 1024;
+const MAX_IN_FLIGHT: usize = 1024;
 /// How long one upstream gets before the next in the group is tried.
-pub const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const DEFAULT_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 
 const HEADER_LEN: usize = 12;
 const FLAG_RESPONSE: u8 = 0x80;

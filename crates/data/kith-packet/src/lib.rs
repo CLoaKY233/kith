@@ -4,7 +4,7 @@
 //! (setters need `AsMut`). `new_checked` validates every length a getter relies
 //! on; getters avoid indexing so a validation bug yields a wrong value, not a panic.
 //!
-//! Checksums: RFC 1071 (full) and RFC 1624 (incremental), see [`checksum`].
+//! Checksums: RFC 1071 (full) and RFC 1624 (incremental), see `checksum`.
 //!
 //! Scope (v1): IPv6 extension headers are not walked, IP options are skipped,
 //! IPv6 jumbograms are rejected.
@@ -16,7 +16,7 @@
 #[cfg(test)]
 extern crate std;
 
-pub mod checksum;
+mod checksum;
 mod error;
 mod field;
 mod flow;
@@ -25,7 +25,6 @@ mod ip;
 mod ipv4;
 mod ipv6;
 mod tcp;
-mod udp;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +36,6 @@ pub use ip::{IpPacket, PseudoHeader};
 pub use ipv4::Ipv4Packet;
 pub use ipv6::Ipv6Packet;
 pub use tcp::{TcpFlags, TcpPacket};
-pub use udp::UdpPacket;
 
 /// IANA protocol numbers used by this crate (the IPv4 `protocol` field and
 /// the IPv6 `next_header` field share one registry).

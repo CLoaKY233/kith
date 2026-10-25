@@ -24,10 +24,7 @@ mod params;
 mod random;
 mod transform;
 
-pub use params::{
-    MAX_JUNK_COUNT, ObfsParams, ParamsError, RawObfsParams, WG_COOKIE_LEN, WG_INITIATION_LEN,
-    WG_RESPONSE_LEN, WG_TRANSPORT_MIN_LEN,
-};
+pub use params::{ObfsParams, ParamsError, RawObfsParams};
 pub use random::RandomSource;
 pub use transform::{EncodeError, Inbound, MessageType};
 #[cfg(test)]

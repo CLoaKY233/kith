@@ -12,16 +12,16 @@
 extern crate alloc;
 
 mod bootstrap;
-pub mod contexts;
+mod contexts;
 mod identity;
 mod invite;
 mod keystore;
-pub mod message_types;
+mod message_types;
 
 pub use bootstrap::{Bootstrap, BootstrapAddr, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
-pub use identity::{DeviceIdentity, IdentityError, SECRET_KEY_VERSION};
+pub use identity::{DeviceIdentity, IdentityError};
 pub use invite::{
-    INVITE_VERSION, InviteError, InviteToken, LINK_PREFIX, MAX_BOOTSTRAP, MAX_LINK_PAYLOAD_LEN,
+    InviteError, InviteToken, LINK_PREFIX, MAX_BOOTSTRAP, MAX_LINK_PAYLOAD_LEN,
     MAX_NETWORK_NAME_LEN,
 };
 pub use keystore::{KeyStore, KeyStoreError, MemoryKeyStore};

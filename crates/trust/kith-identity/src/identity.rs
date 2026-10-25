@@ -16,7 +16,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::{contexts, message_types};
 
 /// The current (and only) secret-key file version.
-pub const SECRET_KEY_VERSION: u64 = 1;
+pub(crate) const SECRET_KEY_VERSION: u64 = 1;
 
 /// Why a secret-key file was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -92,7 +92,7 @@ impl DeviceIdentity {
         &self.signing_key
     }
 
-    /// Encodes the secret-key file as a [`message_types::SECRET_KEY`] envelope. Zeroizes on drop.
+    /// Encodes the secret-key file as a versioned envelope. Zeroizes on drop.
     ///
     /// # Panics
     ///

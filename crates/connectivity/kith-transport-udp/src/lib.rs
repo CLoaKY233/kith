@@ -23,6 +23,6 @@ mod send;
 
 pub use classify::{Kind, classify};
 pub use error::UdpError;
-pub use link::{BindOptions, BufferSizes, SOCKET_BUFFER_BYTES, UdpLink};
-pub use recv::{COMPACT_BUDGET, Datagram, MAX_SLOT_LEN, PATH_DATAGRAM_LEN, RecvBatch};
-pub use send::{MAX_DATAGRAM_LEN, SendBatch};
+pub use link::{BindOptions, BufferSizes, UdpLink};
+pub use recv::{Datagram, MAX_SLOT_LEN, RecvBatch};
+pub use send::SendBatch;

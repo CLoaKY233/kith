@@ -12,11 +12,11 @@ use crate::forward::{ClientTransport, DEFAULT_UPSTREAM_TIMEOUT, Forwarder, serve
 use crate::state::DnsState;
 
 /// Largest query accepted from a client, over either transport.
-pub const MAX_QUERY_SIZE: usize = 4096;
+const MAX_QUERY_SIZE: usize = 4096;
 /// Most client TCP connections served at once; more are closed on accept.
-pub const MAX_TCP_CONNECTIONS: usize = 128;
+const MAX_TCP_CONNECTIONS: usize = 128;
 /// A client TCP connection with no complete query for this long is closed.
-pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const MAX_MESSAGE: usize = 65535;
 

@@ -20,10 +20,12 @@ use crate::LedgerError;
 use crate::op::check_name;
 
 /// Signs the invite message.
-pub const INVITE_REDEEM_CONTEXT: Context = Context::new("kith 2026-10 ledger invite redeem v1");
+pub(crate) const INVITE_REDEEM_CONTEXT: Context =
+    Context::new("kith 2026-10 ledger invite redeem v1");
 
 /// Signs the device message.
-pub const DEVICE_CONSENT_CONTEXT: Context = Context::new("kith 2026-10 ledger device consent v1");
+pub(crate) const DEVICE_CONSENT_CONTEXT: Context =
+    Context::new("kith 2026-10 ledger device consent v1");
 
 /// Evidence that a device redeemed an invite. Carried by [`OpBody::Join`](crate::OpBody::Join).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

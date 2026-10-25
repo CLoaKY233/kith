@@ -144,7 +144,7 @@ impl Tun {
             let (scratch, buffers, sizes) = batch.gso_parts();
             let count = self
                 .device
-                .recv_multiple(scratch, buffers, sizes, crate::HEADROOM)
+                .recv_multiple(scratch, buffers, sizes, crate::batch::HEADROOM)
                 .await?;
             batch.set_len_after_gso(count);
             return Ok(batch.len());
@@ -175,7 +175,7 @@ impl Tun {
             let (gro_table, buffers) = batch.prepare_gro_send();
             let result = self
                 .device
-                .send_multiple(gro_table, buffers, crate::HEADROOM)
+                .send_multiple(gro_table, buffers, crate::batch::HEADROOM)
                 .await;
             batch.restore_after_send();
             return result.map(drop).map_err(TunError::from);

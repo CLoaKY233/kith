@@ -28,7 +28,7 @@ use crate::time::{
 };
 
 /// At most this many packets wait for a handshake; older ones are dropped first.
-pub const MAX_QUEUED_PACKETS: usize = 16;
+pub(crate) const MAX_QUEUED_PACKETS: usize = 16;
 
 const MAX_QUEUED_EVENTS: usize = 8;
 
@@ -340,7 +340,7 @@ impl Peer {
 
     /// Processes one datagram; `source` encodes the sender's address for cookie replies.
     ///
-    /// `out` must hold at least [`MIN_OUTPUT_LEN`] and the datagram's length.
+    /// `out` must hold at least [`required_output_len`]`(0)` and the datagram's length.
     pub fn decapsulate_from(
         &mut self,
         now: Now,

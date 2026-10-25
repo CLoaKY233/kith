@@ -15,9 +15,9 @@ pub(crate) const TRANSPORT_HEADER_LEN: usize = 16;
 /// Header plus authentication tag of a transport message.
 pub(crate) const TRANSPORT_OVERHEAD: usize = TRANSPORT_HEADER_LEN + kith_crypto::TAG_LEN;
 /// Worst-case bytes a transport message adds to a plaintext, including padding to 16.
-pub const MAX_OUTPUT_OVERHEAD: usize = TRANSPORT_OVERHEAD + 15;
+pub(crate) const MAX_OUTPUT_OVERHEAD: usize = TRANSPORT_OVERHEAD + 15;
 /// Every output buffer must be at least this long, so any handshake message fits.
-pub const MIN_OUTPUT_LEN: usize = HANDSHAKE_INITIATION_LEN;
+pub(crate) const MIN_OUTPUT_LEN: usize = HANDSHAKE_INITIATION_LEN;
 
 const TYPE_INITIATION: u8 = 1;
 const TYPE_RESPONSE: u8 = 2;

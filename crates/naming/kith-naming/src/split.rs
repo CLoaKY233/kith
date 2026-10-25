@@ -10,7 +10,7 @@ use alloc::collections::BTreeMap;
 use crate::name::{DomainName, self_and_ancestors};
 
 /// Most routes in one [`SplitDns`] table.
-pub const MAX_ROUTES: usize = 256;
+pub(crate) const MAX_ROUTES: usize = 256;
 
 /// Opaque handle for a set of upstream resolvers, chosen and interpreted by the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,7 +26,7 @@ pub enum SplitDnsError {
     /// Routes are suffixes, so a wildcard label is meaningless.
     #[error("split-DNS route {0} is a wildcard")]
     WildcardRoute(DomainName),
-    /// More than [`MAX_ROUTES`] routes.
+    /// More than `MAX_ROUTES` routes.
     #[error("more than {} split-DNS routes", MAX_ROUTES)]
     TooManyRoutes,
 }

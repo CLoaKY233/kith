@@ -35,7 +35,7 @@ const FAMILY_IPV4: u8 = 0x01;
 const FAMILY_IPV6: u8 = 0x02;
 
 /// Length of an encoded binding request: header plus FINGERPRINT.
-pub const REQUEST_LEN: usize = HEADER_LEN + FINGERPRINT_ATTRIBUTE_LEN;
+pub(crate) const REQUEST_LEN: usize = HEADER_LEN + FINGERPRINT_ATTRIBUTE_LEN;
 /// Largest encoded binding response (an IPv6 XOR-MAPPED-ADDRESS plus FINGERPRINT).
 pub const MAX_RESPONSE_LEN: usize =
     HEADER_LEN + MAX_ADDRESS_ATTRIBUTE_LEN + FINGERPRINT_ATTRIBUTE_LEN;
@@ -86,7 +86,7 @@ pub fn is_stun(packet: &[u8]) -> bool {
 }
 
 /// Encodes a binding request (with FINGERPRINT) into `out` and returns it.
-pub fn encode_binding_request(txid: TransactionId, out: &mut [u8; REQUEST_LEN]) -> &[u8] {
+pub(crate) fn encode_binding_request(txid: TransactionId, out: &mut [u8; REQUEST_LEN]) -> &[u8] {
     let mut writer = Writer::new(out);
     writer.header(BINDING_REQUEST, txid, 0);
     writer.finish_with_fingerprint()
@@ -141,7 +141,9 @@ pub fn parse_binding_request(packet: &[u8]) -> Result<TransactionId, StunError> 
 ///
 /// XOR-MAPPED-ADDRESS is preferred; MAPPED-ADDRESS is the fallback for old
 /// RFC 3489 servers. The caller must still check the transaction ID.
-pub fn parse_binding_response(packet: &[u8]) -> Result<(TransactionId, SocketAddr), StunError> {
+pub(crate) fn parse_binding_response(
+    packet: &[u8],
+) -> Result<(TransactionId, SocketAddr), StunError> {
     let message = parse_message(packet)?;
     if message.kind != BINDING_SUCCESS_RESPONSE {
         return Err(StunError::UnexpectedType(message.kind));

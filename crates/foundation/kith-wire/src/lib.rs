@@ -17,10 +17,10 @@ extern crate alloc;
 
 pub mod envelope;
 mod error;
-pub mod ext;
+mod ext;
 pub mod frame;
 pub mod registry;
-pub mod varint;
+mod varint;
 
 pub use envelope::{Header, MAGIC, MAX_MESSAGE_LEN, MessageType};
 pub use error::WireError;

@@ -15,7 +15,7 @@ use crate::{
 
 /// The exclusive upper end of a range of op ids. Every `Id` sorts before `End`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Bound {
+pub(crate) enum Bound {
     /// Ids strictly below this one.
     Id(OpId),
     /// The end of the id space: every id is below it.
@@ -24,7 +24,7 @@ pub enum Bound {
 
 impl Bound {
     /// Whether `id` lies below this bound.
-    pub fn is_above(&self, id: &OpId) -> bool {
+    pub(crate) fn is_above(&self, id: &OpId) -> bool {
         match self {
             Self::Id(bound) => id < bound,
             Self::End => true,
@@ -35,7 +35,7 @@ impl Bound {
 /// One range of a [`Message::Ranges`]. Its lower bound is the previous item's upper bound,
 /// or the start of the id space for the first item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RangeItem {
+pub(crate) enum RangeItem {
     /// The sender's fingerprint of the range.
     Fingerprint {
         /// Where the range ends.
@@ -47,7 +47,7 @@ pub enum RangeItem {
     IdList {
         /// Where the range ends.
         upper_bound: Bound,
-        /// The ids, at most [`MAX_IDS_PER_MESSAGE`] across the whole message.
+        /// The ids, at most `MAX_IDS_PER_MESSAGE` across the whole message.
         ids: Vec<OpId>,
     },
     /// The range is in sync; nothing to do.
@@ -59,7 +59,7 @@ pub enum RangeItem {
 
 impl RangeItem {
     /// Where the range ends.
-    pub const fn upper_bound(&self) -> Bound {
+    pub(crate) const fn upper_bound(&self) -> Bound {
         match self {
             Self::Fingerprint { upper_bound, .. }
             | Self::IdList { upper_bound, .. }
@@ -70,8 +70,8 @@ impl RangeItem {
 
 /// A sync message. [`Message::decode`] checks every documented bound; variant order is wire format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Message {
-    /// Opens the session: the network and the sender's DAG heads (at most [`MAX_HEADS`];
+pub(crate) enum Message {
+    /// Opens the session: the network and the sender's DAG heads (at most `MAX_HEADS`;
     /// empty if it has more).
     Hello {
         /// The network being synced.
@@ -80,11 +80,11 @@ pub enum Message {
         heads: Vec<OpId>,
     },
     /// Range reconciliation: a partition of the whole id space, at most
-    /// [`MAX_RANGE_ITEMS`] ranges, ending at [`Bound::End`]. Ends a flight.
+    /// `MAX_RANGE_ITEMS` ranges, ending at [`Bound::End`]. Ends a flight.
     Ranges(Vec<RangeItem>),
-    /// Op ids the sender lacks and asks for, at most [`MAX_IDS_PER_MESSAGE`].
+    /// Op ids the sender lacks and asks for, at most `MAX_IDS_PER_MESSAGE`.
     Want(Vec<OpId>),
-    /// Signed ops as their exact bytes, at most [`MAX_OPS_PER_MESSAGE`].
+    /// Signed ops as their exact bytes, at most `MAX_OPS_PER_MESSAGE`.
     Ops(Vec<Vec<u8>>),
     /// The sender has no unresolved ranges. Ends a flight.
     Done,
@@ -92,7 +92,7 @@ pub enum Message {
 
 impl Message {
     /// Encodes the message in its envelope, checking every bound first.
-    pub fn encode(&self) -> Result<Vec<u8>, SyncError> {
+    pub(crate) fn encode(&self) -> Result<Vec<u8>, SyncError> {
         self.validate()?;
         let bytes = envelope::encode(SYNC_MESSAGE, SYNC_VERSION, self)?;
         if bytes.len() > MAX_SYNC_MESSAGE_LEN {
@@ -102,7 +102,7 @@ impl Message {
     }
 
     /// Decodes and validates a message received from a peer.
-    pub fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, SyncError> {
         if bytes.len() > MAX_SYNC_MESSAGE_LEN {
             return Err(SyncError::TooLarge(bytes.len()));
         }

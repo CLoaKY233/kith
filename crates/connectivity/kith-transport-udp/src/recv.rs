@@ -15,10 +15,10 @@ use crate::UdpLink;
 pub const MAX_SLOT_LEN: usize = 64 * 1024;
 
 /// Largest datagram the compact preset expects, an Ethernet MTU. Larger ones are truncated.
-pub const PATH_DATAGRAM_LEN: usize = 1500;
+pub(crate) const PATH_DATAGRAM_LEN: usize = 1500;
 
 /// Memory budget of [`RecvBatch::compact`].
-pub const COMPACT_BUDGET: usize = 256 * 1024;
+pub(crate) const COMPACT_BUDGET: usize = 256 * 1024;
 
 /// One received datagram.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl RecvBatch {
         }
     }
 
-    /// Router preset: at most [`COMPACT_BUDGET`] (256 KiB), slots sized for `link`'s GRO.
+    /// Router preset: at most 256 KiB, slots sized for `link`'s GRO.
     pub fn compact(link: &UdpLink) -> Self {
         let slot_len = link
             .gro_segments()

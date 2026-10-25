@@ -17,19 +17,19 @@ use crate::name::{DomainName, NameError, is_within, self_and_ancestors};
 use crate::record::{MAX_TTL, Record, RecordData, RecordType};
 
 /// Most authoritative suffixes in one zone.
-pub const MAX_SUFFIXES: usize = 16;
+pub(crate) const MAX_SUFFIXES: usize = 16;
 /// Most devices in one zone.
-pub const MAX_DEVICES: usize = 4096;
+pub(crate) const MAX_DEVICES: usize = 4096;
 /// Most addresses per device.
-pub const MAX_ADDRESSES_PER_DEVICE: usize = 16;
+pub(crate) const MAX_ADDRESSES_PER_DEVICE: usize = 16;
 /// Most custom records in one zone.
-pub const MAX_CUSTOM_RECORDS: usize = 8192;
+pub(crate) const MAX_CUSTOM_RECORDS: usize = 8192;
 /// Most records at one name, after merging device and custom records.
-pub const MAX_RECORDS_PER_NAME: usize = 64;
+pub(crate) const MAX_RECORDS_PER_NAME: usize = 64;
 /// TTL of device and reverse records unless set otherwise.
 pub const DEFAULT_DEVICE_TTL: u32 = 60;
 /// TTL of negative answers (the SOA minimum, RFC 2308) unless set otherwise.
-pub const DEFAULT_NEGATIVE_TTL: u32 = 30;
+pub(crate) const DEFAULT_NEGATIVE_TTL: u32 = 30;
 
 /// What happens when a custom record is placed at a device's name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,7 +50,7 @@ pub enum ZoneError {
     /// A built zone needs at least one authoritative suffix; see [`Zone::empty`].
     #[error("zone has no authoritative suffix")]
     NoSuffix,
-    /// More than [`MAX_SUFFIXES`] suffixes.
+    /// More than `MAX_SUFFIXES` suffixes.
     #[error("more than {} suffixes", MAX_SUFFIXES)]
     TooManySuffixes,
     /// The suffix was added twice.
@@ -68,16 +68,16 @@ pub enum ZoneError {
     /// The device was added twice.
     #[error("duplicate device {0}")]
     DuplicateDevice(DomainName),
-    /// More than [`MAX_DEVICES`] devices.
+    /// More than `MAX_DEVICES` devices.
     #[error("more than {} devices", MAX_DEVICES)]
     TooManyDevices,
-    /// More than [`MAX_ADDRESSES_PER_DEVICE`] addresses on a device.
+    /// More than `MAX_ADDRESSES_PER_DEVICE` addresses on a device.
     #[error("device {0} has more than {max} addresses", max = MAX_ADDRESSES_PER_DEVICE)]
     TooManyAddresses(DomainName),
     /// Two devices claim the same address, so its PTR would be ambiguous.
     #[error("address {0} belongs to more than one device")]
     DuplicateAddress(IpAddr),
-    /// More than [`MAX_CUSTOM_RECORDS`] custom records.
+    /// More than `MAX_CUSTOM_RECORDS` custom records.
     #[error("more than {} custom records", MAX_CUSTOM_RECORDS)]
     TooManyRecords,
     /// A custom record lies outside every authoritative suffix.
@@ -92,10 +92,10 @@ pub enum ZoneError {
     /// A CNAME at a suffix apex, which must keep its SOA.
     #[error("CNAME at zone apex {0}")]
     CnameAtApex(DomainName),
-    /// More than [`MAX_RECORDS_PER_NAME`] records at one name.
+    /// More than `MAX_RECORDS_PER_NAME` records at one name.
     #[error("more than {max} records at {0}", max = MAX_RECORDS_PER_NAME)]
     TooManyRecordsAtName(DomainName),
-    /// A TTL setting above [`MAX_TTL`].
+    /// A TTL setting above `MAX_TTL`.
     #[error("TTL {0} exceeds {max}", max = MAX_TTL)]
     TtlTooLarge(u32),
 }
@@ -197,7 +197,7 @@ impl ZoneBuilder {
     /// 4. identical records are merged, and each `RRset` takes the lowest TTL in it
     ///    (RFC 2181 §5.2);
     /// 5. a CNAME is the only record at its name and never sits at an apex;
-    /// 6. at most [`MAX_RECORDS_PER_NAME`] records per name;
+    /// 6. at most `MAX_RECORDS_PER_NAME` records per name;
     /// 7. no address belongs to two devices.
     pub fn build(&self) -> Result<Zone, ZoneError> {
         let primary = self.suffixes.first().ok_or(ZoneError::NoSuffix)?;

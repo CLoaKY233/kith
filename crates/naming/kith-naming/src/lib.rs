@@ -44,7 +44,7 @@
 //!
 //! - AA set; RA set because the driver forwards everything else.
 //! - NXDOMAIN or NODATA carry a synthesized SOA in the authority section (RFC 2308).
-//! - CNAME chains are followed within the zone up to [`MAX_CNAME_CHAIN`] links; an
+//! - CNAME chains are followed within the zone up to `MAX_CNAME_CHAIN` links; an
 //!   out-of-zone target is left to the client's resolver.
 //! - The response fits the client's EDNS UDP size (512 without EDNS); otherwise only
 //!   the header and question are sent, with TC set. The OPT record is echoed.
@@ -65,16 +65,8 @@ mod split;
 mod wire;
 mod zone;
 
-pub use answer::{
-    DnsError, MAX_CNAME_CHAIN, Outcome, Rcode, answer, answer_stream, udp_payload_size,
-};
-pub use name::{DomainName, MAX_LABEL_LEN, MAX_NAME_LEN, NameError};
-pub use record::{
-    MAX_TTL, MAX_TXT_STRING_LEN, MAX_TXT_STRINGS, Record, RecordData, RecordError, RecordType, Srv,
-    Txt,
-};
-pub use split::{MAX_ROUTES, SplitDns, SplitDnsError, UpstreamGroupId};
-pub use zone::{
-    DEFAULT_DEVICE_TTL, DEFAULT_NEGATIVE_TTL, MAX_ADDRESSES_PER_DEVICE, MAX_CUSTOM_RECORDS,
-    MAX_DEVICES, MAX_RECORDS_PER_NAME, MAX_SUFFIXES, OverridePolicy, Zone, ZoneBuilder, ZoneError,
-};
+pub use answer::{DnsError, Outcome, Rcode, answer, answer_stream, udp_payload_size};
+pub use name::{DomainName, MAX_NAME_LEN, NameError};
+pub use record::{MAX_TXT_STRING_LEN, Record, RecordData, RecordError, RecordType, Srv, Txt};
+pub use split::{SplitDns, SplitDnsError, UpstreamGroupId};
+pub use zone::{DEFAULT_DEVICE_TTL, OverridePolicy, Zone, ZoneBuilder, ZoneError};

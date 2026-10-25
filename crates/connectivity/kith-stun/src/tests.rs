@@ -7,10 +7,11 @@ use core::time::Duration;
 
 use proptest::prelude::*;
 
+use crate::message::{REQUEST_LEN, encode_binding_request, parse_binding_response};
+use crate::probe::{GIVE_UP_AFTER, RETRANSMIT_SCHEDULE};
 use crate::{
-    GIVE_UP_AFTER, MAX_RESPONSE_LEN, REQUEST_LEN, RETRANSMIT_SCHEDULE, StunError, StunProbe,
-    TransactionId, encode_binding_request, encode_binding_response, is_stun, parse_binding_request,
-    parse_binding_response,
+    MAX_RESPONSE_LEN, StunError, StunProbe, TransactionId, encode_binding_response, is_stun,
+    parse_binding_request,
 };
 
 /// RFC 5769 §2.2 IPv4 response.

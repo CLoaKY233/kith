@@ -7,13 +7,13 @@ use crate::random::{RandomSource, uniform_u16, uniform_u32};
 use crate::transform::MessageType;
 
 /// Size of a WireGuard handshake initiation message.
-pub const WG_INITIATION_LEN: usize = 148;
+pub(crate) const WG_INITIATION_LEN: usize = 148;
 /// Size of a WireGuard handshake response message.
-pub const WG_RESPONSE_LEN: usize = 92;
+pub(crate) const WG_RESPONSE_LEN: usize = 92;
 /// Size of a WireGuard cookie reply message.
-pub const WG_COOKIE_LEN: usize = 64;
+pub(crate) const WG_COOKIE_LEN: usize = 64;
 /// Minimum size of a WireGuard transport data message (header, counter, tag).
-pub const WG_TRANSPORT_MIN_LEN: usize = 32;
+pub(crate) const WG_TRANSPORT_MIN_LEN: usize = 32;
 
 /// Largest datagram AmneziaWG accepts (`MaxSegmentSize` in amneziawg-go).
 /// Junk and padded handshakes must be strictly smaller.
@@ -22,7 +22,7 @@ const MAX_SEGMENT_SIZE: usize = 65_535;
 /// Upper bound on `Jc`. amneziawg-go only requires `Jc >= 0`, but the
 /// AmneziaWG docs specify `Jc <= 128`, and an unbounded count would let a
 /// hostile config amplify every handshake.
-pub const MAX_JUNK_COUNT: u8 = 128;
+pub(crate) const MAX_JUNK_COUNT: u8 = 128;
 
 /// Unvalidated obfuscation parameters, in AmneziaWG terms. [`Default`] is plain WireGuard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ impl Default for RawObfsParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParamsError {
-    /// `Jc` is above [`MAX_JUNK_COUNT`].
+    /// `Jc` is above 128.
     #[error("junk count {count} exceeds {MAX_JUNK_COUNT}")]
     JunkCountTooLarge {
         /// The configured `Jc`.
@@ -105,7 +105,7 @@ pub enum ParamsError {
 ///
 /// Invariants, matching amneziawg-go's `handlePostConfig` checks:
 ///
-/// - `Jc <= 128` ([`MAX_JUNK_COUNT`]; the AmneziaWG documented range).
+/// - `Jc <= 128` (the AmneziaWG documented range).
 /// - `Jmin <= Jmax < 65535`.
 /// - `S1 + 148 < 65535` and `S2 + 92 < 65535`.
 /// - `S1 + 148 != S2 + 92` (equivalently `S1 + 56 != S2`), so the two

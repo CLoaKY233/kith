@@ -17,10 +17,10 @@ mod message;
 mod probe;
 
 pub use message::{
-    MAX_RESPONSE_LEN, REQUEST_LEN, StunError, TransactionId, encode_binding_request,
-    encode_binding_response, is_stun, parse_binding_request, parse_binding_response,
+    MAX_RESPONSE_LEN, StunError, TransactionId, encode_binding_response, is_stun,
+    parse_binding_request,
 };
-pub use probe::{GIVE_UP_AFTER, RETRANSMIT_SCHEDULE, StunProbe};
+pub use probe::StunProbe;
 
 #[cfg(test)]
 #[expect(

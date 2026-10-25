@@ -33,7 +33,7 @@ pub struct Config {
 
 impl Config {
     /// Parses and validates a TOML document.
-    pub fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
+    pub(crate) fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
         let config: Self = toml::from_str(text).map_err(|e| ConfigError::Parse(Box::new(e)))?;
         config.validate().map_err(ConfigError::Invalid)?;
         Ok(config)
@@ -222,7 +222,7 @@ pub enum TransportKind {
 
 impl TransportKind {
     /// Whether the transport hides WireGuard from DPI by itself.
-    pub const fn is_stealth(self) -> bool {
+    pub(crate) const fn is_stealth(self) -> bool {
         matches!(self, Self::Quic | Self::Websocket)
     }
 }

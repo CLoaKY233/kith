@@ -9,13 +9,13 @@
 /// Feed it with [`add_bytes`](Self::add_bytes); only the *last* slice may have
 /// an odd length, because an odd trailing byte is padded with zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Checksum {
+pub(crate) struct Checksum {
     sum: u64,
 }
 
 impl Checksum {
     /// An empty sum.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { sum: 0 }
     }
 
@@ -26,7 +26,7 @@ impl Checksum {
     }
 
     /// Adds `bytes` as big-endian 16-bit words, zero-padding an odd tail.
-    pub fn add_bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn add_bytes(&mut self, bytes: &[u8]) {
         let (words, rest) = bytes.as_chunks::<8>();
         for word in words {
             self.add_value(u64::from_be_bytes(*word));
@@ -41,7 +41,7 @@ impl Checksum {
     }
 
     /// The folded 16-bit ones'-complement sum (not yet complemented).
-    pub fn fold(self) -> u16 {
+    pub(crate) fn fold(self) -> u16 {
         let mut sum = self.sum;
         while sum > 0xffff {
             sum = (sum & 0xffff).wrapping_add(sum >> 16);
@@ -51,7 +51,7 @@ impl Checksum {
     }
 
     /// The checksum to store in a header: the complement of [`fold`](Self::fold).
-    pub fn finish(self) -> u16 {
+    pub(crate) fn finish(self) -> u16 {
         !self.fold()
     }
 }
@@ -60,7 +60,7 @@ impl Checksum {
 ///
 /// Over a region that already contains its checksum, the result is zero iff
 /// the checksum is valid.
-pub fn checksum(bytes: &[u8]) -> u16 {
+pub(crate) fn checksum(bytes: &[u8]) -> u16 {
     let mut sum = Checksum::new();
     sum.add_bytes(bytes);
     sum.finish()
@@ -68,7 +68,7 @@ pub fn checksum(bytes: &[u8]) -> u16 {
 
 /// Updates `checksum` after one 16-bit word changed from `old` to `new`,
 /// using RFC 1624 equation 3: `HC' = ~(~HC + ~m + m')`.
-pub fn update_u16(checksum: u16, old: u16, new: u16) -> u16 {
+pub(crate) fn update_u16(checksum: u16, old: u16, new: u16) -> u16 {
     let mut sum = Checksum::new();
     sum.add_value(u64::from(!checksum));
     sum.add_value(u64::from(!old));
@@ -79,7 +79,7 @@ pub fn update_u16(checksum: u16, old: u16, new: u16) -> u16 {
 /// Updates `checksum` after a word-aligned field changed from `old` to `new`
 /// (for example an address). Slices of different or odd length are ignored
 /// pairwise beyond the shorter even prefix.
-pub fn update_bytes(checksum: u16, old: &[u8], new: &[u8]) -> u16 {
+pub(crate) fn update_bytes(checksum: u16, old: &[u8], new: &[u8]) -> u16 {
     let (old_words, _) = old.as_chunks::<2>();
     let (new_words, _) = new.as_chunks::<2>();
     old_words

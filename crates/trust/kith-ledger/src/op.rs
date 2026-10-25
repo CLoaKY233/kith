@@ -31,19 +31,19 @@ use crate::limits::{
 };
 
 /// Envelope type of the encoded [`UnsignedOp`]: `0x10`, from the central registry.
-pub const UNSIGNED_OP_TYPE: MessageType = registry::LEDGER_UNSIGNED_OP;
+pub(crate) const UNSIGNED_OP_TYPE: MessageType = registry::LEDGER_UNSIGNED_OP;
 
 /// Envelope type of the encoded [`SignedOp`]: `0x11`, from the central registry.
-pub const SIGNED_OP_TYPE: MessageType = registry::LEDGER_SIGNED_OP;
+pub(crate) const SIGNED_OP_TYPE: MessageType = registry::LEDGER_SIGNED_OP;
 
 /// Schema version of both op envelopes.
-pub const OP_VERSION: u64 = 1;
+pub(crate) const OP_VERSION: u64 = 1;
 
 /// Hashes the unsigned bytes into an [`OpId`].
-pub const OP_ID_CONTEXT: Context = Context::new("kith 2026-10 ledger op id v1");
+pub(crate) const OP_ID_CONTEXT: Context = Context::new("kith 2026-10 ledger op id v1");
 
 /// Signs the unsigned bytes.
-pub const OP_SIGNATURE_CONTEXT: Context = Context::new("kith 2026-10 ledger op sig v1");
+pub(crate) const OP_SIGNATURE_CONTEXT: Context = Context::new("kith 2026-10 ledger op sig v1");
 
 /// Network-wide settings fixed at genesis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

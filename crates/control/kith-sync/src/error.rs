@@ -20,7 +20,7 @@ pub enum SyncError {
     /// A list in the message exceeds its documented bound.
     #[error("sync message exceeds a size limit")]
     LimitExceeded,
-    /// A [`Message::Ranges`](crate::Message::Ranges) is not a sorted partition of the id
+    /// A `Message::Ranges` is not a sorted partition of the id
     /// space, or an id list holds ids outside its range or out of order.
     #[error("malformed ranges")]
     MalformedRanges,
@@ -39,7 +39,7 @@ pub enum SyncError {
     /// The message is not allowed at this point of the protocol.
     #[error("unexpected sync message")]
     UnexpectedMessage,
-    /// The peer kept the session going for more than [`MAX_ROUNDS`](crate::MAX_ROUNDS).
+    /// The peer kept the session going for more than `MAX_ROUNDS`.
     #[error("too many sync rounds")]
     TooManyRounds,
     /// The session already finished or failed.

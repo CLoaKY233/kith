@@ -3,7 +3,7 @@
 //! The whole-op byte limit is checked before decoding, so it bounds every allocation.
 
 /// Largest encoded [`UnsignedOp`](crate::UnsignedOp), in bytes: 64 KiB.
-pub const MAX_OP_LEN: usize = 64 * 1024;
+pub(crate) const MAX_OP_LEN: usize = 64 * 1024;
 
 /// Most signatures one [`SignedOp`](crate::SignedOp) may carry.
 pub const MAX_SIGNATURES: usize = 32;

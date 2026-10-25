@@ -15,7 +15,7 @@ use crate::{RecvBatch, SendBatch, UdpError};
 /// Socket buffer size requested in each direction; the OS may clamp it.
 //
 // Sized to absorb multi-gigabit bursts between event-loop turns.
-pub const SOCKET_BUFFER_BYTES: usize = 7 * 1024 * 1024;
+pub(crate) const SOCKET_BUFFER_BYTES: usize = 7 * 1024 * 1024;
 
 /// The smallest size worth trying when the OS rejects [`SOCKET_BUFFER_BYTES`] outright.
 const MIN_SOCKET_BUFFER_BYTES: usize = 256 * 1024;

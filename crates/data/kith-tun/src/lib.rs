@@ -14,6 +14,6 @@ mod batch;
 mod config;
 mod device;
 
-pub use batch::{BATCH_SIZE, BatchError, HEADROOM, MAX_PACKET_CAPACITY, PacketBatch};
-pub use config::{ConfigError, MAX_MTU, MAX_NAME_LEN, MIN_MTU, MIN_MTU_IPV6, TunConfig};
+pub use batch::{BATCH_SIZE, BatchError, MAX_PACKET_CAPACITY, PacketBatch};
+pub use config::{ConfigError, MAX_MTU, TunConfig};
 pub use device::{Tun, TunError};

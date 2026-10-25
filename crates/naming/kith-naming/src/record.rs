@@ -13,10 +13,10 @@ use crate::name::DomainName;
 pub const MAX_TXT_STRING_LEN: usize = 255;
 
 /// Most character-strings in one TXT record. Keeps one record well under a datagram.
-pub const MAX_TXT_STRINGS: usize = 16;
+pub(crate) const MAX_TXT_STRINGS: usize = 16;
 
 /// Largest TTL (RFC 2181 §8: TTLs are 31-bit).
-pub const MAX_TTL: u32 = 0x7FFF_FFFF;
+pub(crate) const MAX_TTL: u32 = 0x7FFF_FFFF;
 
 /// Why a record is invalid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -25,13 +25,13 @@ pub enum RecordError {
     /// A TXT record needs at least one character-string.
     #[error("TXT record has no strings")]
     EmptyTxt,
-    /// More than [`MAX_TXT_STRINGS`] character-strings.
+    /// More than `MAX_TXT_STRINGS` character-strings.
     #[error("TXT record has more than {} strings", MAX_TXT_STRINGS)]
     TooManyTxtStrings,
     /// A character-string longer than [`MAX_TXT_STRING_LEN`] bytes.
     #[error("TXT string is longer than {} bytes", MAX_TXT_STRING_LEN)]
     TxtStringTooLong,
-    /// TTL above [`MAX_TTL`].
+    /// TTL above `MAX_TTL`.
     #[error("TTL {0} exceeds {max}", max = MAX_TTL)]
     TtlTooLarge(u32),
     /// A CNAME or SRV target is a wildcard name, which can never be resolved.
@@ -76,7 +76,7 @@ impl RecordType {
 
 /// The character-strings of a TXT record.
 ///
-/// Invariant: 1 to [`MAX_TXT_STRINGS`] strings, each at most [`MAX_TXT_STRING_LEN`]
+/// Invariant: 1 to `MAX_TXT_STRINGS` strings, each at most [`MAX_TXT_STRING_LEN`]
 /// bytes of UTF-8.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Txt {
@@ -147,7 +147,7 @@ impl RecordData {
 
 /// A record with its TTL.
 ///
-/// Invariants: TTL ≤ [`MAX_TTL`]; CNAME and SRV targets are not wildcards.
+/// Invariants: TTL ≤ `MAX_TTL`; CNAME and SRV targets are not wildcards.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Record {
     // Field order matters: records sort by data first, so an RRset is contiguous.

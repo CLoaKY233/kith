@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use quinn_udp::Transmit;
 
 /// Largest UDP payload that fits in an IPv4 packet without jumbograms.
-pub const MAX_DATAGRAM_LEN: usize = 65_507;
+pub(crate) const MAX_DATAGRAM_LEN: usize = 65_507;
 
 /// Largest total GSO payload: the segments share one IP packet's payload limit.
 const MAX_GSO_PAYLOAD: usize = MAX_DATAGRAM_LEN;

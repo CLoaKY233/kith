@@ -20,7 +20,7 @@ const OP_LENGTH_PREFIX: usize = 3;
 /// Counters for one session, for logs and metrics.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SyncStats {
-    /// `Hello`, `Ranges` and `Done` messages received; capped by [`MAX_ROUNDS`].
+    /// `Hello`, `Ranges` and `Done` messages received; capped by `MAX_ROUNDS`.
     pub rounds: u32,
     /// Messages received and accepted.
     pub messages_received: u64,
@@ -461,7 +461,7 @@ fn push_skip(reply: &mut Vec<RangeItem>, upper_bound: Bound) {
     }
 }
 
-/// Splits `ids` (more than [`ID_LIST_THRESHOLD`]) into [`BUCKETS`] ranges whose counts
+/// Splits `ids` (more than `ID_LIST_THRESHOLD`) into `BUCKETS` ranges whose counts
 /// differ by at most one.
 fn split(ids: &[OpId], upper_bound: Bound, reply: &mut Vec<RangeItem>) {
     let boundary = |bucket: usize| {

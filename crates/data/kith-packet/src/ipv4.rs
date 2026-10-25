@@ -169,7 +169,7 @@ impl<T: AsRef<[u8]> + AsMut<[u8]>> Ipv4Packet<T> {
     /// Sets the source address, updating the header checksum incrementally.
     ///
     /// Transport checksums cover the address too; callers doing NAT must
-    /// update them with [`checksum::update_bytes`].
+    /// update them with `update_bytes`.
     pub fn set_src(&mut self, address: Ipv4Addr) {
         self.set_address(SRC, address);
     }

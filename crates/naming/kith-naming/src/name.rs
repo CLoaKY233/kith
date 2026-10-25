@@ -16,7 +16,7 @@ use core::str::FromStr;
 pub const MAX_NAME_LEN: usize = 253;
 
 /// Longest permitted label (RFC 1035 §2.3.4).
-pub const MAX_LABEL_LEN: usize = 63;
+pub(crate) const MAX_LABEL_LEN: usize = 63;
 
 /// Why a string is not a valid [`DomainName`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -31,7 +31,7 @@ pub enum NameError {
     /// Two dots in a row, or a leading dot.
     #[error("domain name has an empty label")]
     EmptyLabel,
-    /// A label is longer than [`MAX_LABEL_LEN`] bytes.
+    /// A label is longer than `MAX_LABEL_LEN` bytes.
     #[error("label is longer than {} bytes", MAX_LABEL_LEN)]
     LabelTooLong,
     /// A label holds a byte other than an ASCII letter, digit, `-` or `_`.
@@ -48,7 +48,7 @@ pub enum NameError {
 /// A validated domain name.
 ///
 /// Invariants:
-/// - one or more labels, each 1 to [`MAX_LABEL_LEN`] bytes, the whole name at most
+/// - one or more labels, each 1 to `MAX_LABEL_LEN` bytes, the whole name at most
 ///   [`MAX_NAME_LEN`] bytes;
 /// - labels hold only lowercase ASCII letters, digits, `-` (not at either edge) and `_`
 ///   (so SRV-style names such as `_http._tcp` work);

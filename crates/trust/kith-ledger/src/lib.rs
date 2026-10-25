@@ -69,8 +69,8 @@ extern crate alloc;
 mod error;
 mod join;
 mod ledger;
-pub mod limits;
-pub mod op;
+mod limits;
+mod op;
 mod validity;
 mod view;
 
@@ -78,11 +78,11 @@ mod view;
 mod tests;
 
 pub use error::LedgerError;
-pub use join::{DEVICE_CONSENT_CONTEXT, INVITE_REDEEM_CONTEXT, JoinProof};
+pub use join::JoinProof;
 pub use ledger::{BatchOutcome, InsertOutcome, Ledger};
 pub use limits::{
-    MAX_ADMINS, MAX_NAME_LEN, MAX_OP_LEN, MAX_ORPHANS, MAX_PARENTS, MAX_RECORD_KEY_LEN,
-    MAX_RECORD_VALUE_LEN, MAX_SIGNATURES, MAX_SIGNED_OP_LEN, MAX_TAG_LEN, MAX_TAGS,
+    MAX_ADMINS, MAX_NAME_LEN, MAX_ORPHANS, MAX_PARENTS, MAX_RECORD_KEY_LEN, MAX_RECORD_VALUE_LEN,
+    MAX_SIGNATURES, MAX_SIGNED_OP_LEN, MAX_TAG_LEN, MAX_TAGS,
 };
 pub use op::{NetworkParams, OpBody, SignedOp, UnsignedOp};
 pub use view::{Device, Invite, NetworkView};

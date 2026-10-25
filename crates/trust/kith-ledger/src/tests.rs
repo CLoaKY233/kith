@@ -967,7 +967,7 @@ fn rejects_oversized_trailing_and_mistyped_envelopes() {
     let unsigned = draft(&ledger, add_device(5, "nas")).encode().unwrap();
     assert!(matches!(decode_err(&unsigned), LedgerError::Wire(_)));
     // Unsigned bytes over the op limit.
-    let padded = vec![0_u8; crate::MAX_OP_LEN + 1];
+    let padded = vec![0_u8; crate::limits::MAX_OP_LEN + 1];
     let wrapped = envelope::encode(
         SIGNED_OP_TYPE,
         1,

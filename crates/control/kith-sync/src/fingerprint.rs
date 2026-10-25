@@ -5,16 +5,16 @@ use kith_types::OpId;
 use serde::{Deserialize, Serialize};
 
 /// Domain separation for range fingerprints.
-pub const FINGERPRINT_CONTEXT: Context = Context::new("kith 2026-10 sync fingerprint v1");
+pub(crate) const FINGERPRINT_CONTEXT: Context = Context::new("kith 2026-10 sync fingerprint v1");
 
 /// A digest of a set of op ids; see the crate docs for why ids are summed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Fingerprint(pub [u8; 32]);
+pub(crate) struct Fingerprint(pub(crate) [u8; 32]);
 
 /// Fingerprints a set of distinct ids: BLAKE3 under [`FINGERPRINT_CONTEXT`] of the count
 /// (`u64`, little-endian) followed by the sum of the ids mod 2^256, each read as a
 /// little-endian integer. The order of `ids` does not matter.
-pub fn fingerprint(ids: &[OpId]) -> Fingerprint {
+pub(crate) fn fingerprint(ids: &[OpId]) -> Fingerprint {
     let mut sum = [0_u64; 4];
     for id in ids {
         add_assign(&mut sum, id);

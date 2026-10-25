@@ -15,6 +15,5 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-pub use forward::{DEFAULT_UPSTREAM_TIMEOUT, MAX_IN_FLIGHT};
-pub use server::{DnsServer, IDLE_TIMEOUT, MAX_QUERY_SIZE, MAX_TCP_CONNECTIONS};
+pub use server::DnsServer;
 pub use state::DnsState;

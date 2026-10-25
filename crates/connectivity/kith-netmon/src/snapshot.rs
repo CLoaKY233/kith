@@ -14,7 +14,7 @@ use crate::gateway::default_gateway;
 const FINGERPRINT_CONTEXT: Context = Context::new("kith 2026-10 netmon fingerprint v1");
 
 /// How often the monitor re-reads interfaces.
-pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// IPv6 addresses are reduced to their /64 so privacy-address rotation is not a network change.
 const IPV6_FINGERPRINT_PREFIX: u8 = 64;
@@ -142,7 +142,7 @@ pub struct Change {
     pub new: NetworkSnapshot,
 }
 
-/// Spawns a task that polls every [`POLL_INTERVAL`] and sends a [`Change`] when the snapshot differs.
+/// Spawns a task that polls every 5 s and sends a [`Change`] when the snapshot differs.
 ///
 /// The task ends when the receiver is dropped.
 #[must_use]

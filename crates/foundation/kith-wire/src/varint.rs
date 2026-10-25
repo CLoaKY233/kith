@@ -8,10 +8,10 @@ use alloc::vec::Vec;
 use crate::WireError;
 
 /// The longest encoding of a `u64`: ceil(64 / 7) bytes.
-pub const MAX_LEN: usize = 10;
+pub(crate) const MAX_LEN: usize = 10;
 
 /// Appends the encoding of `value` to `out`.
-pub fn encode(mut value: u64, out: &mut Vec<u8>) {
+pub(crate) fn encode(mut value: u64, out: &mut Vec<u8>) {
     loop {
         let low = value.to_le_bytes()[0] & 0x7f;
         value >>= 7;
@@ -25,14 +25,14 @@ pub fn encode(mut value: u64, out: &mut Vec<u8>) {
 
 /// Number of bytes [`encode`] would write for `value`.
 #[must_use]
-pub fn encoded_len(value: u64) -> usize {
+pub(crate) fn encoded_len(value: u64) -> usize {
     // Seven payload bits per byte; zero still takes one byte.
     let bytes = value.bit_width().div_ceil(7).max(1);
     usize::try_from(bytes).unwrap_or(MAX_LEN)
 }
 
 /// Decodes one varint from the front of `input`, returning the value and bytes consumed.
-pub fn decode(input: &[u8]) -> Result<(u64, usize), WireError> {
+pub(crate) fn decode(input: &[u8]) -> Result<(u64, usize), WireError> {
     let mut value: u64 = 0;
     for (index, &byte) in input.iter().enumerate().take(MAX_LEN) {
         let payload = u64::from(byte & 0x7f);

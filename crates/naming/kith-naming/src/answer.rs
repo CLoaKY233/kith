@@ -13,7 +13,7 @@ use crate::zone::Zone;
 
 /// Longest CNAME chain followed inside the zone. Bounds the work per query and breaks
 /// CNAME loops.
-pub const MAX_CNAME_CHAIN: usize = 8;
+pub(crate) const MAX_CNAME_CHAIN: usize = 8;
 const MIN_UDP_PAYLOAD: u16 = 512;
 const ADVERTISED_UDP_PAYLOAD: u16 = 1232;
 

@@ -16,7 +16,7 @@ pub use error::ChannelError;
 pub use handler::ChannelHandler;
 
 /// The most nodes one endpoint gossip message describes.
-pub const MAX_ENDPOINT_NODES: usize = 256;
+const MAX_ENDPOINT_NODES: usize = 256;
 
 /// The most addresses one endpoint gossip message lists per node.
-pub const MAX_ENDPOINT_ADDRS: usize = 32;
+const MAX_ENDPOINT_ADDRS: usize = 32;

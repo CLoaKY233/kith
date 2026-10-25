@@ -3,9 +3,9 @@ use alloc::vec::Vec;
 
 use proptest::prelude::*;
 
+use crate::params::MAX_JUNK_COUNT;
 use crate::{
-    EncodeError, Inbound, MAX_JUNK_COUNT, MessageType, ObfsParams, ParamsError, RandomSource,
-    RawObfsParams,
+    EncodeError, Inbound, MessageType, ObfsParams, ParamsError, RandomSource, RawObfsParams,
 };
 
 /// Deterministic source: emits `next, next + 1, ...` (wrapping).

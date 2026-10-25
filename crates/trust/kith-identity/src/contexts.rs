@@ -5,13 +5,14 @@
 use kith_crypto::Context;
 
 /// Checksum over the seed in a secret-key file, to detect corruption.
-pub const SECRET_KEY_CHECKSUM: Context = Context::new("kith 2026-10 secret key checksum v1");
+pub(crate) const SECRET_KEY_CHECKSUM: Context = Context::new("kith 2026-10 secret key checksum v1");
 
 /// Truncated checksum appended to an invite payload, to catch typos in links.
-pub const INVITE_CHECKSUM: Context = Context::new("kith 2026-10 invite checksum v1");
+pub(crate) const INVITE_CHECKSUM: Context = Context::new("kith 2026-10 invite checksum v1");
 
 /// Every context above, for uniqueness tests and audits.
-pub const ALL: &[Context] = &[SECRET_KEY_CHECKSUM, INVITE_CHECKSUM];
+#[cfg(test)]
+pub(crate) const ALL: &[Context] = &[SECRET_KEY_CHECKSUM, INVITE_CHECKSUM];
 
 #[cfg(test)]
 mod tests {

@@ -3,16 +3,16 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Smallest accepted MTU (the IPv4 minimum).
-pub const MIN_MTU: u16 = 576;
+pub(crate) const MIN_MTU: u16 = 576;
 
 /// Smallest accepted MTU with IPv6.
-pub const MIN_MTU_IPV6: u16 = 1280;
+pub(crate) const MIN_MTU_IPV6: u16 = 1280;
 
 /// Largest accepted MTU.
 pub const MAX_MTU: u16 = 9000;
 
 /// Longest interface name (`IFNAMSIZ` minus the NUL).
-pub const MAX_NAME_LEN: usize = 15;
+pub(crate) const MAX_NAME_LEN: usize = 15;
 
 /// Settings for a new TUN device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub enum ConfigError {
     /// The name is empty.
     #[error("interface name is empty")]
     NameEmpty,
-    /// The name is longer than [`MAX_NAME_LEN`] bytes.
+    /// The name is longer than 15 bytes.
     #[error("interface name is {len} bytes, the limit is {MAX_NAME_LEN}")]
     NameTooLong {
         /// Length of the rejected name in bytes.
@@ -48,13 +48,13 @@ pub enum ConfigError {
     /// macOS only creates `utunN` devices.
     #[error("on macOS the interface name must be `utun` followed by a number")]
     NameNotUtun,
-    /// The MTU is outside [`MIN_MTU`]..=[`MAX_MTU`].
+    /// The MTU is outside 576..=[`MAX_MTU`].
     #[error("MTU {mtu} is outside {MIN_MTU}..={MAX_MTU}")]
     MtuOutOfRange {
         /// The rejected MTU.
         mtu: u16,
     },
-    /// IPv6 is configured but the MTU is below [`MIN_MTU_IPV6`].
+    /// IPv6 is configured but the MTU is below 1280.
     #[error("MTU {mtu} is below the IPv6 minimum of {MIN_MTU_IPV6}")]
     MtuTooSmallForIpv6 {
         /// The rejected MTU.

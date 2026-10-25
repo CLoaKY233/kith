@@ -11,12 +11,12 @@
 //! TCP flows start only on an outbound SYN without ACK, so answering a peer the policy
 //! no longer admits never reopens the door. UDP flows start on any outbound datagram.
 //! ICMP echo is tracked by identifier. Everything else is judged by the policy alone.
-//! Timeouts follow Linux conntrack; see [`timeouts`].
+//! Timeouts follow Linux conntrack; see `timeouts`.
 //!
 //! Inbound fragments and unparsable packets are dropped as [`DropReason::Malformed`]:
 //! a later fragment carries no ports. Outbound ones pass untracked.
 //!
-//! The table is bounded ([`DEFAULT_MAX_ENTRIES`]) and allocates up front. When full,
+//! The table is bounded (`DEFAULT_MAX_ENTRIES`) and allocates up front. When full,
 //! the soonest-expiring flow that never became two-way near the hash slot is evicted;
 //! otherwise the new flow is dropped with [`DropReason::TableFull`]. Only outbound
 //! packets create flows, so the unkeyed hash cannot be used by a remote to fill it.
@@ -31,7 +31,7 @@ extern crate alloc;
 extern crate std;
 
 mod table;
-pub mod timeouts;
+mod timeouts;
 
 #[cfg(test)]
 mod tests;
@@ -48,10 +48,7 @@ use table::{ConnectionKey, Entry, Full, Inserted, State, Table};
 ///
 /// Sized for a small router (OpenWrt sets `nf_conntrack_max` to 16384 on most
 /// devices, and the mesh carries only a share of a router's traffic).
-pub const DEFAULT_MAX_ENTRIES: usize = 8192;
-
-/// The largest accepted table size (2^24 flows); larger requests are clamped.
-pub const MAX_ENTRIES: usize = table::MAX_ENTRIES_LIMIT;
+const DEFAULT_MAX_ENTRIES: usize = 8192;
 
 /// IPv6 Fragment extension header (RFC 8200 §4.5).
 const IPV6_FRAGMENT: u8 = 44;
@@ -107,13 +104,13 @@ pub struct Filter {
 }
 
 impl Filter {
-    /// A filter enforcing `policy`, with room for [`DEFAULT_MAX_ENTRIES`] flows.
+    /// A filter enforcing `policy`, with room for 8192 flows.
     pub fn new(policy: CompiledFilter) -> Self {
         Self::with_capacity(policy, DEFAULT_MAX_ENTRIES)
     }
 
     /// A filter enforcing `policy`, with room for `max_entries` flows (clamped to
-    /// `1..=`[`MAX_ENTRIES`]). All table memory is allocated here.
+    /// `1..=2^24`). All table memory is allocated here.
     pub fn with_capacity(policy: CompiledFilter, max_entries: usize) -> Self {
         Self {
             policy,

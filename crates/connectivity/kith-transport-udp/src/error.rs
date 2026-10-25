@@ -46,7 +46,7 @@ pub enum UdpError {
         #[source]
         source: io::Error,
     },
-    /// A datagram larger than [`MAX_DATAGRAM_LEN`](crate::MAX_DATAGRAM_LEN) was queued.
+    /// A datagram larger than 65 507 bytes was queued.
     #[error("datagram of {len} bytes exceeds the UDP maximum")]
     DatagramTooLarge {
         /// The rejected payload length.

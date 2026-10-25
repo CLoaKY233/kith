@@ -6,7 +6,7 @@ use core::time::Duration;
 use crate::message::{REQUEST_LEN, TransactionId, encode_binding_request, parse_binding_response};
 
 /// When each transmission is sent, measured from probe creation; the gaps double.
-pub const RETRANSMIT_SCHEDULE: [Duration; 4] = [
+pub(crate) const RETRANSMIT_SCHEDULE: [Duration; 4] = [
     Duration::ZERO,
     Duration::from_millis(100),
     Duration::from_millis(300),
@@ -14,7 +14,7 @@ pub const RETRANSMIT_SCHEDULE: [Duration; 4] = [
 ];
 
 /// How long after creation the probe stops waiting for an answer.
-pub const GIVE_UP_AFTER: Duration = Duration::from_millis(1500);
+pub(crate) const GIVE_UP_AFTER: Duration = Duration::from_millis(1500);
 
 /// Where a probe is in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl StunProbe {
     /// Returns the request to send if a transmission is due at `now`.
     ///
     /// If several are overdue (the caller polled late) only one is sent. Once
-    /// [`GIVE_UP_AFTER`] has elapsed the probe times out and this returns `None`.
+    /// 1.5 s have elapsed the probe times out and this returns `None`.
     pub fn poll_transmit(&mut self, now: Duration) -> Option<&[u8]> {
         let State::Pending { next } = self.state else {
             return None;

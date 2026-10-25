@@ -12,4 +12,4 @@ mod portmap;
 mod snapshot;
 
 pub use portmap::{Mapping, PortMapConfig, PortMapper};
-pub use snapshot::{Change, InterfaceAddress, NetworkSnapshot, POLL_INTERVAL, spawn_monitor};
+pub use snapshot::{Change, InterfaceAddress, NetworkSnapshot, spawn_monitor};

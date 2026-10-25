@@ -1,11 +1,11 @@
-//! Preallocated packet buffers. Each packet starts at [`HEADROOM`] so tun-rs
+//! Preallocated packet buffers. Each packet starts at `HEADROOM` so tun-rs
 //! and upstream crates can write headers in front of it without copying.
 
 #[cfg(target_os = "linux")]
 use tun_rs::GROTable;
 
 /// Bytes reserved before each packet: fits the virtio-net and WireGuard headers.
-pub const HEADROOM: usize = 16;
+pub(crate) const HEADROOM: usize = 16;
 
 /// Maximum packets per batch.
 pub const BATCH_SIZE: usize = 128;
@@ -25,7 +25,7 @@ const _: () = assert!(BATCH_SIZE == tun_rs::IDEAL_BATCH_SIZE);
     clippy::as_conversions,
     reason = "widening u16 to usize in a const, where `From` is not callable"
 )]
-const _: () = assert!(MAX_PACKET_CAPACITY.div_ceil(crate::MIN_MTU as usize) <= BATCH_SIZE);
+const _: () = assert!(MAX_PACKET_CAPACITY.div_ceil(crate::config::MIN_MTU as usize) <= BATCH_SIZE);
 
 /// Why a [`PacketBatch`] operation was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

@@ -25,10 +25,8 @@ mod time;
 pub use cookie::CookieChecker;
 pub use device::{Device, DeviceOutput, PeerId};
 pub use error::WgError;
-pub use messages::{MAX_OUTPUT_OVERHEAD, MIN_OUTPUT_LEN, required_output_len};
+pub use messages::required_output_len;
 pub use noise::StaticIdentity;
-pub use peer::{
-    Decapsulated, Encapsulated, MAX_QUEUED_PACKETS, Peer, PeerConfig, PeerEvent, Transmit,
-};
+pub use peer::{Decapsulated, Encapsulated, Peer, PeerConfig, PeerEvent, Transmit};
 pub use random::RandomSource;
 pub use time::{Now, Tai64N};
