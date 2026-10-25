@@ -13,7 +13,6 @@ publish.workspace = true
 kith-crypto.workspace = true
 kith-types.workspace = true
 kith-wire.workspace = true
-serde = { workspace = true, features = ["alloc", "derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]

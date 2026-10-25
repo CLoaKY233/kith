@@ -382,7 +382,6 @@ dependencies = [
 name = "kith-naming"
 version = "0.0.0"
 dependencies = [
- "kith-types",
  "proptest",
  "thiserror",
 ]
