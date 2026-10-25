@@ -10,7 +10,7 @@
 //! [`Sys::revert`] are idempotent, and `revert` restores from state files kept in
 //! the state directory, so it also cleans up after a crashed run.
 //!
-//! This crate may use `unsafe`, but currently needs none.
+//! The only `unsafe` is the `geteuid` call behind [`effective_uid`].
 
 mod command;
 mod error;
@@ -23,7 +23,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
-pub use command::{Cmd, OsSystem, Output, System};
+pub use command::{Cmd, NoopSystem, OsSystem, Output, System, effective_uid};
 pub use error::Error;
 pub use plan::{Dns, ExitNode, Nat, Plan};
 pub use sys::{Platform, Sys};

@@ -1,13 +1,9 @@
-#![expect(
-    clippy::unused_self,
-    unused_variables,
-    reason = "skeleton bodies; remove once implemented"
-)]
-
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use kith_control::Networks;
-use kith_sys::{Cmd, Dns, Error, Interface, Output, Plan, Platform, Sys, System};
+use kith_sys::Dns;
+use kith_sys::{Cmd, Error, ExitNode, Interface, Nat, Output, Plan, Platform, Sys, System};
 use kith_types::{IpPrefix, NetworkId, NodeId};
 
 use crate::types::NodeError;
@@ -86,8 +82,44 @@ impl OsPlanner {
     }
 
     /// Derives the plan: mesh and subnet routes, DNS, exit routing, forwarding and NAT.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "signature kept for the daemon builder"
+    )]
     pub(crate) fn plan(&self, maps: &Networks, inputs: &PlanInputs) -> Result<Plan, NodeError> {
-        Err(NodeError::Pending("os: plan"))
+        let mut routes: BTreeSet<IpPrefix> = inputs.extra_routes.iter().copied().collect();
+        let mut mesh = BTreeSet::new();
+        let mut routes_local_subnets = false;
+        for (_, map) in maps.iter().filter(|(_, map)| map.is_member()) {
+            mesh.insert(IpPrefix::V4(map.ipv4_range()));
+            mesh.insert(IpPrefix::V6(map.ipv6_range()));
+            for (prefix, owner) in map.routes() {
+                if map.peers().contains_key(owner) {
+                    routes.insert(*prefix);
+                } else {
+                    routes_local_subnets = true;
+                }
+            }
+        }
+        routes.extend(mesh.iter().copied());
+        let exit_node = inputs.exit.map(|_| ExitNode {
+            peer_endpoints: inputs.exit_endpoints.clone(),
+        });
+        let dns = inputs.dns.clone().map(|dns| Dns {
+            all: dns.all || exit_node.is_some(),
+            ..dns
+        });
+        let nat = inputs.serve_exit.then(|| Nat {
+            sources: mesh.into_iter().collect(),
+        });
+        Ok(Plan {
+            interface: self.interface.clone(),
+            routes: routes.into_iter().collect(),
+            exit_node,
+            dns,
+            forwarding: inputs.serve_exit || routes_local_subnets,
+            nat,
+        })
     }
 
     /// Applies `plan` if it differs from the applied one.

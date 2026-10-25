@@ -1019,6 +1019,7 @@ dependencies = [
  "kith-types",
  "thiserror",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -1133,6 +1134,7 @@ name = "kith-sys"
 version = "0.0.0"
 dependencies = [
  "kith-types",
+ "libc",
  "proptest",
  "thiserror",
 ]

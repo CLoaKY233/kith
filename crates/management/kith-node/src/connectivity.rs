@@ -1,25 +1,29 @@
-#![expect(
-    clippy::needless_pass_by_value,
-    clippy::unused_self,
-    unused_variables,
-    reason = "skeleton bodies; remove once implemented"
-)]
-
-use core::net::SocketAddr;
+use core::fmt;
+use core::net::{IpAddr, SocketAddr};
+use core::time::Duration;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use kith_control::records::Relay;
+use kith_crypto::{AgreementPublic, AgreementSecret, RandomError, SigningKey, VerifyingKey};
 use kith_dataplane::Endpoint;
-use kith_disco::PeerPaths;
+use kith_disco::{Event, Message, PathTarget, PeerPaths, RandomSource, Transmit};
 use kith_identity::DeviceIdentity;
 use kith_ipc::PathKind;
-use kith_netmon::Change;
+use kith_netmon::{Change, NetworkSnapshot, PortMapConfig, PortMapper};
+use kith_relay::{Client, ClientOptions, SendError, Status};
+use kith_stun::{StunProbe, TransactionId, is_stun};
 use kith_types::NodeId;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
+use tracing::{debug, warn};
 
-use crate::types::{Command, NodeError};
+use crate::types::{Command, ConnectivityEvent, NodeError};
+
+const STUN_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_PEER_CANDIDATES: usize = kith_disco::paths::MAX_CONTROL_CANDIDATES;
+const MAX_OBSERVED: usize = kith_disco::paths::MAX_OBSERVED_CANDIDATES;
 
 /// Something the loop must do on behalf of connectivity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,45 +51,276 @@ pub(crate) enum Output {
     },
 }
 
+struct OsRandom;
+
+impl RandomSource for OsRandom {
+    fn fill(&mut self, buffer: &mut [u8]) -> Result<(), RandomError> {
+        kith_crypto::fill_random(buffer)
+    }
+}
+
+struct DiscoSecret(AgreementSecret);
+
+impl fmt::Debug for DiscoSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DiscoSecret(<redacted>)")
+    }
+}
+
+#[derive(Debug)]
+struct Tasks(Vec<JoinHandle<()>>);
+
+impl Drop for Tasks {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Peer {
+    paths: PeerPaths,
+    disco: [u8; 32],
+    candidates: Vec<SocketAddr>,
+}
+
+#[derive(Debug)]
+struct RelayClient {
+    address: String,
+    client: Client,
+}
+
 /// Per-peer path selection, STUN, relay clients, port mapping and network changes.
 #[derive(Debug)]
 pub(crate) struct Connectivity {
     identity: Arc<DeviceIdentity>,
     commands: mpsc::Sender<Command>,
-    peers: BTreeMap<NodeId, PeerPaths>,
+    peers: BTreeMap<NodeId, Peer>,
     outputs: Vec<Output>,
+    epoch: Instant,
+    local_port: u16,
+    secret: DiscoSecret,
+    relay_key: Arc<SigningKey>,
+    relays: BTreeMap<NodeId, RelayClient>,
+    stun_servers: Vec<SocketAddr>,
+    probes: BTreeMap<SocketAddr, StunProbe>,
+    next_stun: Option<Instant>,
+    interfaces: Vec<SocketAddr>,
+    reflexive: BTreeMap<SocketAddr, SocketAddr>,
+    observed: Vec<SocketAddr>,
+    mapped: Option<SocketAddr>,
+    advertised: Vec<SocketAddr>,
+    _tasks: Tasks,
 }
 
 impl Connectivity {
     /// Starts the netmon and port-mapping tasks, which report through `commands`.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the daemon treats this as fallible"
+    )]
     pub(crate) fn start(
         identity: Arc<DeviceIdentity>,
         local_port: u16,
         tun_name: Option<String>,
         commands: mpsc::Sender<Command>,
     ) -> Result<Self, NodeError> {
-        Err(NodeError::Pending("connectivity: start"))
+        let tun_name = tun_name.unwrap_or_default();
+        let interfaces = match NetworkSnapshot::capture(&tun_name) {
+            Ok(snapshot) => interface_endpoints(&snapshot, local_port),
+            Err(error) => {
+                warn!(%error, "could not read local interfaces");
+                Vec::new()
+            }
+        };
+        let tasks = Tasks(vec![
+            spawn_netmon(tun_name, commands.clone()),
+            spawn_port_mapper(local_port, commands.clone()),
+        ]);
+        let signing = identity.signing_key();
+        let secret = DiscoSecret(signing.to_agreement_secret());
+        let relay_key = Arc::new(SigningKey::from_seed(&signing.to_seed()));
+        let mut connectivity = Self {
+            identity,
+            commands,
+            peers: BTreeMap::new(),
+            outputs: Vec::new(),
+            epoch: Instant::now(),
+            local_port,
+            secret,
+            relay_key,
+            relays: BTreeMap::new(),
+            stun_servers: Vec::new(),
+            probes: BTreeMap::new(),
+            next_stun: None,
+            interfaces,
+            reflexive: BTreeMap::new(),
+            observed: Vec::new(),
+            mapped: None,
+            advertised: Vec::new(),
+            _tasks: tasks,
+        };
+        connectivity.refresh_advertised();
+        Ok(connectivity)
     }
 
     /// Replaces the set of mesh peers; new ones start probing, removed ones are dropped.
-    pub(crate) fn set_peers(&mut self, peers: &[NodeId], now: Instant) {}
+    pub(crate) fn set_peers(&mut self, peers: &[NodeId], now: Instant) {
+        let local = self.identity.node_id();
+        self.peers
+            .retain(|node, _| peers.contains(node) && *node != local);
+        let at = self.at(now);
+        let relay_available = !self.relays.is_empty();
+        for node in peers {
+            if *node == local || self.peers.contains_key(node) {
+                continue;
+            }
+            let disco = match VerifyingKey::from_node_id(*node) {
+                Ok(key) => key.to_agreement_public().to_bytes(),
+                Err(error) => {
+                    warn!(peer = %node, %error, "peer identity is not a valid key");
+                    continue;
+                }
+            };
+            let mut paths = match PeerPaths::new(local, *node, &mut OsRandom) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    warn!(peer = %node, %error, "could not seed disco state");
+                    continue;
+                }
+            };
+            paths.set_local_endpoints(&self.advertised);
+            paths.set_relay_available(at, relay_available);
+            paths.request_hole_punch(at);
+            self.peers.insert(
+                *node,
+                Peer {
+                    paths,
+                    disco,
+                    candidates: Vec::new(),
+                },
+            );
+            self.pump(*node, now);
+        }
+    }
 
     /// Adds candidate addresses for a peer from gossip or its control connection.
-    pub(crate) fn add_candidates(&mut self, peer: NodeId, addrs: &[SocketAddr], now: Instant) {}
+    pub(crate) fn add_candidates(&mut self, peer: NodeId, addrs: &[SocketAddr], now: Instant) {
+        let at = self.at(now);
+        let Some(state) = self.peers.get_mut(&peer) else {
+            return;
+        };
+        let before = state.candidates.clone();
+        for addr in addrs.iter().rev() {
+            state.candidates.retain(|known| known != addr);
+            state.candidates.insert(0, *addr);
+        }
+        state.candidates.truncate(MAX_PEER_CANDIDATES);
+        if state.candidates != before {
+            state.paths.set_candidates(at, &state.candidates);
+            state.paths.request_hole_punch(at);
+            self.pump(peer, now);
+        }
+    }
 
     /// Connects to every advertised relay and drops clients for withdrawn ones.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the daemon treats this as fallible"
+    )]
     pub(crate) fn set_relays(&mut self, relays: &[Relay]) -> Result<(), NodeError> {
-        Err(NodeError::Pending("connectivity: set relays"))
+        let local = self.identity.node_id();
+        let wanted: BTreeMap<NodeId, &Relay> = relays
+            .iter()
+            .filter(|relay| relay.node() != local)
+            .map(|relay| (relay.node(), relay))
+            .collect();
+        self.relays.retain(|node, client| {
+            wanted
+                .get(node)
+                .is_some_and(|relay| relay.address() == client.address)
+        });
+        for (node, relay) in &wanted {
+            if self.relays.contains_key(node) {
+                continue;
+            }
+            let (client, incoming) = Client::tcp(
+                relay.address().to_owned(),
+                *node,
+                Arc::clone(&self.relay_key),
+                ClientOptions::default(),
+            );
+            tokio::spawn(forward_relayed(incoming, self.commands.clone()));
+            debug!(relay = %node, address = relay.address(), "relay client started");
+            self.relays.insert(
+                *node,
+                RelayClient {
+                    address: relay.address().to_owned(),
+                    client,
+                },
+            );
+        }
+        let stun_servers: Vec<SocketAddr> = wanted
+            .values()
+            .filter_map(|relay| relay.address().parse().ok())
+            .collect();
+        if stun_servers != self.stun_servers {
+            self.stun_servers = stun_servers;
+            self.probes.clear();
+            self.reflexive
+                .retain(|server, _| self.stun_servers.contains(server));
+            self.next_stun = Some(Instant::now());
+            self.refresh_advertised();
+        }
+        let now = Instant::now();
+        let at = self.at(now);
+        let available = !self.relays.is_empty();
+        let nodes: Vec<NodeId> = self.peers.keys().copied().collect();
+        for node in nodes {
+            if let Some(peer) = self.peers.get_mut(&node) {
+                peer.paths.set_relay_available(at, available);
+            }
+            self.pump(node, now);
+        }
+        Ok(())
     }
 
     /// Handles a STUN or disco datagram from the dataplane's control event.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the daemon treats this as fallible"
+    )]
     pub(crate) fn handle_datagram(
         &mut self,
         source: SocketAddr,
         datagram: &[u8],
         now: Instant,
     ) -> Result<(), NodeError> {
-        Err(NodeError::Pending("connectivity: handle datagram"))
+        if is_stun(datagram) {
+            self.handle_stun(source, datagram);
+            return Ok(());
+        }
+        let Some((peer, message)) = self.open(datagram) else {
+            return Ok(());
+        };
+        let at = self.at(now);
+        let Some(state) = self.peers.get_mut(&peer) else {
+            return Ok(());
+        };
+        match message {
+            Message::Ping(ping) => {
+                if let Some(reply) = state.paths.handle_ping(at, source, &ping) {
+                    self.transmit(peer, &reply);
+                }
+            }
+            Message::Pong(pong) => {
+                state.paths.handle_pong(at, source, &pong);
+            }
+            Message::CallMeMaybe(call) => state.paths.handle_call_me_maybe(at, &call),
+        }
+        self.pump(peer, now);
+        Ok(())
     }
 
     /// Sends a WireGuard datagram for `peer` through a connected relay.
@@ -94,34 +329,131 @@ impl Connectivity {
         peer: NodeId,
         datagram: Vec<u8>,
     ) -> Result<(), NodeError> {
-        Err(NodeError::Pending("connectivity: send relayed"))
+        let mut clients: Vec<&RelayClient> = self.relays.values().collect();
+        clients.sort_by_key(|relay| relay.client.status() != Status::Connected);
+        let Some(relay) = clients
+            .into_iter()
+            .find(|relay| !matches!(relay.client.status(), Status::Rejected(_)))
+        else {
+            return Err(NodeError::NotFound(format!("no relay to reach {peer}")));
+        };
+        match relay.client.send(peer, datagram) {
+            Ok(()) | Err(SendError::Full) => Ok(()),
+            Err(SendError::TooLarge(len)) => Err(NodeError::InvalidArgument(format!(
+                "datagram of {len} bytes exceeds the relay limit"
+            ))),
+            Err(error) => Err(NodeError::NotFound(format!("relay unusable: {error}"))),
+        }
     }
 
     /// Handles a datagram a relay delivered, disco or WireGuard.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the daemon treats this as fallible"
+    )]
     pub(crate) fn handle_relayed(
         &mut self,
         from: NodeId,
         datagram: Vec<u8>,
         now: Instant,
     ) -> Result<(), NodeError> {
-        Err(NodeError::Pending("connectivity: handle relayed"))
+        if !kith_disco::is_disco(&datagram) {
+            self.outputs.push(Output::AcceptRelayed {
+                peer: from,
+                datagram,
+            });
+            return Ok(());
+        }
+        let Some((sender, message)) = self.open(&datagram) else {
+            return Ok(());
+        };
+        if sender != from {
+            debug!(relay_sender = %from, disco_sender = %sender, "relayed disco sender mismatch");
+            return Ok(());
+        }
+        if let Message::CallMeMaybe(call) = message {
+            let at = self.at(now);
+            if let Some(state) = self.peers.get_mut(&from) {
+                state.paths.handle_call_me_maybe(at, &call);
+                self.pump(from, now);
+            }
+        }
+        Ok(())
     }
 
     /// Re-gathers local endpoints and re-probes every peer after a host network change.
-    pub(crate) fn handle_network_change(&mut self, change: &Change, now: Instant) {}
+    pub(crate) fn handle_network_change(&mut self, change: &Change, now: Instant) {
+        self.interfaces = interface_endpoints(&change.new, self.local_port);
+        self.reflexive.clear();
+        self.observed.clear();
+        self.probes.clear();
+        self.next_stun = (!self.stun_servers.is_empty()).then_some(now);
+        self.refresh_advertised();
+        let at = self.at(now);
+        let nodes: Vec<NodeId> = self.peers.keys().copied().collect();
+        for node in nodes {
+            if let Some(peer) = self.peers.get_mut(&node) {
+                peer.paths.request_hole_punch(at);
+            }
+            self.pump(node, now);
+        }
+    }
 
     /// Records the router's current port mapping as a local candidate.
-    pub(crate) fn set_port_mapping(&mut self, mapped: Option<SocketAddr>) {}
+    pub(crate) fn set_port_mapping(&mut self, mapped: Option<SocketAddr>) {
+        if self.mapped != mapped {
+            self.mapped = mapped;
+            self.refresh_advertised();
+        }
+    }
 
     /// Notes that a peer's WireGuard session is up.
-    pub(crate) fn note_handshake(&mut self, peer: NodeId, now: Instant) {}
+    pub(crate) fn note_handshake(&mut self, peer: NodeId, now: Instant) {
+        let at = self.at(now);
+        if let Some(state) = self.peers.get_mut(&peer) {
+            state.paths.note_activity(at);
+            self.pump(peer, now);
+        }
+    }
 
     /// Advances every timer that is due.
-    pub(crate) fn handle_timeout(&mut self, now: Instant) {}
+    pub(crate) fn handle_timeout(&mut self, now: Instant) {
+        if self.next_stun.is_some_and(|due| due <= now) {
+            self.start_stun_round(now);
+        }
+        let at = self.at(now);
+        let mut requests = Vec::new();
+        self.probes.retain(|server, probe| {
+            if let Some(request) = probe.poll_transmit(at) {
+                requests.push(Output::SendRaw {
+                    destination: *server,
+                    datagram: request.to_vec(),
+                });
+            }
+            !probe.is_timed_out()
+        });
+        self.outputs.extend(requests);
+        let nodes: Vec<NodeId> = self.peers.keys().copied().collect();
+        for node in nodes {
+            if let Some(peer) = self.peers.get_mut(&node) {
+                peer.paths.handle_timeout(at);
+            }
+            self.pump(node, now);
+        }
+    }
 
     /// The next instant [`Connectivity::handle_timeout`] must run.
     pub(crate) fn poll_timeout(&self) -> Option<Instant> {
-        None
+        let peers = self
+            .peers
+            .values()
+            .filter_map(|peer| peer.paths.poll_timeout());
+        let probes = self.probes.values().filter_map(StunProbe::poll_timeout);
+        peers
+            .chain(probes)
+            .filter_map(|at| self.epoch.checked_add(at))
+            .chain(self.next_stun)
+            .min()
     }
 
     /// Takes the queued outputs.
@@ -131,11 +463,219 @@ impl Connectivity {
 
     /// Our endpoints worth gossiping: local, STUN-observed and port-mapped.
     pub(crate) fn local_endpoints(&self) -> Vec<SocketAddr> {
-        Vec::new()
+        self.advertised.clone()
     }
 
     /// The path currently used for a peer.
     pub(crate) fn path_kind(&self, peer: &NodeId) -> Option<PathKind> {
-        None
+        self.peers
+            .get(peer)
+            .and_then(|state| state.paths.best_path())
+            .map(|target| match target {
+                PathTarget::Direct(_) => PathKind::Direct,
+                PathTarget::Relay => PathKind::Relay,
+            })
     }
+
+    fn at(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.epoch)
+    }
+
+    fn open(&self, datagram: &[u8]) -> Option<(NodeId, Message)> {
+        let (sender, message) = match kith_disco::open(datagram, &self.secret.0) {
+            Ok(opened) => opened,
+            Err(error) => {
+                debug!(%error, "dropping undecodable disco packet");
+                return None;
+            }
+        };
+        let key = sender.to_bytes();
+        let peer = self
+            .peers
+            .iter()
+            .find(|(_, peer)| peer.disco == key)
+            .map(|(node, _)| *node);
+        if peer.is_none() {
+            debug!("dropping disco packet from an unknown key");
+        }
+        peer.map(|node| (node, message))
+    }
+
+    fn pump(&mut self, node: NodeId, now: Instant) {
+        let at = self.at(now);
+        let mut transmits = Vec::new();
+        let mut events = Vec::new();
+        let Some(peer) = self.peers.get_mut(&node) else {
+            return;
+        };
+        while let Some(transmit) = peer.paths.poll_transmit(at) {
+            transmits.push(transmit);
+        }
+        while let Some(event) = peer.paths.poll_event() {
+            events.push(event);
+        }
+        for transmit in transmits {
+            self.transmit(node, &transmit);
+        }
+        let mut observed_changed = false;
+        for event in events {
+            match event {
+                Event::PathChanged(target) => {
+                    let endpoint = match target {
+                        Some(PathTarget::Direct(addr)) => Endpoint::Direct(addr),
+                        Some(PathTarget::Relay) | None => Endpoint::Relay,
+                    };
+                    debug!(peer = %node, ?endpoint, "path changed");
+                    self.outputs.push(Output::PathChanged {
+                        peer: node,
+                        endpoint,
+                    });
+                }
+                Event::EndpointObserved(addr) if !self.observed.contains(&addr) => {
+                    self.observed.insert(0, addr);
+                    self.observed.truncate(MAX_OBSERVED);
+                    observed_changed = true;
+                }
+                Event::EndpointObserved(_) | _ => {}
+            }
+        }
+        if observed_changed {
+            self.refresh_advertised();
+        }
+    }
+
+    fn transmit(&mut self, node: NodeId, transmit: &Transmit) {
+        let Some(peer) = self.peers.get(&node) else {
+            return;
+        };
+        let key = AgreementPublic::from_bytes(peer.disco);
+        let datagram =
+            match kith_disco::seal(&transmit.message, &self.secret.0, &key, &mut OsRandom) {
+                Ok(datagram) => datagram,
+                Err(error) => {
+                    warn!(peer = %node, %error, "could not seal disco message");
+                    return;
+                }
+            };
+        match transmit.to {
+            PathTarget::Direct(destination) => self.outputs.push(Output::SendRaw {
+                destination,
+                datagram,
+            }),
+            PathTarget::Relay => {
+                if let Err(error) = self.send_relayed(node, datagram) {
+                    debug!(peer = %node, %error, "disco message not relayed");
+                }
+            }
+        }
+    }
+
+    fn handle_stun(&mut self, source: SocketAddr, datagram: &[u8]) {
+        let Some(probe) = self.probes.get_mut(&source) else {
+            return;
+        };
+        if let Some(reflexive) = probe.handle_response(datagram) {
+            self.probes.remove(&source);
+            if self.reflexive.insert(source, reflexive) != Some(reflexive) {
+                debug!(server = %source, %reflexive, "STUN reflexive address");
+                self.refresh_advertised();
+            }
+        }
+    }
+
+    fn start_stun_round(&mut self, now: Instant) {
+        self.next_stun = now.checked_add(STUN_INTERVAL);
+        let at = self.at(now);
+        for server in &self.stun_servers {
+            let mut txid = [0_u8; 12];
+            if let Err(error) = kith_crypto::fill_random(&mut txid) {
+                warn!(%error, "could not start STUN probe");
+                return;
+            }
+            self.probes
+                .insert(*server, StunProbe::new(TransactionId(txid), at));
+        }
+    }
+
+    fn refresh_advertised(&mut self) {
+        let mut advertised: Vec<SocketAddr> = Vec::new();
+        let sources = self
+            .mapped
+            .iter()
+            .chain(self.reflexive.values())
+            .chain(&self.observed)
+            .chain(&self.interfaces);
+        for addr in sources {
+            if !advertised.contains(addr) {
+                advertised.push(*addr);
+            }
+        }
+        advertised.truncate(kith_disco::paths::MAX_LOCAL_ENDPOINTS);
+        if advertised == self.advertised {
+            return;
+        }
+        debug!(endpoints = ?advertised, "local endpoints changed");
+        for peer in self.peers.values_mut() {
+            peer.paths.set_local_endpoints(&advertised);
+        }
+        self.advertised = advertised;
+    }
+}
+
+fn interface_endpoints(snapshot: &NetworkSnapshot, port: u16) -> Vec<SocketAddr> {
+    snapshot
+        .addresses()
+        .iter()
+        .map(|interface| interface.address)
+        .filter(|address| match address {
+            IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_unspecified() && !v4.is_link_local(),
+            IpAddr::V6(v6) => {
+                !v6.is_loopback() && !v6.is_unspecified() && !v6.is_unicast_link_local()
+            }
+        })
+        .map(|address| SocketAddr::new(address, port))
+        .collect()
+}
+
+async fn forward_relayed(mut incoming: kith_relay::Incoming, commands: mpsc::Sender<Command>) {
+    while let Some((from, datagram)) = incoming.recv().await {
+        let event = ConnectivityEvent::Relayed { from, datagram };
+        if commands.send(Command::Connectivity(event)).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn spawn_netmon(tun_name: String, commands: mpsc::Sender<Command>) -> JoinHandle<()> {
+    let mut changes = kith_netmon::spawn_monitor(tun_name);
+    tokio::spawn(async move {
+        while let Some(change) = changes.recv().await {
+            let event = ConnectivityEvent::NetworkChanged(Box::new(change));
+            if commands.send(Command::Connectivity(event)).await.is_err() {
+                return;
+            }
+        }
+    })
+}
+
+fn spawn_port_mapper(local_port: u16, commands: mpsc::Sender<Command>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut mapper = PortMapper::spawn(PortMapConfig::new(local_port));
+        let mut current = None;
+        loop {
+            let mapping = mapper.changed().await.map(|mapping| mapping.external);
+            if mapping == current {
+                if mapping.is_none() {
+                    tokio::time::sleep(STUN_INTERVAL).await;
+                }
+                continue;
+            }
+            current = mapping;
+            let event = ConnectivityEvent::PortMapped(mapping);
+            if commands.send(Command::Connectivity(event)).await.is_err() {
+                mapper.shutdown().await;
+                return;
+            }
+        }
+    })
 }

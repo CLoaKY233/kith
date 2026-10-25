@@ -1,19 +1,13 @@
-#![expect(
-    clippy::needless_pass_by_value,
-    clippy::unused_self,
-    unused_variables,
-    reason = "skeleton bodies; remove once implemented"
-)]
-
+use core::net::{Ipv4Addr, Ipv6Addr};
 use core::time::Duration;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 
-use kith_control::{NetMap, NetMapDiff, Networks};
+use kith_control::{NetMap, NetMapDiff, Networks, build_netmap, records};
 use kith_identity::{Bootstrap, DeviceIdentity, InviteToken};
-use kith_ledger::{JoinProof, Ledger, SignedOp};
+use kith_ledger::{JoinProof, Ledger, NetworkParams, OpBody, SignedOp};
 use kith_policy::Policy;
-use kith_types::{NetworkId, NodeId, Timestamp};
+use kith_types::{Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, Timestamp};
 
 use crate::types::NodeError;
 
@@ -27,6 +21,7 @@ pub(crate) type LedgerRegistry = Arc<RwLock<BTreeMap<NetworkId, SharedLedger>>>;
 #[derive(Debug)]
 pub(crate) struct NetworkRuntime {
     id: NetworkId,
+    local: NodeId,
     ledger: SharedLedger,
     netmap: NetMap,
 }
@@ -48,17 +43,47 @@ impl NetworkRuntime {
         device_name: &str,
         now: Timestamp,
     ) -> Result<Self, NodeError> {
-        Err(NodeError::Pending("network: create"))
+        let params = NetworkParams {
+            ipv4: Ipv4Prefix::new(Ipv4Addr::new(100, 64, 0, 0), 10)
+                .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
+            ipv6: Ipv6Prefix::new(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0), 48)
+                .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
+        };
+        let ledger = Ledger::create(
+            identity.signing_key(),
+            name,
+            device_name,
+            params,
+            &[],
+            1,
+            now,
+        )?;
+        Self::from_ledger(ledger, identity.node_id())
     }
 
     /// Wraps a ledger received by joining, or rebuilt from storage.
     pub(crate) fn from_ledger(ledger: Ledger, local: NodeId) -> Result<Self, NodeError> {
-        Err(NodeError::Pending("network: from ledger"))
+        let netmap = build_netmap(ledger.view(), local)?;
+        Ok(Self {
+            id: ledger.network_id(),
+            local,
+            ledger: Arc::new(Mutex::new(ledger)),
+            netmap,
+        })
     }
 
     /// Rebuilds a ledger from persisted ops; the genesis op may be anywhere in the list.
     pub(crate) fn from_ops(ops: Vec<SignedOp>, local: NodeId) -> Result<Self, NodeError> {
-        Err(NodeError::Pending("network: from ops"))
+        let genesis = ops
+            .iter()
+            .position(|op| matches!(op.op().body, OpBody::Genesis { .. }))
+            .ok_or_else(|| NodeError::InvalidArgument(String::from("no genesis op")))?;
+        let mut ops = ops;
+        let mut ledger = Ledger::new(ops.swap_remove(genesis))?;
+        if let Some(error) = ledger.insert_batch(ops).first_error() {
+            return Err(error.clone().into());
+        }
+        Self::from_ledger(ledger, local)
     }
 
     /// The network's id.
@@ -95,7 +120,14 @@ impl NetworkRuntime {
 
     /// Re-derives the map from the ledger; `None` when it did not change.
     pub(crate) fn rebuild(&mut self, local: NodeId) -> Result<Option<Change>, NodeError> {
-        Err(NodeError::Pending("network: rebuild"))
+        let netmap = self.with_ledger(|ledger| build_netmap(ledger.view(), local))??;
+        self.local = local;
+        let diff = NetMap::diff(&self.netmap, &netmap);
+        self.netmap = netmap;
+        Ok((!diff.is_empty()).then_some(Change {
+            network: self.id,
+            diff,
+        }))
     }
 
     /// Signs and inserts a `CreateInvite` op and returns its token.
@@ -107,7 +139,30 @@ impl NetworkRuntime {
         bootstrap: Vec<Bootstrap>,
         now: Timestamp,
     ) -> Result<InviteToken, NodeError> {
-        Err(NodeError::Pending("network: invite"))
+        let expires = now
+            .checked_add(expires_in)
+            .ok_or_else(|| NodeError::InvalidArgument(String::from("invite expiry overflows")))?;
+        let author = identity.node_id();
+        self.with_ledger(|ledger| {
+            let token = InviteToken::generate(
+                ledger.network_id(),
+                author,
+                bootstrap,
+                expires,
+                String::from(ledger.view().name()),
+            )?;
+            let body = OpBody::CreateInvite {
+                invite_key: token.invite_public_key(),
+                expires,
+                max_uses,
+                tags: Vec::new(),
+            };
+            let op = ledger
+                .draft(author, body, now)
+                .sign(identity.signing_key())?;
+            ledger.insert(op)?;
+            Ok(token)
+        })?
     }
 
     /// Signs and inserts a `SetRecord` op; an empty value deletes the record.
@@ -118,7 +173,15 @@ impl NetworkRuntime {
         value: Vec<u8>,
         now: Timestamp,
     ) -> Result<(), NodeError> {
-        Err(NodeError::Pending("network: set record"))
+        let value = (!value.is_empty()).then_some(value);
+        let author = identity.node_id();
+        self.with_ledger(|ledger| {
+            let op = ledger
+                .draft(author, OpBody::SetRecord { key, value }, now)
+                .sign(identity.signing_key())?;
+            ledger.insert(op)?;
+            Ok(())
+        })?
     }
 
     /// Signs and inserts the policy op.
@@ -128,7 +191,10 @@ impl NetworkRuntime {
         policy: &Policy,
         now: Timestamp,
     ) -> Result<(), NodeError> {
-        Err(NodeError::Pending("network: set policy"))
+        let bytes = policy
+            .to_bytes()
+            .map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
+        self.set_record(identity, String::from(records::POLICY), bytes, now)
     }
 }
 
@@ -139,7 +205,27 @@ pub(crate) fn sponsor_join(
     proof: JoinProof,
     now: Timestamp,
 ) -> Result<(), NodeError> {
-    Err(NodeError::Pending("network: sponsor join"))
+    let invite = ledger
+        .view()
+        .invites()
+        .get(&proof.invite_key.to_bytes())
+        .ok_or_else(|| NodeError::InvalidArgument(String::from("unknown or used-up invite")))?;
+    if now > invite.expires {
+        return Err(NodeError::InvalidArgument(String::from("invite expired")));
+    }
+    let device = proof.device;
+    let author = identity.node_id();
+    let op = ledger
+        .draft(author, OpBody::Join(proof), now)
+        .sign(identity.signing_key())?;
+    ledger.insert(op)?;
+    if ledger.view().is_member(&device) {
+        Ok(())
+    } else {
+        Err(NodeError::InvalidArgument(String::from(
+            "join was not admitted",
+        )))
+    }
 }
 
 /// Every joined network, the cross-network map set, and the registry the channel reads.
@@ -153,7 +239,20 @@ pub(crate) struct NetworkSet {
 impl NetworkSet {
     /// Adds or replaces a runtime and publishes its ledger to the registry.
     pub(crate) fn insert(&mut self, runtime: NetworkRuntime) -> Result<(), NodeError> {
-        Err(NodeError::Pending("network: set insert"))
+        let id = runtime.id;
+        let local = runtime.local;
+        let ledger = runtime.ledger();
+        let diff = {
+            let locked = ledger.lock().map_err(|_| NodeError::Poisoned)?;
+            self.maps.update(locked.view(), local)
+        };
+        diff?;
+        self.registry
+            .write()
+            .map_err(|_| NodeError::Poisoned)?
+            .insert(id, ledger);
+        self.runtimes.insert(id, runtime);
+        Ok(())
     }
 
     /// Removes a runtime and withdraws its ledger from the registry.
@@ -180,7 +279,17 @@ impl NetworkSet {
         network: &NetworkId,
         local: NodeId,
     ) -> Result<Option<Change>, NodeError> {
-        Err(NodeError::Pending("network: set rebuild"))
+        let runtime = self
+            .runtimes
+            .get_mut(network)
+            .ok_or_else(|| NodeError::NotFound(network.to_string()))?;
+        let change = runtime.rebuild(local)?;
+        if change.is_some() {
+            let ledger = runtime.ledger();
+            let locked = ledger.lock().map_err(|_| NodeError::Poisoned)?;
+            self.maps.update(locked.view(), local)?;
+        }
+        Ok(change)
     }
 
     /// A runtime by id, mutably; call [`NetworkSet::rebuild`] after changing its ledger.

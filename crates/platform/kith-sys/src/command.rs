@@ -194,3 +194,49 @@ impl System for OsSystem {
             .any(|dir| dir.join(name).is_file())
     }
 }
+
+/// A system that performs nothing: every command succeeds with empty output.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopSystem;
+
+impl System for NoopSystem {
+    fn run(&mut self, _cmd: &Cmd) -> Result<Output, Error> {
+        Ok(Output::default())
+    }
+
+    fn read(&mut self, _path: &Path) -> Result<Option<String>, Error> {
+        Ok(None)
+    }
+
+    fn write(&mut self, _path: &Path, _contents: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn remove(&mut self, _path: &Path) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn list(&mut self, _dir: &Path) -> Result<Vec<PathBuf>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn has_program(&mut self, _name: &str) -> bool {
+        true
+    }
+}
+
+/// The process's effective user id, or `None` on non-Unix platforms.
+#[cfg(unix)]
+#[expect(unsafe_code, reason = "geteuid has no safe std wrapper")]
+#[must_use]
+pub fn effective_uid() -> Option<u32> {
+    // SAFETY: geteuid takes no arguments, cannot fail and touches no memory.
+    Some(unsafe { libc::geteuid() })
+}
+
+/// The process's effective user id, or `None` on non-Unix platforms.
+#[cfg(not(unix))]
+#[must_use]
+pub fn effective_uid() -> Option<u32> {
+    None
+}

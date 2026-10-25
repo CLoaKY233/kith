@@ -30,6 +30,7 @@ kith-sys.workspace = true
 kith-transport-udp.workspace = true
 kith-tun.workspace = true
 kith-types.workspace = true
+toml.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "signal", "sync", "time"] }
 tracing.workspace = true

@@ -1,15 +1,8 @@
-#![expect(
-    clippy::unused_async,
-    clippy::unused_async_trait_impl,
-    unused_variables,
-    reason = "skeleton bodies; remove once implemented"
-)]
-
 use core::net::SocketAddr;
 use std::collections::BTreeSet;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
-use kith_relay::Server;
+use kith_relay::{Server, ServerOptions};
 use kith_stun::{encode_binding_response, is_stun, parse_binding_request};
 use kith_types::{IpPrefix, NodeId};
 
@@ -30,7 +23,28 @@ impl ServerMode {
         relay_listen: Option<SocketAddr>,
         exit: bool,
     ) -> Result<Self, NodeError> {
-        Err(NodeError::Pending("server: start"))
+        let members = Arc::new(RwLock::new(BTreeSet::new()));
+        let relay = match relay_listen {
+            Some(addr) => {
+                let view = Arc::clone(&members);
+                let authorizer = move |node: &NodeId| {
+                    view.read()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .contains(node)
+                };
+                let server =
+                    Server::bind(addr, identity, authorizer, None, ServerOptions::default())
+                        .await?;
+                tracing::debug!(addr = ?server.local_addr(), "relay listening");
+                Some(server)
+            }
+            None => None,
+        };
+        Ok(Self {
+            relay,
+            members,
+            exit,
+        })
     }
 
     /// The relay's bound address, to advertise as a `relay/<name>` record.
@@ -40,7 +54,17 @@ impl ServerMode {
 
     /// Replaces the members the relay serves, the union over every network.
     pub(crate) async fn set_members(&self, members: BTreeSet<NodeId>) -> Result<(), NodeError> {
-        Err(NodeError::Pending("server: set members"))
+        {
+            let mut current = self.members.write().unwrap_or_else(PoisonError::into_inner);
+            if *current == members {
+                return Ok(());
+            }
+            *current = members;
+        }
+        if let Some(relay) = &self.relay {
+            relay.refresh_membership().await;
+        }
+        Ok(())
     }
 
     /// Whether this node routes and NATs exit traffic for members.
