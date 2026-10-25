@@ -923,6 +923,17 @@ dependencies = [
 [[package]]
 name = "kith-relay"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-relay-proto",
+ "kith-types",
+ "rustls",
+ "rustls-pki-types",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
 
 [[package]]
 name = "kith-relay-proto"
