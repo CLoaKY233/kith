@@ -61,6 +61,7 @@ x25519-dalek = { version = "3.0.0", default-features = false }
 zeroize = { version = "1.9.1", default-features = false }
 
 # Async runtime and OS I/O (drivers only; cores never depend on these).
+bytes = { version = "1.12.1", default-features = false }
 if-addrs = { version = "0.15.0", default-features = false }
 quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
