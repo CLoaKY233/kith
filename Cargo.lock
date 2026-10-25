@@ -901,8 +901,10 @@ dependencies = [
  "kith-tun",
  "kith-types",
  "kith-wg",
+ "proptest",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

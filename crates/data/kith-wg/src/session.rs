@@ -46,6 +46,10 @@ impl Keypair {
         now.saturating_sub(self.created)
     }
 
+    pub(crate) fn expires_at(&self) -> Duration {
+        self.created.saturating_add(REJECT_AFTER_TIME)
+    }
+
     pub(crate) fn expired(&self, now: Duration) -> bool {
         self.age(now) >= REJECT_AFTER_TIME
     }
@@ -162,6 +166,12 @@ impl Keypairs {
         if let Some(next) = self.next.take() {
             self.previous = self.current.take();
             self.current = Some(next);
+        }
+    }
+
+    pub(crate) fn retire_current(&mut self) {
+        if let Some(current) = self.current.take() {
+            self.previous = Some(current);
         }
     }
 

@@ -183,6 +183,12 @@ pub(crate) struct Transport<'a> {
     pub(crate) sealed: &'a [u8],
 }
 
+impl Transport<'_> {
+    pub(crate) const fn datagram_len(&self) -> usize {
+        TRANSPORT_HEADER_LEN.saturating_add(self.sealed.len())
+    }
+}
+
 /// Writes a transport header into the front of `out`.
 pub(crate) fn write_transport_header(
     out: &mut [u8],

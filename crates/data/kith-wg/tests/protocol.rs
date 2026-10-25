@@ -10,8 +10,8 @@ mod tests {
     use boringtun::noise::{Tunn, TunnResult};
     use boringtun::x25519;
     use kith_wg::{
-        CookieChecker, Decapsulated, Device, Encapsulated, Now, Peer, PeerConfig, RandomSource,
-        StaticIdentity, Tai64N, Transmit, WgError,
+        CookieChecker, Decapsulated, Device, Encapsulated, Now, Peer, PeerConfig, PeerEvent,
+        RandomSource, StaticIdentity, Tai64N, Transmit, WgError,
     };
     use proptest::prelude::*;
 
@@ -37,7 +37,10 @@ mod tests {
     }
 
     fn at(millis: u64) -> Now {
-        let monotonic = Duration::from_millis(millis);
+        instant(Duration::from_millis(millis))
+    }
+
+    fn instant(monotonic: Duration) -> Now {
         Now {
             monotonic,
             wall: Tai64N::from_unix(Duration::from_hours(500_000) + monotonic),
@@ -134,6 +137,10 @@ mod tests {
             sent.push(out[..len].to_vec());
         }
         sent
+    }
+
+    fn events(peer: &mut Peer) -> Vec<PeerEvent> {
+        std::iter::from_fn(|| peer.poll_event()).collect()
     }
 
     /// Both roles, both directions, and both sides' rekeys against boringtun 0.7.1.
@@ -301,7 +308,7 @@ mod tests {
         assert_eq!(&out[..packet.len()], packet.as_slice());
     }
 
-    /// One simulated timeline through passive keepalive, `REKEY_AFTER_TIME` and `REJECT_AFTER_TIME`.
+    /// One timeline through keepalive, rekey and expiry, with the events and counters it yields.
     #[test]
     fn timers_drive_keepalive_rekey_and_expiry() {
         let (a_secret, b_secret) = ([0x55; 32], [0x66; 32]);
@@ -311,11 +318,18 @@ mod tests {
 
         let (_, initiation) = send(&mut a, at(0), &packet);
         let (_, response) = deliver(&mut b, at(0), &initiation);
+        assert_eq!(
+            events(&mut b),
+            [],
+            "the responder cannot send until confirmed"
+        );
         let (_, confirmation) = deliver(&mut a, at(0), &response);
+        assert_eq!(events(&mut a), [PeerEvent::SessionEstablished]);
         assert_eq!(
             deliver(&mut b, at(0), &confirmation).0,
             Decapsulated::Packet(packet.len())
         );
+        assert_eq!(events(&mut b), [PeerEvent::SessionEstablished]);
 
         // b received data and sent nothing: a keepalive is due exactly KEEPALIVE_TIMEOUT later.
         assert_eq!(b.poll_timeout(), Some(Duration::from_secs(10)));
@@ -327,6 +341,7 @@ mod tests {
             deliver(&mut a, at(10_000), &keepalive[0]).0,
             Decapsulated::Nothing
         );
+        assert_eq!(a.rx_bytes(), b.tx_bytes());
 
         // Steady two-way traffic: no handshake until the session reaches REKEY_AFTER_TIME.
         let mut rekeyed_at = None;
@@ -341,7 +356,8 @@ mod tests {
                 if message_type(&datagram) == 1 {
                     rekeyed_at.get_or_insert(second);
                     let (_, response) = deliver(&mut b, now, &datagram);
-                    deliver(&mut a, now, &response);
+                    let (_, confirmation) = deliver(&mut a, now, &response);
+                    deliver(&mut b, now, &confirmation);
                 } else {
                     deliver(&mut b, now, &datagram);
                 }
@@ -349,10 +365,29 @@ mod tests {
             drain(&mut b, now);
         }
         assert_eq!(rekeyed_at, Some(120));
+        for side in [&mut a, &mut b] {
+            assert_eq!(events(side), [PeerEvent::SessionEstablished]);
+            assert_eq!(side.last_handshake(), Some(Duration::from_secs(120)));
+        }
+        assert_eq!(a.tx_bytes(), b.rx_bytes());
 
         // Now the network goes dark. The session made at 120 s works until 300 s, no longer.
         let (result, late) = send(&mut a, at(299_999), &packet);
         assert!(matches!(result, Encapsulated::Transport(_)));
+        let mut expired_at = None;
+        for _ in 0..100 {
+            let due = b.poll_timeout().unwrap();
+            drain(&mut b, instant(due));
+            if events(&mut b).contains(&PeerEvent::SessionExpired) {
+                expired_at = Some(due);
+                break;
+            }
+        }
+        assert_eq!(
+            expired_at,
+            Some(Duration::from_secs(300)),
+            "b's own timers report the expiry on time"
+        );
         let mut out = vec![0; BUFFER];
         assert_eq!(
             b.decapsulate(at(300_000), &late, &mut out),
@@ -360,6 +395,11 @@ mod tests {
         );
         let (result, _) = send(&mut a, at(300_000), &packet);
         assert!(!matches!(result, Encapsulated::Transport(_)));
+        assert_eq!(events(&mut a), [PeerEvent::SessionExpired]);
+        assert!(
+            a.poll_timeout() > Some(Duration::from_secs(300)),
+            "a packet queued behind the new handshake must not make a timer due now"
+        );
     }
 
     const A_SECRET: [u8; 32] = [0x77; 32];

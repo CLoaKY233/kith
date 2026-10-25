@@ -12,8 +12,9 @@ use zeroize::Zeroizing;
 use crate::WgError;
 use crate::cookie::{CookieChecker, Incoming, Verdict, open_cookie_reply, seal_macs};
 use crate::messages::{
-    CookieReply, HANDSHAKE_INITIATION_LEN, HANDSHAKE_RESPONSE_LEN, INITIATION_MAC1_OFFSET, MAC_LEN,
-    MIN_OUTPUT_LEN, Message, RESPONSE_MAC1_OFFSET, Response, Transport, required_output_len,
+    COOKIE_REPLY_LEN, CookieReply, HANDSHAKE_INITIATION_LEN, HANDSHAKE_RESPONSE_LEN,
+    INITIATION_MAC1_OFFSET, MAC_LEN, MIN_OUTPUT_LEN, Message, RESPONSE_MAC1_OFFSET, Response,
+    Transport, required_output_len,
 };
 use crate::noise::{
     HalfInitiation, InitiatorHandshake, PeerKeys, StaticIdentity, begin_initiation,
@@ -28,6 +29,8 @@ use crate::time::{
 
 /// At most this many packets wait for a handshake; older ones are dropped first.
 pub const MAX_QUEUED_PACKETS: usize = 16;
+
+const MAX_QUEUED_EVENTS: usize = 8;
 
 /// Handshake initiations per second a standalone peer accepts before demanding cookies.
 const STANDALONE_HANDSHAKE_LIMIT: u32 = 20;
@@ -119,6 +122,16 @@ pub enum Decapsulated {
     Nothing,
 }
 
+/// A change in a peer's session, from [`Peer::poll_event`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PeerEvent {
+    /// A new session can send: the first one, or a rekey.
+    SessionEstablished,
+    /// No session can send any more.
+    SessionExpired,
+}
+
 /// Result of [`Peer::poll_transmit`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transmit {
@@ -156,6 +169,11 @@ pub struct Peer {
     keypairs: Keypairs,
     last_session_at: Option<Duration>,
     queue: VecDeque<Vec<u8>>,
+    established: bool,
+    last_handshake: Option<Duration>,
+    events: VecDeque<PeerEvent>,
+    rx_bytes: u64,
+    tx_bytes: u64,
 
     last_sent: Option<Duration>,
     last_received: Option<Duration>,
@@ -221,6 +239,11 @@ impl Peer {
             keypairs: Keypairs::default(),
             last_session_at: None,
             queue: VecDeque::new(),
+            established: false,
+            last_handshake: None,
+            events: VecDeque::with_capacity(MAX_QUEUED_EVENTS),
+            rx_bytes: 0,
+            tx_bytes: 0,
             last_sent: None,
             last_received: None,
             keepalive_due: None,
@@ -241,6 +264,29 @@ impl Peer {
             .current
             .as_ref()
             .is_some_and(|keypair| keypair.can_send(now))
+    }
+
+    /// When the latest session was established, in monotonic time.
+    #[must_use]
+    pub const fn last_handshake(&self) -> Option<Duration> {
+        self.last_handshake
+    }
+
+    /// Bytes of authenticated datagrams received from the peer.
+    #[must_use]
+    pub const fn rx_bytes(&self) -> u64 {
+        self.rx_bytes
+    }
+
+    /// Bytes of datagrams produced for the peer.
+    #[must_use]
+    pub const fn tx_bytes(&self) -> u64 {
+        self.tx_bytes
+    }
+
+    /// The next session change, oldest first. Poll after every call that takes `now`.
+    pub fn poll_event(&mut self) -> Option<PeerEvent> {
+        self.events.pop_front()
     }
 
     /// Encrypts an IP packet for the peer into `out`.
@@ -265,9 +311,11 @@ impl Peer {
             let len = keypair.seal(plaintext, out)?;
             self.handshake_wanted |= keypair.needs_rekey(at);
             self.on_sent(at, !plaintext.is_empty());
+            self.count_sent(len);
             return Ok(Encapsulated::Transport(len));
         }
 
+        self.track_expiry(at);
         if self.queue.len() >= MAX_QUEUED_PACKETS {
             self.queue.pop_front();
         }
@@ -367,6 +415,7 @@ impl Peer {
             self.last_response = None;
             self.last_session_at = None;
         }
+        self.track_expiry(at);
 
         if self
             .attempt_started
@@ -426,6 +475,12 @@ impl Peer {
             }
         }
         let flush_due = (has_session && !self.queue.is_empty()).then_some(Duration::ZERO);
+        let expiry_due = self
+            .keypairs
+            .current
+            .as_ref()
+            .filter(|_| self.established)
+            .map(Keypair::expires_at);
         let keepalive_due = if has_session {
             earliest(self.keepalive_due, self.persistent_keepalive_due())
         } else {
@@ -440,6 +495,7 @@ impl Peer {
                 .map(|made| made.saturating_add(ZERO_KEYS_AFTER)),
             flush_due,
             keepalive_due,
+            expiry_due,
         ]
         .into_iter()
         .fold(None, earliest)
@@ -493,6 +549,8 @@ impl Peer {
         self.last_session_at = Some(at);
         self.on_received(at);
         self.on_sent(at, false);
+        self.count_received(HANDSHAKE_INITIATION_LEN);
+        self.count_sent(HANDSHAKE_RESPONSE_LEN);
         Ok(Decapsulated::Reply(HANDSHAKE_RESPONSE_LEN))
     }
 
@@ -513,6 +571,7 @@ impl Peer {
         self.attempt_started = None;
         self.retransmit_at = None;
         self.handshake_wanted = false;
+        self.track_expiry(at);
         self.keypairs.install(Keypair::new(
             keys,
             message.receiver,
@@ -522,6 +581,8 @@ impl Peer {
         ));
         self.last_session_at = Some(at);
         self.on_received(at);
+        self.count_received(HANDSHAKE_RESPONSE_LEN);
+        self.on_established(at);
 
         // Whitepaper §5.4.3: the initiator must send first so the responder can confirm.
         let first = self.queue.pop_front().unwrap_or_default();
@@ -541,6 +602,7 @@ impl Peer {
         };
         let cookie = open_cookie_reply(reply, &self.keys.cookie_key, &sent_mac1)?;
         self.cookie = Some((cookie, now.monotonic));
+        self.count_received(COOKIE_REPLY_LEN);
         Ok(Decapsulated::Nothing)
     }
 
@@ -560,12 +622,15 @@ impl Peer {
         }
         let padded = keypair.open(message.counter, message.sealed, out)?;
         if slot == Slot::Next {
+            self.track_expiry(at);
             self.keypairs.confirm_next();
+            self.on_established(at);
         }
         if slot == Slot::Current && keypair_is_old_initiator(self.keypairs.current.as_ref(), at) {
             self.handshake_wanted = true;
         }
         self.on_received(at);
+        self.count_received(message.datagram_len());
         if padded == 0 {
             return Ok(Decapsulated::Nothing);
         }
@@ -609,6 +674,7 @@ impl Peer {
         self.handshake_wanted = false;
         self.new_handshake_due = None;
         self.on_sent(at, false);
+        self.count_sent(HANDSHAKE_INITIATION_LEN);
         Ok(HANDSHAKE_INITIATION_LEN)
     }
 
@@ -627,6 +693,7 @@ impl Peer {
         let len = keypair.seal(plaintext, out)?;
         self.handshake_wanted |= keypair.needs_rekey(at);
         self.on_sent(at, !plaintext.is_empty());
+        self.count_sent(len);
         Ok(len)
     }
 
@@ -678,6 +745,35 @@ impl Peer {
         self.last_received = Some(at);
         self.new_handshake_due = None;
     }
+
+    fn count_sent(&mut self, len: usize) {
+        self.tx_bytes = self.tx_bytes.saturating_add(byte_count(len));
+    }
+
+    fn count_received(&mut self, len: usize) {
+        self.rx_bytes = self.rx_bytes.saturating_add(byte_count(len));
+    }
+
+    fn track_expiry(&mut self, at: Duration) {
+        if self.established && !self.has_session(at) {
+            self.established = false;
+            self.keypairs.retire_current();
+            self.push_event(PeerEvent::SessionExpired);
+        }
+    }
+
+    fn on_established(&mut self, at: Duration) {
+        self.established = true;
+        self.last_handshake = Some(at);
+        self.push_event(PeerEvent::SessionEstablished);
+    }
+
+    fn push_event(&mut self, event: PeerEvent) {
+        if self.events.len() >= MAX_QUEUED_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
 }
 
 /// Checks MACs of a handshake message; `Some` carries a cookie reply already in `out`.
@@ -711,6 +807,10 @@ fn earliest(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
         (a, None) => a,
         (None, b) => b,
     }
+}
+
+fn byte_count(len: usize) -> u64 {
+    u64::try_from(len).unwrap_or(u64::MAX)
 }
 
 fn latest_activity(sent: Option<Duration>, received: Option<Duration>) -> Duration {

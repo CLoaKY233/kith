@@ -15,7 +15,7 @@ use tokio::time::timeout;
 
 use crate::engine::Engine;
 use crate::tun_device::TunDevice;
-use crate::{Dataplane, DataplaneHandle, Endpoint, Event, PeerSpec};
+use crate::{Dataplane, DataplaneHandle, DropCounters, Endpoint, Event, PeerSpec};
 
 const NETWORK: NetworkId = NetworkId::from_bytes([7; 32]);
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -176,6 +176,7 @@ async fn packets_cross_loopback_intact_and_denied_ones_drop() {
     // The first packet confirms the session at B, which announces it only after filtering it.
     a.tun_in.send(udp_packet(&a, &b, b"denied")).unwrap();
     while next_event(&mut b).await != (Event::HandshakeCompleted { peer: a.id }) {}
+    assert_eq!(b.handle.stats().await.unwrap().drops.policy, 1);
 
     let allow = compile(&Policy::default_allow_all(), &members(&[&b, &a]), b.id);
     b.handle.set_filter(NETWORK, allow).await.unwrap();
@@ -186,6 +187,52 @@ async fn packets_cross_loopback_intact_and_denied_ones_drop() {
     let reply = udp_packet(&b, &a, b"reply");
     b.tun_in.send(reply.clone()).unwrap();
     assert_eq!(next_packet(&mut a).await, reply);
+}
+
+#[tokio::test]
+async fn stats_track_a_peer_until_its_network_is_removed() {
+    let a = spawn_node(7);
+    let mut b = spawn_node(8);
+    let allow = Policy::default_allow_all();
+    connect(&a, &b, Endpoint::Direct(b.udp), &allow).await;
+    connect(&b, &a, Endpoint::Direct(a.udp), &allow).await;
+    let request = udp_packet(&a, &b, b"counted");
+    a.tun_in.send(request.clone()).unwrap();
+    assert_eq!(next_packet(&mut b).await, request);
+
+    let stats = b.handle.stats().await.unwrap();
+    let [peer] = stats.peers.as_slice() else {
+        panic!("expected one peer, got {:?}", stats.peers);
+    };
+    assert_eq!(
+        (peer.network, peer.node, peer.endpoint),
+        (NETWORK, a.id, Some(Endpoint::Direct(a.udp)))
+    );
+    assert!(peer.last_handshake.is_some());
+    assert!(peer.rx_bytes > u64::try_from(request.len()).unwrap() && peer.tx_bytes > 0);
+
+    b.handle.remove_network(NETWORK).await.unwrap();
+    a.tun_in.send(udp_packet(&a, &b, b"orphaned")).unwrap();
+    b.tun_in.send(udp_packet(&b, &a, b"unroutable")).unwrap();
+    let drops = timeout(PATIENCE, async {
+        loop {
+            let stats = b.handle.stats().await.unwrap();
+            assert_eq!(stats.peers, []);
+            if stats.drops.invalid > 0 && stats.drops.no_route > 0 {
+                break stats.drops;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let expected = DropCounters {
+        invalid: 1,
+        no_route: 1,
+        ..DropCounters::default()
+    };
+    assert_eq!(drops, expected);
+    assert!(b.tun_out.try_recv().is_err());
 }
 
 #[tokio::test]

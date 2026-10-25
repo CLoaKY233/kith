@@ -5,19 +5,25 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kith_crypto::{SigningKey, VerifyingKey};
-use kith_filter::{Filter, Verdict};
+use kith_filter::{Counters, Filter, Verdict};
+use kith_policy::CompiledFilter;
 use kith_router::Router;
 use kith_transport_udp::{Kind, MAX_SLOT_LEN, RecvBatch, SendBatch, UdpLink, classify};
 use kith_tun::{MAX_PACKET_CAPACITY, PacketBatch};
 use kith_types::{IpPrefix, NetworkId, NodeId};
 use kith_wg::{
-    CookieChecker, Decapsulated, Device, Encapsulated, Now, PeerConfig, PeerId, RandomSource,
-    Tai64N, Transmit, WgError, required_output_len,
+    CookieChecker, Decapsulated, Device, Encapsulated, Now, PeerConfig, PeerEvent, PeerId,
+    RandomSource, Tai64N, Transmit, WgError, required_output_len,
 };
 use tokio::sync::mpsc;
+use tracing::debug;
 
-use crate::api::{Command, DataplaneError, DataplaneHandle, Endpoint, Event, PeerSpec, channels};
+use crate::api::{
+    Command, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event, PeerSpec, PeerStats,
+    Stats, channels,
+};
 use crate::packet;
+use crate::timers::Timers;
 use crate::tun_device::TunDevice;
 
 /// Handshakes per second answered before cookies are demanded.
@@ -55,6 +61,8 @@ struct State {
     filters: BTreeMap<NetworkId, Filter>,
     peers: BTreeMap<NodeId, PeerEntry>,
     by_index: BTreeMap<PeerId, NodeId>,
+    timers: Timers<NodeId>,
+    touched: Vec<NodeId>,
     tun_out: PacketBatch,
     out: Output,
     scratch: Vec<u8>,
@@ -66,12 +74,13 @@ struct PeerEntry {
     allowed_ips: Vec<IpPrefix>,
     endpoint: Option<Endpoint>,
     keepalive: Option<u16>,
-    established: bool,
+    touched: bool,
 }
 
 struct Output {
     udp: SendBatch,
     events: mpsc::Sender<Event>,
+    drops: DropCounters,
 }
 
 #[derive(Clone, Copy)]
@@ -107,10 +116,13 @@ impl<T: TunDevice> Engine<T> {
                 filters: BTreeMap::new(),
                 peers: BTreeMap::new(),
                 by_index: BTreeMap::new(),
+                timers: Timers::new(),
+                touched: Vec::with_capacity(kith_tun::BATCH_SIZE),
                 tun_out: tun.new_batch()?,
                 out: Output {
                     udp: SendBatch::with_capacity(kith_tun::BATCH_SIZE, 256 * 1024),
                     events,
+                    drops: DropCounters::default(),
                 },
                 scratch: vec![0; required_output_len(MAX_PACKET_CAPACITY).max(MAX_SLOT_LEN)],
             },
@@ -147,12 +159,12 @@ impl<T: TunDevice> Engine<T> {
             };
             let now = self.clock.now();
             match wake {
-                Wake::Command(command) => self.state.command(now, command),
+                Wake::Command(command) => self.state.command(now, &self.clock, command),
                 Wake::Tun => self.state.outbound(now, &self.io.tun_in),
                 Wake::Udp => self.inbound(now).await,
                 Wake::Timer => {}
             }
-            deadline = self.state.poll_peers(now);
+            deadline = self.state.service(now);
             self.flush().await;
         }
     }
@@ -173,7 +185,7 @@ impl<T: TunDevice> Engine<T> {
                         datagram: datagram.payload.to_vec(),
                     });
                 }
-                Kind::Unknown => {}
+                Kind::Unknown => count(&mut self.state.out.drops.invalid),
             }
         }
     }
@@ -191,7 +203,7 @@ impl<T: TunDevice> Engine<T> {
 }
 
 impl State {
-    fn command(&mut self, now: Now, command: Command) {
+    fn command(&mut self, now: Now, clock: &Clock, command: Command) {
         match command {
             Command::SetPeers(peers, reply) => {
                 reply.send(self.set_peers(peers)).ok();
@@ -202,23 +214,29 @@ impl State {
                 routes,
                 reply,
             } => {
+                let count = routes.len();
                 let result = self.router.set_network(network, mesh, routes);
+                if result.is_ok() {
+                    debug!(network = %network.short(), routes = count, "routes set");
+                }
                 reply.send(result.map_err(DataplaneError::from)).ok();
             }
             Command::SetExit(exit, reply) => {
                 reply.send(self.set_exit(exit)).ok();
             }
-            Command::SetFilter(network, policy) => match self.filters.get_mut(&network) {
-                Some(filter) => filter.set_policy(policy),
-                None => {
-                    self.filters.insert(network, Filter::new(policy));
-                }
-            },
+            Command::SetFilter(network, policy) => self.set_filter(network, policy),
             Command::SendRaw(destination, datagram) => {
-                self.out.udp.push(destination, &datagram).ok();
+                self.out.send_direct(destination, Some(&datagram));
             }
             Command::AcceptRelayed(peer, datagram) => {
                 self.receive(now, Via::Relay(peer), &datagram);
+            }
+            Command::RemoveNetwork(network, reply) => {
+                self.remove_network(network);
+                reply.send(Ok(())).ok();
+            }
+            Command::Stats(reply) => {
+                reply.send(self.stats(clock)).ok();
             }
         }
     }
@@ -246,16 +264,14 @@ impl State {
             .map(|(node, _)| *node)
             .collect();
         for node in stale {
-            if let Some(entry) = self.peers.remove(&node) {
-                self.device.remove_peer(entry.id);
-                self.by_index.remove(&entry.id);
-            }
+            self.remove_peer(node);
         }
         for (node, (spec, key)) in wanted {
             if let Some(entry) = self.peers.get_mut(&node) {
                 entry.network = spec.network;
                 entry.allowed_ips = spec.allowed_ips;
-                if spec.endpoint.is_some() {
+                if spec.endpoint.is_some() && spec.endpoint != entry.endpoint {
+                    debug!(peer = %node.short(), endpoint = ?spec.endpoint, "peer endpoint set");
                     entry.endpoint = spec.endpoint;
                 }
                 continue;
@@ -265,6 +281,7 @@ impl State {
                 config = config.with_persistent_keepalive(seconds);
             }
             let id = self.device.add_peer(&config, Box::new(OsRandom))?;
+            debug!(peer = %node.short(), network = %spec.network.short(), "WireGuard peer added");
             self.by_index.insert(id, node);
             self.peers.insert(
                 node,
@@ -274,28 +291,90 @@ impl State {
                     allowed_ips: spec.allowed_ips,
                     endpoint: spec.endpoint,
                     keepalive: spec.persistent_keepalive,
-                    established: false,
+                    touched: true,
                 },
             );
+            self.touched.push(node);
         }
         Ok(())
     }
 
+    fn remove_peer(&mut self, node: NodeId) {
+        let Some(entry) = self.peers.remove(&node) else {
+            return;
+        };
+        self.device.remove_peer(entry.id);
+        self.by_index.remove(&entry.id);
+        self.timers.cancel(node);
+        debug!(peer = %node.short(), network = %entry.network.short(), "WireGuard peer removed");
+    }
+
+    fn remove_network(&mut self, network: NetworkId) {
+        let members: Vec<NodeId> = self
+            .peers
+            .iter()
+            .filter(|(_, entry)| entry.network == network)
+            .map(|(node, _)| *node)
+            .collect();
+        for node in &members {
+            self.remove_peer(*node);
+        }
+        self.router.remove_network(network);
+        if let Some(filter) = self.filters.remove(&network) {
+            absorb(&mut self.out.drops, filter.counters());
+        }
+        debug!(network = %network.short(), peers = members.len(), "network removed");
+    }
+
     fn set_exit(&mut self, exit: Option<(NetworkId, NodeId)>) -> Result<(), DataplaneError> {
-        match exit {
-            Some((network, peer)) => {
-                self.router.set_exit_peer(network, Some(peer))?;
-                self.router.set_active_exit(Some(network))?;
-            }
-            None => self.router.set_active_exit(None)?,
+        if let Some((network, peer)) = exit {
+            self.router.set_exit_peer(network, Some(peer))?;
+            self.router.set_active_exit(Some(network))?;
+            debug!(network = %network.short(), peer = %peer.short(), "exit node set");
+        } else {
+            self.router.set_active_exit(None)?;
+            debug!("exit node cleared");
         }
         Ok(())
+    }
+
+    fn set_filter(&mut self, network: NetworkId, policy: CompiledFilter) {
+        match self.filters.get_mut(&network) {
+            Some(filter) => filter.set_policy(policy),
+            None => {
+                self.filters.insert(network, Filter::new(policy));
+            }
+        }
+        debug!(network = %network.short(), "filter set");
+    }
+
+    fn stats(&mut self, clock: &Clock) -> Stats {
+        let mut peers = Vec::with_capacity(self.peers.len());
+        for (node, entry) in &self.peers {
+            let Some(peer) = self.device.peer_mut(entry.id) else {
+                continue;
+            };
+            peers.push(PeerStats {
+                network: entry.network,
+                node: *node,
+                endpoint: entry.endpoint,
+                last_handshake: peer.last_handshake().and_then(|at| clock.at(at)),
+                rx_bytes: peer.rx_bytes(),
+                tx_bytes: peer.tx_bytes(),
+            });
+        }
+        let mut drops = self.out.drops;
+        for filter in self.filters.values() {
+            absorb(&mut drops, filter.counters());
+        }
+        Stats { peers, drops }
     }
 
     fn outbound(&mut self, now: Now, batch: &PacketBatch) {
         for packet in batch.iter() {
             let Some(route) = packet::destination(packet).and_then(|dst| self.router.route(dst))
             else {
+                count(&mut self.out.drops.no_route);
                 continue;
             };
             if let Some(filter) = self.filters.get_mut(&route.network)
@@ -303,20 +382,27 @@ impl State {
             {
                 continue;
             }
-            let Some(entry) = self.peers.get(&route.peer) else {
+            let Some(entry) = self.peers.get_mut(&route.peer) else {
+                count(&mut self.out.drops.no_route);
                 continue;
             };
             let Some(peer) = self.device.peer_mut(entry.id) else {
+                count(&mut self.out.drops.no_route);
                 continue;
             };
-            let Some(out) = self.scratch.get_mut(..required_output_len(packet.len())) else {
-                continue;
+            let sealed = match self.scratch.get_mut(..required_output_len(packet.len())) {
+                Some(out) => peer.encapsulate(now, packet, out),
+                None => Err(WgError::BufferTooSmall),
             };
-            if let Ok(Encapsulated::Transport(len) | Encapsulated::HandshakeInitiation(len)) =
-                peer.encapsulate(now, packet, out)
-            {
-                self.out.send(route.peer, entry.endpoint, out.get(..len));
+            match sealed {
+                Ok(Encapsulated::Transport(len) | Encapsulated::HandshakeInitiation(len)) => {
+                    self.out
+                        .send(route.peer, entry.endpoint, self.scratch.get(..len));
+                }
+                Ok(Encapsulated::Queued) => {}
+                Err(_) => count(&mut self.out.drops.invalid),
             }
+            touch(&mut self.touched, route.peer, entry);
         }
     }
 
@@ -330,6 +416,7 @@ impl State {
             .device
             .decapsulate(now, source, datagram, &mut self.scratch)
         else {
+            count(&mut self.out.drops.invalid);
             return;
         };
         let Some(id) = output.peer else {
@@ -345,65 +432,114 @@ impl State {
             return;
         };
         if let Via::Udp(source) = via {
-            entry.endpoint = Some(Endpoint::Direct(source));
+            let endpoint = Some(Endpoint::Direct(source));
+            if entry.endpoint != endpoint {
+                debug!(peer = %node.short(), %source, "peer endpoint learned");
+                entry.endpoint = endpoint;
+            }
         }
         match output.result {
             Decapsulated::Packet(len) => {
                 if let Some(packet) = self.scratch.get(..len)
-                    && admits(entry, &mut self.filters, packet, now.monotonic)
+                    && admits(
+                        entry,
+                        &mut self.filters,
+                        &mut self.out.drops,
+                        packet,
+                        now.monotonic,
+                    )
+                    && self.tun_out.push(packet).is_err()
                 {
-                    self.tun_out.push(packet).ok();
+                    count(&mut self.out.drops.overflow);
                 }
             }
             Decapsulated::Reply(len) => self.out.reply(via, self.scratch.get(..len)),
             Decapsulated::Nothing => {}
         }
-        if let Some(peer) = self.device.peer_mut(id) {
-            self.out
-                .note_session(node, entry, peer.has_session(now.monotonic));
-        }
+        touch(&mut self.touched, node, entry);
     }
 
-    /// Drives due WireGuard timers and returns when the next one is due.
-    fn poll_peers(&mut self, now: Now) -> Option<Duration> {
-        let mut next: Option<Duration> = None;
-        for (id, peer) in self.device.peers_mut() {
-            if peer.poll_timeout().is_some_and(|due| due <= now.monotonic)
-                && let Some(node) = self.by_index.get(&id)
-                && let Some(entry) = self.peers.get_mut(node)
-            {
-                while let Ok(Transmit::Send(len)) = peer.poll_transmit(now, &mut self.scratch) {
-                    self.out
-                        .send(*node, entry.endpoint, self.scratch.get(..len));
-                }
-                self.out
-                    .note_session(*node, entry, peer.has_session(now.monotonic));
-            }
-            if let Some(due) = peer.poll_timeout() {
-                next = Some(next.map_or(due, |next| next.min(due)));
+    fn service(&mut self, now: Now) -> Option<Duration> {
+        while let Some(node) = self.timers.pop_due(now.monotonic) {
+            if let Some(entry) = self.peers.get_mut(&node) {
+                touch(&mut self.touched, node, entry);
             }
         }
-        next.map(|due| due.max(now.monotonic.saturating_add(MIN_TIMER_DELAY)))
+        let mut touched = core::mem::take(&mut self.touched);
+        for node in touched.drain(..) {
+            self.service_peer(now, node);
+        }
+        self.touched = touched;
+        self.timers.next_deadline()
     }
+
+    fn service_peer(&mut self, now: Now, node: NodeId) {
+        let Some(entry) = self.peers.get_mut(&node) else {
+            return;
+        };
+        entry.touched = false;
+        let Some(peer) = self.device.peer_mut(entry.id) else {
+            return;
+        };
+        let at = now.monotonic;
+        if peer.poll_timeout().is_some_and(|due| due <= at) {
+            while let Ok(Transmit::Send(len)) = peer.poll_transmit(now, &mut self.scratch) {
+                self.out.send(node, entry.endpoint, self.scratch.get(..len));
+            }
+        }
+        while let Some(event) = peer.poll_event() {
+            self.out.session_event(node, entry.network, event);
+        }
+        if let Some(due) = peer.poll_timeout() {
+            self.timers
+                .schedule(node, due.max(at.saturating_add(MIN_TIMER_DELAY)));
+        }
+    }
+}
+
+fn touch(touched: &mut Vec<NodeId>, node: NodeId, entry: &mut PeerEntry) {
+    if !entry.touched {
+        entry.touched = true;
+        touched.push(node);
+    }
+}
+
+fn count(counter: &mut u64) {
+    *counter = counter.saturating_add(1);
+}
+
+fn absorb(drops: &mut DropCounters, filter: Counters) {
+    drops.policy = drops.policy.saturating_add(filter.dropped_policy);
+    drops.malformed = drops.malformed.saturating_add(filter.dropped_malformed);
+    drops.table_full = drops.table_full.saturating_add(filter.dropped_table_full);
 }
 
 /// Cryptokey routing (the peer may use this source address), then the network's filter.
 fn admits(
     entry: &PeerEntry,
     filters: &mut BTreeMap<NetworkId, Filter>,
+    drops: &mut DropCounters,
     packet: &[u8],
     now: Duration,
 ) -> bool {
     let Some(source) = packet::source(packet) else {
+        count(&mut drops.malformed);
         return false;
     };
-    entry
+    if !entry
         .allowed_ips
         .iter()
         .any(|prefix| prefix.contains(source))
-        && filters
-            .get_mut(&entry.network)
-            .is_some_and(|filter| filter.inbound(packet, now) == Verdict::Accept)
+    {
+        count(&mut drops.source_not_allowed);
+        return false;
+    }
+    if let Some(filter) = filters.get_mut(&entry.network) {
+        filter.inbound(packet, now) == Verdict::Accept
+    } else {
+        count(&mut drops.policy);
+        false
+    }
 }
 
 impl Output {
@@ -417,13 +553,15 @@ impl Output {
                 peer,
                 datagram: datagram.to_vec(),
             }),
-            None => {}
+            None => count(&mut self.drops.no_endpoint),
         }
     }
 
     fn send_direct(&mut self, destination: SocketAddr, datagram: Option<&[u8]>) {
-        if let Some(datagram) = datagram {
-            self.udp.push(destination, datagram).ok();
+        if let Some(datagram) = datagram
+            && self.udp.push(destination, datagram).is_err()
+        {
+            count(&mut self.drops.overflow);
         }
     }
 
@@ -434,16 +572,26 @@ impl Output {
         }
     }
 
-    fn note_session(&mut self, peer: NodeId, entry: &mut PeerEntry, has_session: bool) {
-        if has_session && !entry.established {
-            self.emit(Event::HandshakeCompleted { peer });
-        }
-        entry.established = has_session;
+    fn session_event(&mut self, peer: NodeId, network: NetworkId, event: PeerEvent) {
+        let event = match event {
+            PeerEvent::SessionEstablished => {
+                debug!(peer = %peer.short(), network = %network.short(), "WireGuard session established");
+                Event::HandshakeCompleted { peer }
+            }
+            PeerEvent::SessionExpired => {
+                debug!(peer = %peer.short(), network = %network.short(), "WireGuard session expired");
+                Event::SessionExpired { peer }
+            }
+            _ => return,
+        };
+        self.emit(event);
     }
 
     /// A slow consumer loses events rather than stalling packets.
-    fn emit(&self, event: Event) {
-        self.events.try_send(event).ok();
+    fn emit(&mut self, event: Event) {
+        if self.events.try_send(event).is_err() {
+            count(&mut self.drops.overflow);
+        }
     }
 }
 
@@ -494,10 +642,12 @@ impl Clock {
         }
     }
 
+    fn at(&self, monotonic: Duration) -> Option<Instant> {
+        self.origin.checked_add(monotonic)
+    }
+
     fn instant(&self, monotonic: Duration) -> Option<tokio::time::Instant> {
-        self.origin
-            .checked_add(monotonic)
-            .map(tokio::time::Instant::from_std)
+        self.at(monotonic).map(tokio::time::Instant::from_std)
     }
 }
 

@@ -1,6 +1,7 @@
 //! The dataplane's public face: configuration, commands and events.
 
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use kith_crypto::SigningKey;
 use kith_policy::CompiledFilter;
@@ -69,11 +70,66 @@ pub enum Event {
         /// The datagram.
         datagram: Vec<u8>,
     },
-    /// A session with `peer` became usable.
+    /// A new session with `peer` can send: the first one, or a rekey.
     HandshakeCompleted {
         /// The peer.
         peer: NodeId,
     },
+    /// No session with `peer` can send any more; it needs a new handshake.
+    SessionExpired {
+        /// The peer.
+        peer: NodeId,
+    },
+}
+
+/// A snapshot from [`DataplaneHandle::stats`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Stats {
+    /// Every peer, in `NodeId` order.
+    pub peers: Vec<PeerStats>,
+    /// Drops since the dataplane started.
+    pub drops: DropCounters,
+}
+
+/// One peer's session and traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PeerStats {
+    /// The network the peer belongs to.
+    pub network: NetworkId,
+    /// The peer.
+    pub node: NodeId,
+    /// Where its datagrams go, if known.
+    pub endpoint: Option<Endpoint>,
+    /// When its latest session was established.
+    pub last_handshake: Option<Instant>,
+    /// Bytes of authenticated WireGuard datagrams received from it.
+    pub rx_bytes: u64,
+    /// Bytes of WireGuard datagrams produced for it.
+    pub tx_bytes: u64,
+}
+
+/// Packets and datagrams dropped, by reason. Every counter saturates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DropCounters {
+    /// Outbound packets with no route, or routed to a peer not in the peer list.
+    pub no_route: u64,
+    /// Datagrams for a peer whose endpoint is unknown.
+    pub no_endpoint: u64,
+    /// Datagrams and packets WireGuard rejected, and UDP datagrams of no known protocol.
+    pub invalid: u64,
+    /// Inbound packets from an address outside the sending peer's allowed IPs.
+    pub source_not_allowed: u64,
+    /// Inbound packets the network's policy refused, or that arrived before it had one.
+    pub policy: u64,
+    /// Inbound packets that are unparsable or IP fragments.
+    pub malformed: u64,
+    /// Outbound packets opening a flow while the connection table was full.
+    pub table_full: u64,
+    /// Packets, datagrams and events that did not fit an output queue.
+    pub overflow: u64,
 }
 
 /// Why a dataplane operation failed.
@@ -124,6 +180,8 @@ pub(crate) enum Command {
     SetFilter(NetworkId, CompiledFilter),
     SendRaw(SocketAddr, Vec<u8>),
     AcceptRelayed(NodeId, Vec<u8>),
+    RemoveNetwork(NetworkId, Reply),
+    Stats(oneshot::Sender<Stats>),
 }
 
 /// The packet loop. Drive it with [`Dataplane::run`].
@@ -221,6 +279,19 @@ impl DataplaneHandle {
         datagram: Vec<u8>,
     ) -> Result<(), DataplaneError> {
         self.send(Command::AcceptRelayed(peer, datagram)).await
+    }
+
+    /// Forgets `network`: its peers and their sessions, its routes, exit and filter.
+    pub async fn remove_network(&self, network: NetworkId) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::RemoveNetwork(network, reply))
+            .await
+    }
+
+    /// Per-peer session and traffic figures, and drop counters.
+    pub async fn stats(&self) -> Result<Stats, DataplaneError> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::Stats(reply)).await?;
+        response.await.map_err(|_| DataplaneError::Stopped)
     }
 
     async fn send(&self, command: Command) -> Result<(), DataplaneError> {
