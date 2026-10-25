@@ -323,7 +323,6 @@ dependencies = [
  "kith-types",
  "kith-wire",
  "proptest",
- "serde",
  "thiserror",
 ]
 

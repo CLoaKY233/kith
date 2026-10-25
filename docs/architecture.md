@@ -256,3 +256,5 @@ Banned: `openssl`, `ring` (MIPS risk), `regex` in the daemon, and git or unknown
 3. **Relay abuse when every node relays:** default opt-in with bandwidth caps?
 4. **Multi-network on mobile:** a single OS VPN slot means one TUN carries every network. Feasible, because routing is per network inside our router.
 5. **Name:** `kith` is a codename.
+6. **Join backdating:** a sponsor sets the timestamp on a Join, so a malicious member can redeem an expired invite. Fix this with threshold-signed checkpoints (planned with sync, M4). Until then, revoke unused invites.
+7. **Concurrent admin removals** are a fork in the authority chain: only the one with the lower OpId applies. This is deliberate, because "both apply" could leave a network with no admins.
