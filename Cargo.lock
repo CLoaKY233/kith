@@ -318,6 +318,14 @@ version = "0.0.0"
 [[package]]
 name = "kith-disco"
 version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "serde",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-dns"
@@ -360,6 +368,11 @@ dependencies = [
 [[package]]
 name = "kith-naming"
 version = "0.0.0"
+dependencies = [
+ "kith-types",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-netmon"
@@ -373,8 +386,9 @@ version = "0.0.0"
 name = "kith-obfs"
 version = "0.0.0"
 dependencies = [
- "kith-crypto",
+ "postcard",
  "proptest",
+ "serde",
  "thiserror",
 ]
 
@@ -429,6 +443,10 @@ version = "0.0.0"
 [[package]]
 name = "kith-store"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-stun"
@@ -449,6 +467,11 @@ version = "0.0.0"
 [[package]]
 name = "kith-transport"
 version = "0.0.0"
+dependencies = [
+ "kith-types",
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "kith-transport-quic"
