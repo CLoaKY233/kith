@@ -27,6 +27,8 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Internal path dependencies are unpublished (`publish = false`) and versioned together.
+allow-wildcard-paths = true
 highlight = "all"
 deny = [
   { name = "openssl", reason = "pure-Rust TLS only (rustls); OpenSSL breaks cross-compiling" },
