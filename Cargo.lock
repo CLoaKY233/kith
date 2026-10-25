@@ -805,6 +805,14 @@ dependencies = [
 [[package]]
 name = "kith-ipc"
 version = "0.0.0"
+dependencies = [
+ "kith-types",
+ "kith-wire",
+ "proptest",
+ "serde",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "kith-ledger"
