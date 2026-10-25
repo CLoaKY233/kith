@@ -1,21 +1,13 @@
 //! Join proofs: how a device redeems an invite.
 //!
-//! A join carries two signatures, both bound to one network:
-//!
-//! - the **invite signature**, by the invite's secret key over `(network, device, name)`,
-//!   proves the joiner holds the invite and fixes who is joining under what name;
-//! - the **device signature**, by the device key over `(network, invite key)`, proves the
-//!   joiner holds the device key, so nobody can enrol someone else's identity.
-//!
-//! The signed messages are fixed-width concatenations, with the variable-length name last,
-//! so they are unambiguous without any framing:
+//! The invite key signs `(network, device, name)`, proving the joiner holds the invite. The
+//! device key signs `(network, invite key)`, so nobody can enrol someone else's identity.
+//! Messages are fixed-width with the name last, so they need no framing:
 //!
 //! ```text
 //! invite message = network (32) | device (32) | name (UTF-8)
 //! device message = network (32) | invite key (32)
 //! ```
-//!
-//! The sponsor who publishes the join op is a separate party and signs the op itself.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -34,8 +26,6 @@ pub const INVITE_REDEEM_CONTEXT: Context = Context::new("kith 2026-10 ledger inv
 pub const DEVICE_CONSENT_CONTEXT: Context = Context::new("kith 2026-10 ledger device consent v1");
 
 /// Evidence that a device redeemed an invite. Carried by [`OpBody::Join`](crate::OpBody::Join).
-///
-/// Plain data: the proof is verified whenever the op carrying it is decoded or signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinProof {
     /// The joining device.

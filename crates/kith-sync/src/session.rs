@@ -144,9 +144,7 @@ impl SyncSession {
 
     /// Handles one message from the peer, storing any ops it carries in `ledger`.
     ///
-    /// Ops the ledger refuses are counted and skipped. Any other error fails the session
-    /// (except [`SyncError::LedgerMismatch`], which leaves it untouched), and the ledger
-    /// keeps whatever valid ops arrived before.
+    /// Any error except [`SyncError::LedgerMismatch`] fails the session.
     pub fn handle_message(&mut self, ledger: &mut Ledger, bytes: &[u8]) -> Result<(), SyncError> {
         if ledger.network_id() != self.network {
             return Err(SyncError::LedgerMismatch);

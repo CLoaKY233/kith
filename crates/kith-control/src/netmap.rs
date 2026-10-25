@@ -26,8 +26,6 @@ pub enum ControlError {
 }
 
 /// Something wrong in the ledger's records that the map works around.
-///
-/// Warnings never stop a map from being built; the UI shows them to admins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Warning {
@@ -65,10 +63,7 @@ pub struct Peer {
     pub addresses: Addresses,
 }
 
-/// Everything the other planes need to know about one network, from the local device's
-/// point of view.
-///
-/// Built by [`build_netmap`]; a pure function of the view and the local device.
+/// Everything the other planes need to know about one network, as seen by the local device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetMap {
     network: NetworkId,
@@ -95,9 +90,7 @@ impl NetMap {
         &self.name
     }
 
-    /// Whether the local device is a member. When it is not (removed, or not yet joined),
-    /// the map has no peers, no routes, no local addresses, and a filter that allows
-    /// nothing.
+    /// Whether the local device is a member. If not, the map is empty and allows nothing.
     pub const fn is_member(&self) -> bool {
         self.is_member
     }
@@ -222,11 +215,7 @@ impl NetMapDiff {
     }
 }
 
-/// Builds the map of `view` as seen by `local`.
-///
-/// Fails only if the network's ranges cannot hold its members; everything wrong in records
-/// becomes a [`Warning`]. A `local` that is not a member gets an empty map with
-/// [`NetMap::is_member`] false, so the UI can say the device was removed.
+/// Builds the map of `view` as seen by `local`; fails only if the ranges cannot hold the members.
 pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, ControlError> {
     let params = view.params();
     let resolver = [
@@ -292,9 +281,6 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
 }
 
 /// Members in admission order: by the admitting op's lamport clock, then its id.
-///
-/// Both come from the ledger's deterministic view, so every device agrees on the order.
-/// The node id breaks ties only defensively; one op admits one device.
 fn admission_order(view: &NetworkView) -> Vec<NodeId> {
     let mut order: Vec<(u64, kith_types::OpId, NodeId)> = view
         .devices()

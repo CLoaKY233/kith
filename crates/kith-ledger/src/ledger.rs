@@ -22,8 +22,7 @@ pub enum InsertOutcome {
     Duplicate,
     /// The op was already stored or buffered; its new co-signatures were merged in.
     SignaturesAdded,
-    /// Some ancestors are unknown. The op is buffered and will be stored automatically
-    /// once they arrive.
+    /// Some ancestors are unknown; the op is buffered until they arrive.
     Orphaned {
         /// Ancestors that are neither stored nor buffered, sorted. Fetch these.
         missing: Vec<OpId>,
@@ -40,8 +39,7 @@ impl InsertOutcome {
 /// What [`Ledger::insert_batch`] did with each op.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchOutcome {
-    /// One result per op, in input order: exactly what [`Ledger::insert`] would have
-    /// returned for it at that point.
+    /// What [`Ledger::insert`] would have returned for each op, in input order.
     pub results: Vec<Result<InsertOutcome, LedgerError>>,
 }
 
@@ -60,10 +58,7 @@ impl BatchOutcome {
     }
 }
 
-/// One device's replica of a network's membership ledger.
-///
-/// Holds every structurally valid op it has seen, valid or not, and the [`NetworkView`]
-/// derived from them, which is recomputed after every change.
+/// One device's replica of a network's membership ledger and its derived [`NetworkView`].
 #[derive(Debug, Clone)]
 pub struct Ledger {
     genesis: OpId,
@@ -114,10 +109,7 @@ impl Ledger {
         Ok(ledger)
     }
 
-    /// Founds a new network: builds, signs and opens its genesis op.
-    ///
-    /// The founder is always an admin and the first member device. `extra_admins` may
-    /// repeat the founder or each other; they are sorted and deduplicated.
+    /// Founds a new network. The founder is always an admin; `extra_admins` are deduplicated.
     #[expect(
         clippy::too_many_arguments,
         reason = "each argument is one genesis field"
@@ -150,11 +142,7 @@ impl Ledger {
         Self::new(genesis.sign(founder)?)
     }
 
-    /// Adds an op received from anywhere.
-    ///
-    /// Structurally bad ops (see [`LedgerError`]) are rejected and not stored. Well-formed
-    /// ops are stored even if unauthorized, because ops that arrive later can change what
-    /// is valid; the view simply leaves them out.
+    /// Adds an op received from anywhere. Unauthorized but well-formed ops are stored.
     pub fn insert(&mut self, op: SignedOp) -> Result<InsertOutcome, LedgerError> {
         let outcome = self.insert_without_recompute(op)?;
         if outcome.changes_view() {
@@ -163,13 +151,10 @@ impl Ledger {
         Ok(outcome)
     }
 
-    /// Adds many ops, recomputing the view once at the end instead of after each op.
+    /// Adds many ops as [`insert`](Self::insert) would, recomputing the view once.
     ///
-    /// Each op gets exactly the checks and orphan handling of [`insert`](Self::insert), in
-    /// the order given, and the final view is identical to inserting them one at a time.
-    /// A rejected op does not stop the batch: its error is recorded and the rest proceed,
-    /// because one bad op from a peer should not discard the good ones around it. Use this
-    /// for sync and for loading from storage.
+    /// A rejected op does not stop the batch, so one bad op from a peer cannot discard the
+    /// good ones around it.
     pub fn insert_batch(&mut self, ops: impl IntoIterator<Item = SignedOp>) -> BatchOutcome {
         let results: Vec<Result<InsertOutcome, LedgerError>> = ops
             .into_iter()
@@ -184,7 +169,6 @@ impl Ledger {
         BatchOutcome { results }
     }
 
-    /// [`insert`](Self::insert) without the recompute.
     fn insert_without_recompute(&mut self, op: SignedOp) -> Result<InsertOutcome, LedgerError> {
         if op.op().body.kind() == Kind::Genesis {
             return if op.id() == self.genesis {
@@ -223,10 +207,7 @@ impl Ledger {
         Ok(InsertOutcome::Inserted)
     }
 
-    /// Drafts an op by `author` on top of the current heads.
-    ///
-    /// Fills in the network, up to [`MAX_PARENTS`] parents (the lowest head ids) and the
-    /// matching lamport clock. Sign it with [`UnsignedOp::sign`].
+    /// Drafts an op by `author` on up to [`MAX_PARENTS`] current heads (the lowest ids).
     pub fn draft(&self, author: NodeId, body: OpBody, timestamp: Timestamp) -> UnsignedOp {
         let parents: Vec<OpId> = self.heads.iter().copied().take(MAX_PARENTS).collect();
         let lamport = parents
@@ -296,7 +277,6 @@ impl Ledger {
         &self.view
     }
 
-    /// Merges a copy of a stored op.
     fn merge_copy(&mut self, op: &SignedOp) -> InsertOutcome {
         let changed = self
             .ops
@@ -336,8 +316,6 @@ impl Ledger {
         Ok(())
     }
 
-    /// Stores every buffered orphan whose parents are now all stored, repeatedly.
-    ///
     /// An orphan that fails its lamport check is dropped: nobody is waiting for the error.
     fn adopt_orphans(&mut self) {
         loop {
@@ -363,8 +341,7 @@ impl Ledger {
         }
     }
 
-    /// The ancestors of `op` that are neither stored nor buffered, looking through
-    /// buffered orphans.
+    /// The ancestors of `op` that are neither stored nor buffered.
     fn missing_ancestors(&self, op: &SignedOp) -> Vec<OpId> {
         let mut missing = BTreeSet::new();
         let mut seen = BTreeSet::new();
@@ -383,14 +360,12 @@ impl Ledger {
         missing.into_iter().collect()
     }
 
-    /// Re-derives the view from scratch. See the crate documentation for its cost.
     fn recompute(&mut self) {
         let heads = self.heads.iter().copied().collect();
         self.view = evaluate(&self.genesis_view, self.founder, &self.ops, heads);
     }
 }
 
-/// The network a genesis op founds.
 pub(crate) const fn network_of(genesis: OpId) -> NetworkId {
     NetworkId::from_bytes(genesis.to_bytes())
 }

@@ -3,11 +3,8 @@
 use kith_types::NodeId;
 use kith_wire::WireError;
 
-/// Why an op could not be created, decoded or inserted.
-///
-/// Every variant is a *structural* rejection: the op is malformed, oversized, badly signed
-/// or does not fit this ledger. Such ops are never stored. Ops that are well-formed but
-/// unauthorized are not errors: they are stored and simply excluded from the view.
+/// A structural rejection of an op; such ops are never stored. Unauthorized ops are not
+/// errors: they are stored and excluded from the view.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum LedgerError {

@@ -1,13 +1,8 @@
 //! Ledger operations: their content, encoding, signatures and structural checks.
 //!
-//! An op exists in two forms:
-//!
-//! - [`UnsignedOp`] is plain data: what an author wants to say. It is checked when it is
-//!   encoded or signed.
-//! - [`SignedOp`] is the wire and storage form. It keeps the exact encoded bytes of the
-//!   unsigned op plus the signatures over them. It can only be built by signing or by
-//!   decoding, and both paths run every structural check, so holding a `SignedOp` means
-//!   it is well-formed and every signature on it verifies.
+//! [`UnsignedOp`] is plain data. [`SignedOp`] is the wire and storage form; it can only be
+//! built by signing or decoding, both of which run every structural check, so holding one
+//! means it is well-formed and every signature verifies.
 //!
 //! ```text
 //! unsigned bytes = envelope(type 0x10, version 1, postcard(UnsignedOp))
@@ -16,9 +11,8 @@
 //! signed bytes   = envelope(type 0x11, version 1, postcard(unsigned bytes, signatures))
 //! ```
 //!
-//! Signatures sit outside the hashed bytes, so co-signers can add theirs without changing
-//! the op's identity. The postcard field and variant order below is the wire format:
-//! reordering anything is a protocol break, which the golden-bytes test catches.
+//! The postcard field and variant order below is the wire format: reordering is a protocol
+//! break, which the golden-bytes test catches.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -60,18 +54,8 @@ pub struct NetworkParams {
     pub ipv6: Ipv6Prefix,
 }
 
-/// What an op does.
-///
-/// Variants fall into four groups, which decide how the op is authorized (see the crate
-/// documentation):
-///
-/// - [`Genesis`](Self::Genesis) founds the network.
-/// - Authority ops ([`AddAdmin`](Self::AddAdmin), [`RemoveAdmin`](Self::RemoveAdmin),
-///   [`SetThreshold`](Self::SetThreshold)) need a threshold of admin signatures.
-/// - Admin ops need one current admin as author.
-/// - [`Join`](Self::Join) needs a member device as sponsor and a valid invite.
-///
-/// The variant order is part of the wire format.
+/// What an op does. Authority ops need a threshold of admin signatures, admin ops one
+/// admin author, and joins a member sponsor plus a valid invite. Variant order is wire format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpBody {
     /// Founds the network. The author becomes the first member device.
@@ -233,7 +217,6 @@ impl OpBody {
                 }
             }
             Self::Join(proof) => {
-                // Genesis is the only op without a network, and it is not a join.
                 let network = network.ok_or(LedgerError::MissingNetwork)?;
                 proof.verify(network)
             }
@@ -241,16 +224,13 @@ impl OpBody {
     }
 }
 
-/// An op before it is signed: plain data, checked when encoded or signed.
-///
-/// Use [`Ledger::draft`](crate::Ledger::draft) to fill in the network, parents and lamport
-/// clock correctly.
+/// An op before it is signed. [`Ledger::draft`](crate::Ledger::draft) fills in the network,
+/// parents and lamport clock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsignedOp {
     /// The network this op belongs to. `None` only for genesis, which defines the network.
     pub network: Option<NetworkId>,
-    /// The DAG tips the author had seen. Genesis has none; every other op has 1 to
-    /// [`MAX_PARENTS`], strictly ascending.
+    /// The DAG tips the author had seen: 1 to [`MAX_PARENTS`], strictly ascending; none for genesis.
     pub parents: Vec<OpId>,
     /// Who wrote the op. Must be among its signers.
     pub author: NodeId,
@@ -264,8 +244,6 @@ pub struct UnsignedOp {
 
 impl UnsignedOp {
     /// Encodes the op into the exact bytes that are hashed and signed.
-    ///
-    /// Fails if the op is structurally invalid or too large.
     pub fn encode(&self) -> Result<Vec<u8>, LedgerError> {
         self.check()?;
         let bytes = envelope::encode(UNSIGNED_OP_TYPE, OP_VERSION, self)?;
@@ -273,10 +251,7 @@ impl UnsignedOp {
         Ok(bytes)
     }
 
-    /// Encodes and signs the op with the author's key.
-    ///
-    /// Fails if `key` is not the author's, or if the op is structurally invalid. Other
-    /// signers add theirs with [`SignedOp::add_signature`].
+    /// Encodes and signs the op with the author's key; fails if `key` is not the author's.
     pub fn sign(&self, key: &SigningKey) -> Result<SignedOp, LedgerError> {
         if key.node_id() != self.author {
             return Err(LedgerError::AuthorNotSigner);
@@ -291,7 +266,6 @@ impl UnsignedOp {
         })
     }
 
-    /// Decodes and checks unsigned bytes.
     fn decode(bytes: &[u8]) -> Result<Self, LedgerError> {
         check_len(bytes.len(), MAX_OP_LEN)?;
         let (version, op) = envelope::decode::<Self>(bytes, UNSIGNED_OP_TYPE, OP_VERSION)?;
@@ -302,7 +276,6 @@ impl UnsignedOp {
         Ok(op)
     }
 
-    /// Every check that needs nothing but the op itself.
     fn check(&self) -> Result<(), LedgerError> {
         if self.body.kind() == Kind::Genesis {
             if self.network.is_some() || !self.parents.is_empty() || self.lamport != 0 {
@@ -335,12 +308,8 @@ impl UnsignedOp {
 
 /// A well-formed op with verified signatures: the wire and storage form.
 ///
-/// Invariants, established by every constructor:
-///
-/// - `unsigned_bytes` decode to a structurally valid [`UnsignedOp`], kept alongside;
-/// - 1 to [`MAX_SIGNATURES`] signatures, strictly ascending by signer, each verifying
-///   over `unsigned_bytes`;
-/// - the author is among the signers.
+/// Invariants: `unsigned_bytes` decode to `op`; 1 to [`MAX_SIGNATURES`] signatures,
+/// strictly ascending by signer, each verifying over `unsigned_bytes`; the author signed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedOp {
     id: OpId,
@@ -357,8 +326,7 @@ struct SignedOpWire {
 }
 
 impl SignedOp {
-    /// Decodes an op received from the network or storage, running every structural check
-    /// and verifying every signature over the exact bytes received.
+    /// Decodes an op, running every structural check and verifying every signature.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, LedgerError> {
         check_len(bytes.len(), MAX_SIGNED_OP_LEN)?;
         let (version, wire) = envelope::decode::<SignedOpWire>(bytes, SIGNED_OP_TYPE, OP_VERSION)?;
@@ -416,10 +384,7 @@ impl SignedOp {
             .expect("a valid SignedOp always encodes")
     }
 
-    /// Adds a co-signature, for authority ops that need several admins.
-    ///
-    /// Signing twice with the same key is a no-op. Fails if the op already carries
-    /// [`MAX_SIGNATURES`] signatures.
+    /// Adds a co-signature; signing twice with one key is a no-op.
     pub fn add_signature(&mut self, key: &SigningKey) -> Result<(), LedgerError> {
         let signer = key.node_id();
         match self.signatures.binary_search_by(|(id, _)| id.cmp(&signer)) {
@@ -437,9 +402,8 @@ impl SignedOp {
 
     /// Merges another copy's signatures into this one. Returns whether anything changed.
     ///
-    /// Both copies must have the same id. If the union exceeds [`MAX_SIGNATURES`], the
-    /// author's signature and the lowest other signers are kept. That choice depends only
-    /// on the union, so replicas converge whatever order the copies arrive in.
+    /// Over [`MAX_SIGNATURES`], the author and the lowest other signers are kept; that
+    /// depends only on the union, so replicas converge.
     pub(crate) fn merge_signatures(&mut self, other: &Self) -> bool {
         let mut merged = self.signatures.clone();
         for entry in &other.signatures {
@@ -449,7 +413,6 @@ impl SignedOp {
         }
         let author = self.op.author;
         while merged.len() > MAX_SIGNATURES {
-            // Drop the highest signer that is not the author.
             if let Some(position) = merged.iter().rposition(|(id, _)| *id != author) {
                 merged.remove(position);
             } else {
@@ -487,7 +450,6 @@ impl SignedOp {
     }
 }
 
-/// The [`OpId`] of encoded unsigned bytes.
 fn op_id(unsigned_bytes: &[u8]) -> OpId {
     OpId::from_bytes(Hash::of(OP_ID_CONTEXT, unsigned_bytes).to_bytes())
 }

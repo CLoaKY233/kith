@@ -1,9 +1,8 @@
 //! A device's long-term identity and its secret-key file format.
 //!
-//! The file format is deliberately tiny and strict: a kith envelope holding the 32-byte seed
-//! and a BLAKE3 checksum of it. The checksum catches storage corruption (a flipped bit would
-//! otherwise silently become a *different* identity). It is not authentication: whoever can
-//! write the file can replace the key, so protecting the file is the store's job.
+//! The file is an envelope holding the seed and a BLAKE3 checksum of it. The checksum
+//! catches corruption, which would otherwise silently yield a *different* identity; it is
+//! not authentication.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -37,10 +36,7 @@ pub enum IdentityError {
     Random,
 }
 
-/// The device's long-term Ed25519 identity. Its public key is the device's [`NodeId`].
-///
-/// Not `Clone`: there is exactly one copy of the secret in memory. `Debug` prints only the
-/// public node id. The key zeroizes on drop.
+/// The device's long-term Ed25519 identity. Not `Clone`, so the secret has one copy; zeroizes on drop.
 pub struct DeviceIdentity {
     signing_key: SigningKey,
 }
@@ -96,8 +92,7 @@ impl DeviceIdentity {
         &self.signing_key
     }
 
-    /// Encodes the secret-key file: a version-1 [`message_types::SECRET_KEY`] envelope
-    /// holding the seed and its checksum. Zeroizes on drop.
+    /// Encodes the secret-key file as a [`message_types::SECRET_KEY`] envelope. Zeroizes on drop.
     ///
     /// # Panics
     ///
@@ -117,8 +112,7 @@ impl DeviceIdentity {
         Zeroizing::new(bytes)
     }
 
-    /// Decodes a secret-key file, rejecting any other message type or version, trailing
-    /// bytes and a checksum mismatch.
+    /// Decodes a secret-key file, strictly.
     pub fn from_secret_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
         let (version, body): (u64, SecretKeyBody) =
             envelope::decode(bytes, message_types::SECRET_KEY, SECRET_KEY_VERSION)?;

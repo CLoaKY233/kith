@@ -1,7 +1,6 @@
 //! Every domain-separation context owned by this crate.
 //!
-//! Listing them in one place makes it easy to audit that each is unique and follows the
-//! convention `"kith <year-month> <purpose> v<n>"`. Changing any of them is a protocol break.
+//! Convention: `"kith <year-month> <purpose> v<n>"`. Changing any is a protocol break.
 
 use kith_crypto::Context;
 

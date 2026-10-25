@@ -1,18 +1,13 @@
 //! Invite tokens: the secret behind a `kith://join/…` link or QR code.
 //!
-//! The security model is documented on [`InviteToken`].
-//!
-//! # Text form
-//!
 //! ```text
 //! kith://join/<base32(envelope || checksum)>
 //! ```
 //!
-//! - `envelope`: a version-1 [`message_types::INVITE`] kith envelope.
-//! - `checksum`: the first [`CHECKSUM_LEN`] bytes of a BLAKE3 hash of the envelope under
-//!   [`contexts::INVITE_CHECKSUM`].
-//! - base32 is RFC 4648 without padding. Links are rendered lowercase; parsing ignores case
-//!   so the uppercase [`InviteToken::to_qr_string`] form fits QR alphanumeric mode.
+//! `envelope` is a [`message_types::INVITE`] envelope; `checksum` is the first
+//! [`CHECKSUM_LEN`] bytes of its BLAKE3 hash under [`contexts::INVITE_CHECKSUM`]. Base32 is
+//! RFC 4648 unpadded and parsed case-insensitively, so the uppercase QR form fits
+//! alphanumeric mode.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -109,27 +104,11 @@ impl From<WireError> for InviteError {
 
 /// A validated invite to join a network.
 ///
-/// # Security model
-///
-/// An invite token is a **bearer secret**. Anyone who holds it — whoever scanned the QR
-/// code, read the link over a shoulder or found it in a chat log — can ask to join the
-/// network until the invite expires or is revoked. Treat it like a password: share it only
-/// over a channel you trust, and prefer short expiry times.
-///
-/// The token carries the 32-byte seed of an Ed25519 *invite key*. The member that created
-/// the invite records the invite's public key in the ledger. A joining device proves that
-/// it holds the token by signing its join request with the invite key; it never sends the
-/// secret itself. An existing member device **sponsors** the join: it checks the proof
-/// against the ledger and, if the invite is still valid, writes the new device into the
-/// ledger. An admin can **revoke** an invite at any time by removing its public key from
-/// the ledger, after which proofs made with it are refused.
-///
-/// The token itself is not signed: a tampered token only changes which network or
-/// bootstrap endpoints the joining device tries, and the ledger, not the token, decides
-/// membership. The appended checksum exists to catch typos, not attackers.
-///
-/// Not `Clone`: the invite secret has exactly one copy in memory and zeroizes on drop.
-/// `Debug` shows only the public parts and the invite's public key.
+/// A **bearer secret**: whoever holds it can join until it expires or is revoked. It
+/// carries the seed of an Ed25519 invite key whose public half is in the ledger; the joiner
+/// signs with it and never sends the secret. The token is unsigned, since the ledger, not
+/// the token, decides membership; the checksum only catches typos. Not `Clone`; zeroizes
+/// on drop.
 pub struct InviteToken {
     network: NetworkId,
     invite_secret: Zeroizing<[u8; 32]>,
@@ -171,8 +150,7 @@ fn checksum(envelope_bytes: &[u8]) -> [u8; CHECKSUM_LEN] {
 }
 
 impl InviteToken {
-    /// Builds a token from its parts, validating every field and that the link fits in
-    /// [`MAX_LINK_PAYLOAD_LEN`].
+    /// Builds a token from its parts, validating every field and the link length.
     pub fn from_parts(
         network: NetworkId,
         invite_secret: &[u8; 32],
@@ -276,8 +254,7 @@ impl InviteToken {
         Ok(join(&prefix, &payload))
     }
 
-    /// Parses a link in either case, strictly: wrong scheme, oversize payload, bad base32,
-    /// bad checksum and trailing data each give a distinct error.
+    /// Parses a link in either case, strictly.
     pub fn parse(text: &str) -> Result<Self, InviteError> {
         let (scheme, payload) = text
             .split_at_checked(LINK_PREFIX.len())

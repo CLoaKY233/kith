@@ -1,8 +1,6 @@
 //! Size limits for everything that arrives from the network.
 //!
-//! Every limit is checked when an op is decoded, before it can be stored. The byte limit
-//! on the whole op is checked before any decoding happens, so it also bounds every
-//! allocation the decoder makes.
+//! The whole-op byte limit is checked before decoding, so it bounds every allocation.
 
 /// Largest encoded [`UnsignedOp`](crate::UnsignedOp), in bytes: 64 KiB.
 pub const MAX_OP_LEN: usize = 64 * 1024;

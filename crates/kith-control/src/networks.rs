@@ -8,10 +8,7 @@ use kith_types::{IpPrefix, NetworkId, NodeId};
 
 use crate::netmap::{ControlError, NetMap, NetMapDiff, build_netmap};
 
-/// Two joined networks whose mesh ranges overlap.
-///
-/// The router maps a destination address to one network, so it rejects the second
-/// network's routes; this warns before that happens.
+/// Two joined networks whose mesh ranges overlap, which the router cannot serve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Conflict {
     /// The network with the lower id.
@@ -38,8 +35,7 @@ impl Networks {
 
     /// Rebuilds the map of `view`'s network as seen by `local`, returning what changed.
     ///
-    /// A network seen for the first time reports every peer as added and everything else
-    /// as changed. On error the previous map is kept.
+    /// On error the previous map is kept.
     pub fn update(
         &mut self,
         view: &NetworkView,
@@ -70,8 +66,6 @@ impl Networks {
     }
 
     /// Every pair of networks whose IPv4 or IPv6 mesh ranges overlap, sorted.
-    ///
-    /// Quadratic in the number of networks, which is a handful.
     pub fn conflicts(&self) -> Vec<Conflict> {
         let maps: Vec<&NetMap> = self.maps.values().collect();
         let mut conflicts = Vec::new();

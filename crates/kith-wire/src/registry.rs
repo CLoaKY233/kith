@@ -1,8 +1,7 @@
 //! The one registry of envelope message types.
 //!
-//! Every [`MessageType`] used anywhere in kith is declared here, so two protocols can never
-//! collide. Values are grouped by plane in blocks of 16. Assigning a value is a protocol
-//! decision: once released, a value is never reused for anything else.
+//! Every [`MessageType`] is declared here so protocols never collide. Blocks of 16 per
+//! plane; a released value is never reused.
 
 use crate::MessageType;
 

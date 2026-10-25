@@ -1,10 +1,4 @@
-//! Where a device keeps its identity.
-//!
-//! The trait is sans-IO in the sense that this crate never performs I/O itself: a backend
-//! (a file in the state directory, the macOS keychain, the Windows credential store, …)
-//! lives in a driver crate and implements [`KeyStore`]. Errors are `no_std` friendly so the
-//! trait can be named from core crates, yet still carry a human-readable description of
-//! what the backend saw.
+//! Where a device keeps its identity. Backends live in driver crates.
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -39,11 +33,7 @@ pub enum KeyStoreError {
     },
 }
 
-/// Persists the device identity.
-///
-/// Implementations store exactly the bytes of [`DeviceIdentity::to_secret_bytes`] and
-/// decode them with [`DeviceIdentity::from_secret_bytes`], so every backend shares one
-/// versioned format.
+/// Persists the device identity as the bytes of [`DeviceIdentity::to_secret_bytes`].
 pub trait KeyStore {
     /// Loads the stored identity, or `None` if none has been stored yet.
     fn load(&self) -> Result<Option<DeviceIdentity>, KeyStoreError>;

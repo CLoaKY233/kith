@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Domain separation for range fingerprints.
 pub const FINGERPRINT_CONTEXT: Context = Context::new("kith 2026-10 sync fingerprint v1");
 
-/// A digest of a set of op ids. Equal sets have equal fingerprints; different sets collide
-/// only with negligible probability (see the crate docs for why ids are summed).
+/// A digest of a set of op ids; see the crate docs for why ids are summed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fingerprint(pub [u8; 32]);
 

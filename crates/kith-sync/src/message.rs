@@ -13,9 +13,7 @@ use crate::{
     MAX_SYNC_MESSAGE_LEN, SYNC_VERSION, SyncError,
 };
 
-/// The exclusive upper end of a range of op ids.
-///
-/// The derived order is the order of the id space: every `Id` sorts before `End`.
+/// The exclusive upper end of a range of op ids. Every `Id` sorts before `End`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Bound {
     /// Ids strictly below this one.
@@ -70,11 +68,7 @@ impl RangeItem {
     }
 }
 
-/// A sync message. See the crate docs for the protocol.
-///
-/// Plain wire data: [`Message::decode`] checks every bound and the structure of ranges, so
-/// a decoded message always satisfies the documented invariants. The variant order is part
-/// of the wire format.
+/// A sync message. [`Message::decode`] checks every documented bound; variant order is wire format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Message {
     /// Opens the session: the network and the sender's DAG heads (at most [`MAX_HEADS`];
@@ -120,7 +114,6 @@ impl Message {
         Ok(message)
     }
 
-    /// Checks the bounds and, for ranges, the partition structure.
     fn validate(&self) -> Result<(), SyncError> {
         let within = |len: usize, max: usize| {
             if len <= max {

@@ -3,8 +3,6 @@
 //! - [`NodeId`]: a device's long-term Ed25519 public key. The key *is* the identity.
 //! - [`NetworkId`]: the hash of a network's genesis operation.
 //! - [`OpId`]: the content hash of one ledger operation.
-//!
-//! They are distinct types so they can never be confused for one another.
 
 use core::fmt;
 use core::str::FromStr;

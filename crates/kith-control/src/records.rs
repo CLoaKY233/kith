@@ -1,25 +1,17 @@
 //! Well-known ledger record keys.
 //!
-//! The ledger stores records as an opaque last-writer-wins map from string keys to bytes,
-//! set by admins. These are the keys the control plane gives meaning to. Unknown keys are
-//! ignored, so newer software can add keys without breaking older devices.
+//! Unknown keys are ignored, so newer software can add keys without breaking older devices.
 //!
-//! - [`POLICY`]: the network's access policy, encoded by
-//!   [`Policy::to_bytes`](kith_policy::Policy::to_bytes). When absent, the network uses
-//!   [`Policy::default_allow_all`](kith_policy::Policy::default_allow_all), so a new
-//!   personal network just works. When present but undecodable, the network falls back
-//!   to deny-all (traffic from the device itself stays allowed) and reports a warning.
-//!   Failing closed is the safe choice: an admin who wrote a policy meant to *restrict*
-//!   traffic, and opening everything because the bytes are bad (or written by newer
-//!   software) would silently undo that.
-//! - [`ROUTE_PREFIX`]`<prefix>`, such as `route/192.168.1.0/24`: a subnet advertisement.
-//!   The value is the 32 raw bytes of the advertising device's
-//!   [`NodeId`]. The prefix must be canonical (no host bits set).
-//!   Routes from non-members are dropped with a warning.
-//! - [`DNS_PREFIX`]`<name>`: a custom DNS record for the naming plane.
+//! - [`POLICY`]: a [`Policy::to_bytes`](kith_policy::Policy::to_bytes) encoding. Absent
+//!   means [`Policy::default_allow_all`](kith_policy::Policy::default_allow_all).
+//!   Undecodable means deny-all (except the device's own traffic) plus a warning: failing
+//!   open would silently undo a policy meant to restrict traffic.
+//! - [`ROUTE_PREFIX`]`<prefix>`, such as `route/192.168.1.0/24`: a subnet advertisement
+//!   whose value is the advertiser's raw 32-byte [`NodeId`]. The prefix must be canonical;
+//!   routes from non-members are dropped with a warning.
+//! - [`DNS_PREFIX`]`<name>`: reserved for the naming plane.
 //!
-//! TODO: the value format of `dns/<name>` records is not defined yet; the naming plane
-//! will define it, and this crate only reserves the key space.
+//! TODO: define the value format of `dns/<name>` records.
 
 use kith_types::{IpPrefix, NodeId};
 

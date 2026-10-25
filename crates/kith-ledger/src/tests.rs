@@ -19,9 +19,7 @@ use crate::{
     UnsignedOp,
 };
 
-// ---------------------------------------------------------------------------
 // Helpers.
-// ---------------------------------------------------------------------------
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_seed(&[seed; 32])
@@ -116,8 +114,7 @@ fn is_member(ledger: &Ledger, seed: u8) -> bool {
     ledger.view().is_member(&id(seed))
 }
 
-/// Encodes an unsigned op without any structural check, signs it with `signers` in the
-/// given order, and returns the signed wire bytes. For crafting malformed ops.
+/// Signs an unchecked unsigned op with `signers` in the given order, for crafting malformed ops.
 fn raw(op: &UnsignedOp, signers: &[&SigningKey]) -> Vec<u8> {
     let bytes = envelope::encode(UNSIGNED_OP_TYPE, OP_VERSION, op).unwrap();
     raw_with(&bytes, signers)
@@ -140,9 +137,7 @@ fn decode_err(bytes: &[u8]) -> LedgerError {
     SignedOp::from_bytes(bytes).unwrap_err()
 }
 
-// ---------------------------------------------------------------------------
 // Genesis and basics.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn founder_is_sole_device_and_network_id_is_genesis_hash() {
@@ -186,9 +181,7 @@ fn draft_merges_at_most_max_parents_heads() {
     assert_eq!(ledger.heads().len(), 20 - MAX_PARENTS + 1);
 }
 
-// ---------------------------------------------------------------------------
 // Rule 1: authorization.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn non_admin_ops_are_stored_but_excluded_from_view() {
@@ -263,9 +256,7 @@ fn threshold_two_applies_only_once_cosignatures_merge() {
     assert!(is_member(&ledger, 5));
 }
 
-// ---------------------------------------------------------------------------
 // Rule 2: remove-wins.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn concurrent_admin_removal_invalidates_admin_ops() {
@@ -395,9 +386,7 @@ fn mutual_concurrent_admin_removals_fork_and_one_applies() {
     assert!(ledger.contains(&winner));
 }
 
-// ---------------------------------------------------------------------------
 // Stage A: forks.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn authority_fork_keeps_lowest_op_id_and_drops_dependents() {
@@ -451,9 +440,7 @@ fn authority_op_on_merged_fork_extends_the_winner() {
     assert_eq!(ledger.view().admins().len(), 4);
 }
 
-// ---------------------------------------------------------------------------
 // Invites.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn joined_device_gets_invite_tags_and_can_sponsor() {
@@ -605,9 +592,7 @@ fn join_proof_verifies_for_its_network_only() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Records.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn records_are_last_writer_wins() {
@@ -634,9 +619,7 @@ fn records_are_last_writer_wins() {
     assert!(!ledger.view().records().contains_key("dns/nas"));
 }
 
-// ---------------------------------------------------------------------------
 // Orphans.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn orphans_are_attached_when_parents_arrive() {
@@ -693,9 +676,7 @@ fn orphan_buffer_is_bounded() {
     assert_eq!(last, Some(Err(LedgerError::OrphanBufferFull)));
 }
 
-// ---------------------------------------------------------------------------
 // Structural rejections.
-// ---------------------------------------------------------------------------
 
 /// A well-formed unsigned op by key 1 on top of `ledger`'s heads.
 fn draft(ledger: &Ledger, body: OpBody) -> UnsignedOp {
@@ -996,9 +977,7 @@ fn rejects_oversized_trailing_and_mistyped_envelopes() {
     assert!(matches!(decode_err(&wrapped), LedgerError::TooLarge { .. }));
 }
 
-// ---------------------------------------------------------------------------
 // Wire format.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn golden_bytes_of_a_set_record_op() {
@@ -1024,9 +1003,7 @@ fn golden_bytes_of_a_set_record_op() {
     assert_eq!(op.encode().unwrap(), expected);
 }
 
-// ---------------------------------------------------------------------------
 // Properties.
-// ---------------------------------------------------------------------------
 
 /// A device key for convergence-test target `target`: the four writers, then others.
 fn device_seed(target: u8) -> u8 {

@@ -17,9 +17,7 @@ use crate::{
     SyncError, SyncSession, SyncStats, fingerprint,
 };
 
-// ---------------------------------------------------------------------------
 // Helpers.
-// ---------------------------------------------------------------------------
 
 const NOW: Timestamp = Timestamp::from_millis(1_000);
 
@@ -108,9 +106,7 @@ fn assert_converged(a: &Ledger, b: &Ledger) {
     assert_eq!((a.orphan_count(), b.orphan_count()), (0, 0));
 }
 
-// ---------------------------------------------------------------------------
 // Convergence.
-// ---------------------------------------------------------------------------
 
 /// One divergent history: a shared prefix, then ops on each side. B also learned the first
 /// `copied` of A's ops before branching off, so the DAGs share an inner fork too.
@@ -213,9 +209,7 @@ fn new_device_catches_up_on_a_large_ledger_within_message_limits() {
     assert!(initiator.rounds <= 4, "{initiator:?}");
 }
 
-// ---------------------------------------------------------------------------
 // Hostile peers.
-// ---------------------------------------------------------------------------
 
 /// A responder that has accepted a `Hello` with different heads, so it is mid-sync.
 fn mid_sync(ledger: &mut Ledger) -> SyncSession {
@@ -361,9 +355,7 @@ fn oversized_range_reply_folds_its_tail_into_one_fingerprint() {
     assert_eq!(*tail, fingerprint(&tail_ids));
 }
 
-// ---------------------------------------------------------------------------
 // Wire format.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn ranges_message_and_fingerprint_match_golden_bytes() {

@@ -1,21 +1,9 @@
 //! Device identity, key storage abstraction and invite tokens.
 //!
-//! Plane: trust. Sans-IO core: no I/O, no clock, no runtime. See `docs/architecture.md`.
-//!
-//! kith has no accounts. A device *is* its Ed25519 key, and a network is joined by holding
-//! an invite. This crate owns the three pieces that make that work:
-//!
-//! - [`DeviceIdentity`]: the device's long-term signing key, with a versioned, checksummed
-//!   secret-key file format ([`DeviceIdentity::to_secret_bytes`]).
-//! - [`KeyStore`]: a sans-IO trait for persisting that identity. Files and OS keychains are
-//!   implemented by driver crates; [`MemoryKeyStore`] serves tests.
-//! - [`InviteToken`]: the bearer secret behind a `kith://join/…` link or QR code.
-//!
-//! This crate only *produces* keys and tokens. Verifying a join proof is the ledger's job,
-//! so nothing here depends on `kith-ledger`.
-//!
-//! Every hash context this crate uses is listed in [`contexts`]; every envelope message
-//! type in [`message_types`].
+//! Sans-IO. kith has no accounts: a device *is* its Ed25519 key ([`DeviceIdentity`]),
+//! persisted through a [`KeyStore`] implemented by driver crates, and a network is joined
+//! by holding an [`InviteToken`]. Verifying join proofs is the ledger's job, so this crate
+//! does not depend on `kith-ledger`.
 
 #![no_std]
 #![forbid(unsafe_code)]

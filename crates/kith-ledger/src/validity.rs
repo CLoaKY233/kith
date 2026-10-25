@@ -1,11 +1,8 @@
 //! Deciding which stored ops are valid, and deriving the [`NetworkView`] from them.
 //!
-//! The rules are described in the crate documentation. This module implements them as a
-//! pure function of the set of stored ops, so the result cannot depend on insertion order.
-//!
-//! Ops are indexed by their position in the total order `(lamport, OpId)`. Lamport clocks
-//! strictly increase along every DAG edge, so this order is a topological order: every op
-//! comes after all of its ancestors. Genesis, the only op with lamport 0, is index 0.
+//! A pure function of the stored ops, implementing the rules in the crate docs. Ops are
+//! indexed by `(lamport, OpId)` order, which is topological since lamport strictly
+//! increases along every edge; genesis is index 0.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
@@ -197,11 +194,6 @@ struct Chain {
 
 impl Chain {
     /// Stage A: builds the linear authority chain from genesis.
-    ///
-    /// At each step the candidates are the authority ops that descend from the chain head
-    /// and that the head's state authorizes. Of those, only direct children count: a
-    /// candidate built on top of another candidate belongs to that candidate's branch. The
-    /// direct child with the lowest `OpId` wins; every other branch is invalid.
     fn build(graph: &Graph<'_>, genesis: Authority) -> Self {
         let mut links = vec![0_usize];
         let mut states = vec![genesis];
@@ -546,11 +538,7 @@ impl<'a> StageB<'a> {
     }
 }
 
-/// Derives the view of the stored ops.
-///
-/// `genesis_view` is the view of the genesis op alone (network, name, params, initial
-/// admins and threshold); `founder` is the genesis author. `ops` must contain genesis and
-/// every stored op's parents. `heads` are passed through.
+/// Derives the view of the stored ops. `ops` must contain genesis and every op's parents.
 pub(crate) fn evaluate(
     genesis_view: &NetworkView,
     founder: NodeId,

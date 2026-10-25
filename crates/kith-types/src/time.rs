@@ -1,17 +1,11 @@
-//! Wall-clock time as plain data.
-//!
-//! Cores never read the clock. Drivers read it once and pass `now` in, which makes every
-//! core deterministic and testable with simulated time.
+//! Wall-clock time as plain data. Cores never read the clock; drivers pass `now` in.
 
 use core::fmt;
 use core::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Milliseconds since the Unix epoch (UTC).
-///
-/// Used for things that must mean the same on every device, such as invite expiry.
-/// Ordering of events never relies on it, because device clocks disagree.
+/// Milliseconds since the Unix epoch (UTC). Never used to order events, since device clocks disagree.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Timestamp(u64);

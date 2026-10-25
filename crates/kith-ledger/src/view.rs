@@ -39,10 +39,7 @@ pub struct Invite {
     pub tags: Vec<String>,
 }
 
-/// The state of a network: who is in it, who administers it, and its records.
-///
-/// Derived deterministically from the set of ops alone, so every replica holding the same
-/// ops has an identical view.
+/// The state of a network, derived deterministically from the set of ops alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkView {
     pub(crate) network: NetworkId,
