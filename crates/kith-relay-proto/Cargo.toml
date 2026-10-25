@@ -12,7 +12,6 @@ publish.workspace = true
 [dependencies]
 kith-crypto.workspace = true
 kith-types.workspace = true
-kith-wire.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
