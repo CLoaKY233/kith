@@ -422,7 +422,6 @@ version = "0.0.0"
 dependencies = [
  "kith-crypto",
  "kith-types",
- "kith-wire",
  "proptest",
  "thiserror",
 ]
