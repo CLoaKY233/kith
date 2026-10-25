@@ -322,8 +322,12 @@ pub(crate) fn error_response(error: &NodeError) -> Response {
         | NodeError::Relay(_)
         | NodeError::Io(_) => ErrorCode::Internal,
     };
-    Response::Error {
-        code,
-        message: error.to_string(),
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
     }
+    Response::Error { code, message }
 }
