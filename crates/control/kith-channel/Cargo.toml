@@ -1,0 +1,30 @@
+[package]
+name = "kith-channel"
+description = "The control channel between members: join, ledger sync and endpoint gossip"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+kith-crypto.workspace = true
+kith-ledger.workspace = true
+kith-sync.workspace = true
+kith-tls.workspace = true
+kith-types.workspace = true
+kith-wire.workspace = true
+rustls.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[lints]
+workspace = true

@@ -28,6 +28,7 @@ kith-packet = { path = "crates/data/kith-packet" }
 kith-naming = { path = "crates/naming/kith-naming" }
 kith-obfs = { path = "crates/connectivity/kith-obfs" }
 kith-control = { path = "crates/control/kith-control" }
+kith-channel = { path = "crates/control/kith-channel" }
 kith-disco = { path = "crates/connectivity/kith-disco" }
 kith-filter = { path = "crates/data/kith-filter" }
 kith-relay-proto = { path = "crates/connectivity/kith-relay-proto" }
@@ -76,6 +77,10 @@ quinn-udp = { version = "0.6.3", default-features = false }
 socket2 = { version = "0.6.5", default-features = false }
 tokio = { version = "1.54.1", default-features = false }
 tun-rs = { version = "2.8.13", default-features = false }
+
+# Logging: drivers emit events; only the binary installs a subscriber.
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 
 # Command line.
 bpaf = { version = "0.9.28", default-features = false, features = ["derive"] }
