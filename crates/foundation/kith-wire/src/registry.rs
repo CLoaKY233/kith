@@ -34,6 +34,10 @@ pub const DISCO_MESSAGE: MessageType = MessageType(0x50);
 // 0x60..=0x6f: control plane, ledger sync.
 /// A ledger reconciliation message.
 pub const SYNC_MESSAGE: MessageType = MessageType(0x60);
+/// A control-channel message between members (join, sync, endpoint gossip).
+pub const CHANNEL_MESSAGE: MessageType = MessageType(0x61);
+/// A typed ledger record value (relay, DNS, exit advertisement).
+pub const CONTROL_RECORD: MessageType = MessageType(0x62);
 
 // 0x70..=0x7f: management plane, IPC.
 /// A request or response between the `kith` command line and the daemon.
@@ -44,8 +48,9 @@ mod tests {
     use alloc::collections::BTreeSet;
 
     use super::{
-        DISCO_MESSAGE, IDENTITY_INVITE, IDENTITY_SECRET_KEY, IPC_MESSAGE, LEDGER_SIGNED_OP,
-        LEDGER_UNSIGNED_OP, POLICY_DOCUMENT, RELAY_FRAME, SYNC_MESSAGE,
+        CHANNEL_MESSAGE, CONTROL_RECORD, DISCO_MESSAGE, IDENTITY_INVITE, IDENTITY_SECRET_KEY,
+        IPC_MESSAGE, LEDGER_SIGNED_OP, LEDGER_UNSIGNED_OP, POLICY_DOCUMENT, RELAY_FRAME,
+        SYNC_MESSAGE,
     };
 
     #[test]
@@ -59,6 +64,8 @@ mod tests {
             RELAY_FRAME,
             DISCO_MESSAGE,
             SYNC_MESSAGE,
+            CHANNEL_MESSAGE,
+            CONTROL_RECORD,
             IPC_MESSAGE,
         ];
         let unique: BTreeSet<u8> = all.iter().map(|ty| ty.0).collect();
