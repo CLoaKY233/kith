@@ -1,6 +1,6 @@
 # kith architecture (MVP)
 
-Status: **proposal, awaiting approval**. Date: 2026-10-26.
+Status: **pre-alpha; describes the code as built**. Date: 2026-10-26.
 Background: [`research/tailscale-market-research.md`](research/tailscale-market-research.md).
 
 ---
@@ -92,7 +92,7 @@ Crates live in one folder per plane, so the layout mirrors the architecture:
 crates/
   foundation/    types, crypto, wire
   trust/         identity, ledger, policy
-  control/       sync, control
+  control/       sync, control, channel
   connectivity/  stun, disco, transport, obfs, relay-proto, relay, transport-{udp,quic,ws}, netmon, tls
   data/          packet, filter, router, wg, tun, dataplane
   naming/        naming, dns
@@ -131,6 +131,7 @@ Smaller concerns are modules.
 |---|---|
 | `kith-sync` `[core]` | Ledger reconciliation (range-based set reconciliation over op hashes) |
 | `kith-control` `[core]` | `NetworkRuntime`: ledger + policy + sync → `NetMap`; multi-network manager |
+| `kith-channel` `[drv]` | Control channel between members over `kith-tls`: join, ledger sync, endpoint gossip |
 
 ### Connectivity plane
 | Crate | Purpose |
@@ -145,7 +146,7 @@ Smaller concerns are modules.
 | `kith-transport-ws` `[drv]` | TLS/WebSocket-on-443 link (CDN-able), feature-gated |
 | `kith-relay` `[drv]` | Relay server + client drivers (any node can relay) |
 | `kith-netmon` `[drv]` | Network change detection and port mapping (PCP, NAT-PMP) |
-| `kith-tls` | TLS 1.3 authenticated by kith identities (raw public keys), shared by QUIC and the control channel |
+| `kith-tls` `[drv]` | TLS 1.3 authenticated by kith identities (raw public keys, RFC 7250, no CA), shared by QUIC and the control channel |
 
 ### Data plane
 | Crate | Purpose |
@@ -153,7 +154,7 @@ Smaller concerns are modules.
 | `kith-packet` `[core]` | Zero-copy IPv4/IPv6/TCP/UDP/ICMP header views, checksums |
 | `kith-filter` `[core]` | Stateful packet filter evaluating `FilterRules` |
 | `kith-router` `[core]` | Per-network LPM trie: destination IP → `(NetworkId, NodeId)`, exit routes |
-| `kith-wg` `[core]` | `Tunnel` trait over gotatun/boringtun noise (sans-IO); kernel-WG backend lives in the driver |
+| `kith-wg` `[core]` | Our own sans-IO WireGuard implementation, interoperable with boringtun |
 | `kith-tun` `[drv]` | TUN device (tun-rs) with offloads, batched read/write |
 | `kith-dataplane` `[drv]` | Hot loop: TUN ⇄ filter ⇄ router ⇄ WG ⇄ Link; buffer pools |
 
@@ -175,16 +176,16 @@ Smaller concerns are modules.
 | `kith-store` | State directory, atomic writes, ledger persistence (`Store` trait + fs impl) |
 | `kith-ipc` | CLI ⇄ daemon protocol: postcard frames over a Unix socket or named pipe; peer-credential auth; JSON debug mode |
 | `kith-node` `[drv]` | Composition root: wires every plane through typed channels on tokio `current_thread` |
-| `kith-cli` | The single multi-call binary `kith` (`kith daemon`, `kith up`, `kith invite`, `kith join`, `kith status`, …) |
+| `kith-cli` | The single multi-call binary `kith` (`kith daemon`, `kith create`, `kith invite`, `kith join`, `kith status`, …) |
 
 ### Tooling (not shipped)
 | Crate | Purpose |
 |---|---|
 | `kith-sim` | Deterministic multi-node simulator: virtual time, NAT models (full-cone, symmetric, CGNAT), partitions, packet loss. Drives the sans-IO cores directly |
 | `xtask` | Size budget check, dist builds, release automation |
-| `fuzz/` | cargo-fuzz targets for every parser (outside the workspace) |
 
-That makes **33 workspace crates**. Later crates: `kith-transport-reality`, `kith-mdns`, `kith-coordinator` (optional OIDC server + web UI), `kith-ffi` (C/Go/Python bindings), `kith` (embeddable facade).
+
+That makes **36 workspace crates**. Later crates: `kith-transport-reality`, `kith-mdns`, `kith-coordinator` (optional OIDC server + web UI), `kith-ffi` (C/Go/Python bindings), `kith` (embeddable facade).
 
 ---
 
@@ -194,12 +195,12 @@ That makes **33 workspace crates**. Later crates: `kith-transport-reality`, `kit
 
 | Protocol | Carried over | Shape |
 |---|---|---|
-| WireGuard | `Link` | Standard WG. Rung 0 stays plain WG so a bring-your-own exit works |
+| WireGuard | `Link` | Standard WG, our own implementation (`kith-wg`), interoperable with boringtun. Rung 0 stays plain WG so a bring-your-own exit works |
 | Disco | `Link`, relay | `Ping{tx_id}`, `Pong{tx_id, observed_addr}`, `CallMeMaybe{endpoints}`, `TransportHint`; sealed with an X25519 box keyed to the node key; obfuscated the same way as WG when obfs is on |
 | Ledger op | sync | `Op{parents, author, lamport, body, sig}`; `OpId = BLAKE3(bytes)`; Ed25519 signature over domain-separated bytes |
 | Ledger sync | tunnel stream | Range-based set reconciliation over `OpId`s, then op transfer in causal order |
 | Relay | any `Transport` | `[type u8][len u16][dst NodeId][payload]`; signed-challenge auth (members only); bandwidth caps |
-| Invite | link / QR | `kith://join/<base32(net_id, genesis, bootstrap, invite_key, expiry, uses)>` |
+| Invite | link / QR | `kith://join/<base32(…)>` carrying the network id, sponsor `NodeId`, invite secret, bootstrap entries (address + `NodeId`), expiry and network name |
 | IPC | Unix socket / named pipe | Length-prefixed postcard request/response + `watch` event stream; version `hello` |
 
 **Membership model:**
@@ -215,7 +216,7 @@ That makes **33 workspace crates**. Later crates: `kith-transport-reality`, `kit
 
 | Need | Choice | Why |
 |---|---|---|
-| WireGuard | **gotatun** (Mullvad, active), boringtun as fallback; kernel WG via `defguard_wireguard_rs` on Linux | Maintained Rust WG; kernel path where available |
+| WireGuard | **Our own** (`kith-wg`), interoperable with boringtun | Sans-IO, fits the zero-alloc hot path |
 | Crypto | **RustCrypto** (chacha20poly1305), **dalek 3** (Ed25519/X25519), **blake3** | Pure Rust, cross-compiles to MIPS, no C toolchain |
 | TLS / QUIC | **rustls** (pure-Rust provider on MIPS, aws-lc-rs optional elsewhere), **quinn** | Sans-IO `quinn-proto`, no OpenSSL |
 | TUN / UDP | **tun-rs** (offloads), **quinn-udp** (GSO/GRO, mmsg) | Batch I/O is where the throughput comes from |
@@ -265,7 +266,7 @@ Banned: `openssl`, `ring` (MIPS risk), `regex` in the daemon, and git or unknown
 |---|---|---|
 | **M0** | Workspace, all crates as documented stubs, lints, CI, deny | `cargo xtask ci` is green locally and on GitHub |
 | **M1** | Foundation + trust plane: types, crypto, wire, identity, ledger, policy | Ledger property tests pass for concurrent add/remove, partitions and backdating; golden vectors exist |
-| **M2** | Data plane between two hosts with static peers, plus exit-node routing | `kith up` with a manual peer pings across Linux and macOS; all traffic can route through a peer; throughput benchmark exists |
+| **M2** | Data plane between two hosts with static peers, plus exit-node routing | Two hosts with a manual peer ping pings across Linux and macOS; all traffic can route through a peer; throughput benchmark exists |
 | **M3** | Connectivity: STUN, disco, UDP transport, relay, hole punching | `kith-sim` passes the NAT matrix; a real relay fallback works |
 | **M4** | Control: invite/join, sync, netmap, persistence, multi-network | Three devices join by link, survive restarts and work offline on a LAN |
 | **M5** | Naming: stub DNS + custom records | `nas.home` and custom records resolve on all three hosts |
