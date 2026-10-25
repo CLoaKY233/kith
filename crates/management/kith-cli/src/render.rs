@@ -17,31 +17,93 @@ fn path_name(path: Option<PathKind>) -> &'static str {
     }
 }
 
+fn handshake_age(secs: Option<u64>) -> String {
+    let Some(secs) = secs else {
+        return "never".to_owned();
+    };
+    let (value, unit) = match secs {
+        0..60 => (secs, "s"),
+        60..3600 => (secs / 60, "m"),
+        3600..86_400 => (secs / 3600, "h"),
+        _ => (secs / 86_400, "d"),
+    };
+    format!("{value}{unit} ago")
+}
+
+/// Binary units with one truncated decimal, like `1.1 MiB`.
+fn byte_size(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let mut scale: u64 = 1024;
+    let mut tenths = None;
+    for unit in UNITS {
+        if bytes < scale {
+            break;
+        }
+        tenths = Some((u128::from(bytes) * 10 / u128::from(scale), unit));
+        scale = scale.saturating_mul(1024);
+    }
+    match tenths {
+        Some((tenths, unit)) => format!("{}.{} {unit}", tenths / 10, tenths % 10),
+        None => format!("{bytes} B"),
+    }
+}
+
+fn write_row<S: AsRef<str>>(
+    out: &mut impl Write,
+    indent: &str,
+    cells: &[S],
+    widths: &[usize],
+) -> io::Result<()> {
+    out.write_all(indent.as_bytes())?;
+    let last = cells.len().saturating_sub(1);
+    for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
+        if i == last {
+            writeln!(out, "{}", cell.as_ref())?;
+        } else {
+            write!(out, "{:width$}  ", cell.as_ref())?;
+        }
+    }
+    Ok(())
+}
+
 fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Result<()> {
+    const HEADER: [&str; 8] = [
+        "NAME",
+        "ADDRESS",
+        "PATH",
+        "ENDPOINT",
+        "HANDSHAKE",
+        "RX",
+        "TX",
+        "NODE",
+    ];
     if peers.is_empty() {
         return writeln!(out, "{indent}no peers yet");
     }
-    let name_w = peers.iter().map(|p| p.name.len()).max().unwrap_or(0).max(4);
-    let addr_w = peers
+    let rows: Vec<[String; 8]> = peers
         .iter()
-        .map(|p| p.address.len())
-        .max()
-        .unwrap_or(0)
-        .max(7);
-    writeln!(
-        out,
-        "{indent}{:name_w$}  {:addr_w$}  {:7}  NODE",
-        "NAME", "ADDRESS", "PATH"
-    )?;
-    for peer in peers {
-        writeln!(
-            out,
-            "{indent}{:name_w$}  {:addr_w$}  {:7}  {}",
-            peer.name,
-            peer.address,
-            path_name(peer.path),
-            peer.node.short()
-        )?;
+        .map(|peer| {
+            [
+                peer.name.clone(),
+                peer.address.clone(),
+                path_name(peer.path).to_owned(),
+                peer.endpoint.clone().unwrap_or_else(|| "-".to_owned()),
+                handshake_age(peer.last_handshake_secs),
+                byte_size(peer.rx_bytes),
+                byte_size(peer.tx_bytes),
+                peer.node.short().to_string(),
+            ]
+        })
+        .collect();
+    let mut widths = HEADER.map(str::len);
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    write_row(out, indent, &HEADER, &widths)?;
+    for row in &rows {
+        write_row(out, indent, row, &widths)?;
     }
     Ok(())
 }
@@ -110,9 +172,23 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
         out.write_all(b",\"address\":")?;
         json_str(out, &peer.address)?;
         match peer.path {
-            Some(_) => write!(out, ",\"path\":\"{}\"}}", path_name(peer.path))?,
-            None => out.write_all(b",\"path\":null}")?,
+            Some(_) => write!(out, ",\"path\":\"{}\"", path_name(peer.path))?,
+            None => out.write_all(b",\"path\":null")?,
         }
+        out.write_all(b",\"endpoint\":")?;
+        match &peer.endpoint {
+            Some(endpoint) => json_str(out, endpoint)?,
+            None => out.write_all(b"null")?,
+        }
+        match peer.last_handshake_secs {
+            Some(secs) => write!(out, ",\"last_handshake_secs\":{secs}")?,
+            None => out.write_all(b",\"last_handshake_secs\":null")?,
+        }
+        write!(
+            out,
+            ",\"rx_bytes\":{},\"tx_bytes\":{}}}",
+            peer.rx_bytes, peer.tx_bytes
+        )?;
     }
     out.write_all(b"]")
 }

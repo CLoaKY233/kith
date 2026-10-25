@@ -236,6 +236,14 @@ pub struct PeerInfo {
     pub address: String,
     /// Current path, or `None` while offline.
     pub path: Option<PathKind>,
+    /// Seconds since the last WireGuard handshake, or `None` if there has been none.
+    pub last_handshake_secs: Option<u64>,
+    /// The peer's current WireGuard endpoint, as text.
+    pub endpoint: Option<String>,
+    /// Bytes received from the peer.
+    pub rx_bytes: u64,
+    /// Bytes sent to the peer.
+    pub tx_bytes: u64,
 }
 
 /// How traffic reaches a peer.

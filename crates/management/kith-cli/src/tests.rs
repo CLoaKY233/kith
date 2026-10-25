@@ -153,7 +153,7 @@ fn every_command_parses_into_the_right_request() {
         &["config", "check"],
         &["config", "check", "/x.toml"],
         &["config", "show"],
-        &["daemon", "--config", "/x.toml", "--foreground"],
+        &["daemon", "--config", "/x.toml", "--foreground", "-vv"],
     ] {
         let cmd = parse(local).unwrap();
         assert!(exec::to_request(&cmd, &names()).is_err(), "{local:?}");
@@ -183,59 +183,96 @@ fn durations() {
     }
 }
 
+async fn run_against(path: &std::path::Path, command: &[&str]) -> String {
+    let mut args = vec!["--socket", path.to_str().unwrap()];
+    args.extend(command);
+    let opts = opts().run_inner(&args[..]).unwrap();
+    let mut out = Vec::new();
+    exec::run(&opts, &mut out).await.unwrap();
+    String::from_utf8(out).unwrap()
+}
+
 #[tokio::test]
 async fn status_renders_what_the_daemon_reports() {
     let path = std::env::temp_dir().join(format!("kith-cli-{}.sock", std::process::id()));
     let server = IpcServer::bind(&path).unwrap();
+    let phone = NodeId::from_bytes([0xcc; 32]);
     tokio::spawn(async move {
-        let mut conn = server.accept().await.unwrap();
-        while let Some(request) = conn.next_request().await.unwrap() {
-            #[expect(
-                clippy::wildcard_enum_match_arm,
-                reason = "the fake answers only what status asks"
-            )]
-            let response = match request {
-                Request::Status => Response::Status(Status {
-                    node: Some(NodeId::from_bytes([0x12; 32])),
-                    networks: vec![NetworkSummary {
-                        id: NET,
-                        name: "home".into(),
-                        peers_online: 1,
-                        peers_total: 2,
-                    }],
-                    exit: false,
-                    relay: true,
-                }),
-                Request::Peers { network: NET } => Response::Peers(vec![
-                    PeerInfo {
-                        node: NODE,
-                        name: "nas".into(),
-                        address: "100.64.0.2".into(),
-                        path: Some(PathKind::Relay),
-                    },
-                    PeerInfo {
-                        node: NodeId::from_bytes([0xcc; 32]),
-                        name: "phone".into(),
-                        address: "100.64.0.3".into(),
-                        path: None,
-                    },
-                ]),
-                _ => Response::Left,
-            };
-            conn.respond(response).await.unwrap();
+        loop {
+            let mut conn = server.accept().await.unwrap();
+            while let Some(request) = conn.next_request().await.unwrap() {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "the fake answers only what status asks"
+                )]
+                let response = match request {
+                    Request::Status => Response::Status(Status {
+                        node: Some(NodeId::from_bytes([0x12; 32])),
+                        networks: vec![NetworkSummary {
+                            id: NET,
+                            name: "home".into(),
+                            peers_online: 1,
+                            peers_total: 2,
+                        }],
+                        exit: false,
+                        relay: true,
+                    }),
+                    Request::Peers { network: NET } => Response::Peers(vec![
+                        PeerInfo {
+                            node: NODE,
+                            name: "nas".into(),
+                            address: "100.64.0.2".into(),
+                            path: Some(PathKind::Direct),
+                            last_handshake_secs: Some(75),
+                            endpoint: Some("198.51.100.7:41641".into()),
+                            rx_bytes: 1_234_567,
+                            tx_bytes: 512,
+                        },
+                        PeerInfo {
+                            node: phone,
+                            name: "phone \"old\"".into(),
+                            address: "100.64.0.3".into(),
+                            path: None,
+                            last_handshake_secs: None,
+                            endpoint: None,
+                            rx_bytes: 0,
+                            tx_bytes: 0,
+                        },
+                    ]),
+                    _ => Response::Left,
+                };
+                conn.respond(response).await.unwrap();
+            }
         }
     });
-    let args = ["--socket", path.to_str().unwrap(), "status"];
-    let opts = opts().run_inner(&args[..]).unwrap();
-    let mut out = Vec::new();
-    exec::run(&opts, &mut out).await.unwrap();
+
     assert_eq!(
-        String::from_utf8(out).unwrap(),
+        run_against(&path, &["status"]).await,
         "device 12121212 (relay)\n\
          \n\
          network home (aaaaaaaa)  1/2 online\n  \
-         NAME   ADDRESS     PATH     NODE\n  \
-         nas    100.64.0.2  relay    bbbbbbbb\n  \
-         phone  100.64.0.3  offline  cccccccc\n"
+         NAME         ADDRESS     PATH     ENDPOINT            HANDSHAKE  RX       TX     NODE\n  \
+         nas          100.64.0.2  direct   198.51.100.7:41641  1m ago     1.1 MiB  512 B  bbbbbbbb\n  \
+         phone \"old\"  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n"
+    );
+    assert_eq!(
+        run_against(&path, &["status", "--json"]).await,
+        format!(
+            concat!(
+                r#"{{"node":"{me}","exit":false,"relay":true,"networks":[{{"id":"{net}","#,
+                r#""name":"home","peers_online":1,"peers_total":2,"peers":["#,
+                r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
+                r#""endpoint":"198.51.100.7:41641","last_handshake_secs":75,"#,
+                r#""rx_bytes":1234567,"tx_bytes":512}},"#,
+                r#"{{"node":"{phone}","name":"phone \"old\"","address":"100.64.0.3","#,
+                r#""path":null,"endpoint":null,"last_handshake_secs":null,"#,
+                r#""rx_bytes":0,"tx_bytes":0}}]}}]}}"#,
+                "\n",
+            ),
+            me = NodeId::from_bytes([0x12; 32]),
+            net = NET,
+            nas = NODE,
+            phone = phone,
+        )
     );
 }

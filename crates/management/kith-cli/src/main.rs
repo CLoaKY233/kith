@@ -21,8 +21,10 @@ use exec::CliError;
 fn main() -> ExitCode {
     let opts = cli::opts().run();
     let result = match &opts.cmd {
-        Cmd::Daemon { config, .. } => exec::load_config(config.as_deref())
-            .and_then(|config| daemon::run_daemon(config).map_err(CliError)),
+        Cmd::Daemon {
+            config, verbose, ..
+        } => exec::load_config(config.as_deref())
+            .and_then(|config| daemon::start(config, *verbose).map_err(CliError)),
         Cmd::Status { .. }
         | Cmd::Create { .. }
         | Cmd::Invite { .. }

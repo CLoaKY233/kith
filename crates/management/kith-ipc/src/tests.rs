@@ -9,7 +9,7 @@ use crate::codec::{decode, encode};
 use crate::message::ServerMessage;
 use crate::{
     DnsRecord, ErrorCode, Event, IpcClient, IpcError, IpcServer, MAX_FRAME_LEN, NetworkSummary,
-    PathKind, PeerInfo, Request, Response, Status,
+    PROTOCOL_VERSION, PathKind, PeerInfo, Request, Response, Status,
 };
 
 fn unframe(bytes: &[u8]) -> Vec<u8> {
@@ -24,7 +24,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 1, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 2, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -34,8 +34,25 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 1, 0, 15, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 2, 0, 15, 3, 2, b'n', b'o']
     );
+
+    let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
+        node: NodeId::from_bytes([0x11; 32]),
+        name: "a".to_owned(),
+        address: "b".to_owned(),
+        path: Some(PathKind::Direct),
+        last_handshake_secs: Some(300),
+        endpoint: Some("c".to_owned()),
+        rx_bytes: 1,
+        tx_bytes: 128,
+    }]));
+    let mut expected = vec![54, b'k', b't', 0x70, 2, 0, 6, 1];
+    expected.extend([0x11; 32]);
+    expected.extend([
+        1, b'a', 1, b'b', 1, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01,
+    ]);
+    assert_eq!(encode(&peers).unwrap(), expected);
 }
 
 fn text() -> impl Strategy<Value = String> {
@@ -130,14 +147,32 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
             relay,
         });
     let peers = proptest::collection::vec(
-        (node(), text(), text(), proptest::option::of(path())).prop_map(
-            |(node, name, address, path)| PeerInfo {
-                node,
-                name,
-                address,
-                path,
-            },
-        ),
+        (
+            (node(), text(), text(), proptest::option::of(path())),
+            (
+                any::<Option<u64>>(),
+                proptest::option::of(text()),
+                any::<u64>(),
+                any::<u64>(),
+            ),
+        )
+            .prop_map(
+                |(
+                    (node, name, address, path),
+                    (last_handshake_secs, endpoint, rx_bytes, tx_bytes),
+                )| {
+                    PeerInfo {
+                        node,
+                        name,
+                        address,
+                        path,
+                        last_handshake_secs,
+                        endpoint,
+                        rx_bytes,
+                        tx_bytes,
+                    }
+                },
+            ),
         0..3,
     );
     let code = prop_oneof![
@@ -299,7 +334,7 @@ async fn version_mismatch_is_a_clean_error() {
     assert!(matches!(
         handler.await.unwrap(),
         Err(IpcError::VersionMismatch {
-            ours: 1,
+            ours: PROTOCOL_VERSION,
             theirs: 99
         })
     ));

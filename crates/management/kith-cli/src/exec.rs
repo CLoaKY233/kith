@@ -11,11 +11,6 @@ use kith_types::{NetworkId, NodeId};
 use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, Opts, WgCmd};
 use crate::render;
 
-#[cfg(windows)]
-const DEFAULT_CONFIG: &str = r"C:\ProgramData\kith\kith.toml";
-#[cfg(not(windows))]
-const DEFAULT_CONFIG: &str = "/etc/kith/kith.toml";
-
 /// A failure worth one line on stderr.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CliError(pub String);
@@ -221,13 +216,13 @@ fn read_wg(file: &Path) -> Result<String, CliError> {
 pub(crate) fn load_config(path: Option<&Path>) -> Result<Config, CliError> {
     Ok(match path {
         Some(path) => Config::load(path)?,
-        None => Config::load_or_default(Path::new(DEFAULT_CONFIG))?,
+        None => Config::load_or_default(&Config::default_path())?,
     })
 }
 
 fn socket_path(opts: &Opts) -> PathBuf {
     opts.socket.clone().unwrap_or_else(|| {
-        Config::load_or_default(Path::new(DEFAULT_CONFIG))
+        Config::load_or_default(&Config::default_path())
             .unwrap_or_default()
             .daemon
             .socket_path
@@ -256,8 +251,8 @@ async fn connect(path: &Path) -> Result<IpcClient, CliError> {
 pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliError> {
     match &opts.cmd {
         Cmd::Config(ConfigCmd::Check { path }) => {
-            let path = path.as_deref().unwrap_or(Path::new(DEFAULT_CONFIG));
-            match Config::load(path) {
+            let path = path.clone().unwrap_or_else(Config::default_path);
+            match Config::load(&path) {
                 Err(ConfigError::Read { source, .. })
                     if source.kind() == std::io::ErrorKind::NotFound =>
                 {

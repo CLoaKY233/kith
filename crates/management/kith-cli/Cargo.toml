@@ -19,6 +19,7 @@ kith-config.workspace = true
 kith-ipc.workspace = true
 kith-types.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

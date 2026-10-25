@@ -1,6 +1,8 @@
 # kith daemon configuration. Every setting is optional: an empty file (or none at all) is the
 # zero-config default. Lines starting with `#key` are settings shown at an example value;
 # remove the `#` to use one. Unknown keys are errors, so typos are caught.
+# Read from /etc/kith/kith.toml (Linux), /Library/Application Support/kith/kith.toml (macOS) or
+# %ProgramData%\kith\kith.toml (Windows), unless `kith daemon --config` names another file.
 
 [daemon]
 # Keys, the network ledger and caches. Default depends on the OS:

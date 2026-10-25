@@ -60,6 +60,25 @@ impl Config {
     pub fn to_toml_string(&self) -> Result<String, ConfigError> {
         Ok(toml::to_string(self)?)
     }
+
+    /// Where this OS keeps the system-wide config file.
+    pub fn default_path() -> PathBuf {
+        if cfg!(target_os = "macos") {
+            PathBuf::from("/Library/Application Support/kith/kith.toml")
+        } else if cfg!(windows) {
+            program_data().join("kith").join("kith.toml")
+        } else {
+            PathBuf::from("/etc/kith/kith.toml")
+        }
+    }
+}
+
+/// `%ProgramData%`, falling back to its usual location when unset or not absolute.
+fn program_data() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
 }
 
 pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<String, ConfigError> {
@@ -92,19 +111,19 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         let (state_dir, socket_path) = if cfg!(target_os = "linux") {
-            ("/var/lib/kith", "/run/kith/kith.sock")
+            ("/var/lib/kith".into(), "/run/kith/kith.sock")
         } else if cfg!(target_os = "macos") {
             (
-                "/Library/Application Support/kith",
+                "/Library/Application Support/kith".into(),
                 "/var/run/kith/kith.sock",
             )
         } else if cfg!(windows) {
-            (r"C:\ProgramData\kith", r"\\.\pipe\kith")
+            (program_data().join("kith"), r"\\.\pipe\kith")
         } else {
-            ("/var/db/kith", "/var/run/kith/kith.sock")
+            ("/var/db/kith".into(), "/var/run/kith/kith.sock")
         };
         Self {
-            state_dir: PathBuf::from(state_dir),
+            state_dir,
             socket_path: PathBuf::from(socket_path),
             log_level: LogLevel::default(),
         }

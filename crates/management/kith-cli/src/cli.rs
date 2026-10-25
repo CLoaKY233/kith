@@ -103,6 +103,9 @@ pub(crate) enum Cmd {
         config: Option<PathBuf>,
         /// Stay attached to the terminal (accepted for service managers; always true)
         foreground: bool,
+        /// Log more than the configured level: -v for debug, -vv for trace
+        #[bpaf(short, long, req_flag(()), count)]
+        verbose: usize,
     },
 }
 

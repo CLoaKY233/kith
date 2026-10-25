@@ -23,7 +23,7 @@ pub use message::{
 pub use server::{Connection, IpcServer, PeerCred};
 
 /// The protocol version both sides must agree on in [`Request::Hello`].
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The largest frame either side accepts.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;
