@@ -12,7 +12,7 @@ use serde::ser::SerializeTuple as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 
-use crate::{Context, Hash};
+use crate::{AgreementPublic, AgreementSecret, Context, Hash};
 
 /// A signature or key failed verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -63,6 +63,15 @@ impl SigningKey {
         self.verifying_key().node_id()
     }
 
+    /// The X25519 secret for this identity, as libsodium's `ed25519_sk_to_curve25519`.
+    ///
+    /// Lets one identity key serve both signing and WireGuard, so peers need no second key.
+    #[must_use]
+    pub fn to_agreement_secret(&self) -> AgreementSecret {
+        let scalar = Zeroizing::new(self.0.to_scalar_bytes());
+        AgreementSecret::from_bytes(*scalar)
+    }
+
     /// Signs `message` under `context`.
     #[must_use]
     pub fn sign(&self, context: Context, message: &[u8]) -> Signature {
@@ -107,6 +116,12 @@ impl VerifyingKey {
     #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
         self.0.to_bytes()
+    }
+
+    /// The X25519 public key matching [`SigningKey::to_agreement_secret`].
+    #[must_use]
+    pub fn to_agreement_public(&self) -> AgreementPublic {
+        AgreementPublic::from_bytes(self.0.to_montgomery().to_bytes())
     }
 
     /// Verifies that `signature` covers `message` under `context`.
@@ -277,6 +292,25 @@ mod tests {
                     hex
                 });
         assert!(!text.contains(&seed_hex));
+    }
+
+    #[test]
+    fn identity_keys_double_as_matching_x25519_keys() {
+        let alice = key(5);
+        let bob = key(6);
+        let alice_secret = alice.to_agreement_secret();
+        assert_eq!(
+            alice_secret.public_key(),
+            alice.verifying_key().to_agreement_public()
+        );
+        let one = alice_secret
+            .agree(&bob.verifying_key().to_agreement_public())
+            .unwrap();
+        let two = bob
+            .to_agreement_secret()
+            .agree(&alice.verifying_key().to_agreement_public())
+            .unwrap();
+        assert_eq!(one.as_bytes(), two.as_bytes());
     }
 
     #[test]
