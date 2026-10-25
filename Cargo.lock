@@ -467,7 +467,6 @@ version = "0.0.0"
 name = "kith-transport"
 version = "0.0.0"
 dependencies = [
- "kith-types",
  "proptest",
  "thiserror",
 ]
