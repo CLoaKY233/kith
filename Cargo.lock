@@ -1066,6 +1066,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kith-tls"
+version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-types",
+ "rustls",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "zeroize",
+]
+
+[[package]]
 name = "kith-transport"
 version = "0.0.0"
 dependencies = [
@@ -1079,12 +1092,12 @@ version = "0.0.0"
 dependencies = [
  "bytes",
  "kith-crypto",
+ "kith-tls",
  "kith-types",
  "quinn",
  "rustls",
  "thiserror",
  "tokio",
- "zeroize",
 ]
 
 [[package]]

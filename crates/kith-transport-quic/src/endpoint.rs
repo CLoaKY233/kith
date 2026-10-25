@@ -8,13 +8,11 @@ use kith_crypto::SigningKey;
 use kith_types::NodeId;
 use quinn::crypto::rustls::{HandshakeData, QuicClientConfig, QuicServerConfig};
 use quinn::{Connection, TransportConfig, VarInt};
-use rustls::crypto::CryptoProvider;
 use rustls::pki_types::CertificateDer;
-use rustls::sign::CertifiedKey;
 
 use crate::{
-    DATAGRAM_RECEIVE_BUFFER, DATAGRAM_SEND_BUFFER, KEEP_ALIVE_INTERVAL, MAX_IDLE_TIMEOUT,
-    QuicError, auth, der,
+    ALPN, DATAGRAM_RECEIVE_BUFFER, DATAGRAM_SEND_BUFFER, KEEP_ALIVE_INTERVAL, MAX_IDLE_TIMEOUT,
+    QuicError,
 };
 
 /// Application close code for an orderly shutdown.
@@ -24,8 +22,7 @@ const CLOSE_OK: VarInt = VarInt::from_u32(0);
 #[derive(Debug)]
 pub struct QuicEndpoint {
     endpoint: quinn::Endpoint,
-    identity: Arc<CertifiedKey>,
-    provider: Arc<CryptoProvider>,
+    identity: SigningKey,
     transport: Arc<TransportConfig>,
     node_id: NodeId,
 }
@@ -33,25 +30,19 @@ pub struct QuicEndpoint {
 impl QuicEndpoint {
     /// Binds a UDP socket and derives the local identity from `identity_seed`.
     pub fn bind(addr: SocketAddr, identity_seed: &[u8; 32]) -> Result<Self, QuicError> {
-        let signing = SigningKey::from_seed(identity_seed);
-        let node_id = signing.node_id();
-        let public_key = signing.verifying_key().to_bytes();
-
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let identity = auth::certified_key(identity_seed, &public_key)?;
+        let identity = SigningKey::from_seed(identity_seed);
+        let node_id = identity.node_id();
         let transport = transport_config()?;
 
-        let server_crypto = auth::server_config(&provider, Arc::clone(&identity))?;
-        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
-            QuicServerConfig::try_from(Arc::new(server_crypto))?,
-        ));
+        let server_crypto = kith_tls::server_config(&identity, &[ALPN])?;
+        let mut server_config =
+            quinn::ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(server_crypto)?));
         server_config.transport_config(Arc::clone(&transport));
 
         let endpoint = quinn::Endpoint::server(server_config, addr).map_err(QuicError::Bind)?;
         Ok(Self {
             endpoint,
             identity,
-            provider,
             transport,
             node_id,
         })
@@ -75,11 +66,9 @@ impl QuicEndpoint {
         expected_peer: NodeId,
         sni: &str,
     ) -> Result<QuicLink, QuicError> {
-        let client_crypto =
-            auth::client_config(&self.provider, Arc::clone(&self.identity), expected_peer)?;
-        let mut client_config = quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(
-            Arc::new(client_crypto),
-        )?));
+        let client_crypto = kith_tls::client_config(&self.identity, expected_peer, &[ALPN])?;
+        let mut client_config =
+            quinn::ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto)?));
         client_config.transport_config(Arc::clone(&self.transport));
 
         let connection = self
@@ -208,8 +197,7 @@ fn peer_node_id(connection: &Connection) -> Result<NodeId, QuicError> {
     let chain = identity
         .downcast::<Vec<CertificateDer<'static>>>()
         .map_err(|_| QuicError::MalformedPeerKey)?;
-    let spki = chain.first().ok_or(QuicError::MalformedPeerKey)?;
-    der::node_id_from_spki(spki.as_ref())
+    kith_tls::peer_node_id(&chain).ok_or(QuicError::MalformedPeerKey)
 }
 
 #[cfg(test)]

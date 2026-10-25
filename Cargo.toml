@@ -49,6 +49,7 @@ kith-transport-ws = { path = "crates/kith-transport-ws" }
 kith-relay = { path = "crates/kith-relay" }
 kith-dataplane = { path = "crates/kith-dataplane" }
 kith-node = { path = "crates/kith-node" }
+kith-tls = { path = "crates/kith-tls" }
 
 # Cryptography (pure Rust, no C toolchain).
 blake2 = { version = "0.11.0", default-features = false }

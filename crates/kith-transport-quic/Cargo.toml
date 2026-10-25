@@ -12,11 +12,11 @@ publish.workspace = true
 [dependencies]
 bytes.workspace = true
 kith-crypto.workspace = true
+kith-tls.workspace = true
 kith-types.workspace = true
 quinn.workspace = true
 rustls.workspace = true
 thiserror = { workspace = true, features = ["std"] }
-zeroize.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

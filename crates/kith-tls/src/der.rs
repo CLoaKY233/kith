@@ -7,8 +7,6 @@ use kith_crypto::VerifyingKey;
 use kith_types::NodeId;
 use zeroize::Zeroizing;
 
-use crate::QuicError;
-
 /// Raw key byte count for Ed25519.
 const KEY_LEN: usize = 32;
 
@@ -44,15 +42,15 @@ pub(crate) fn pkcs8(seed: &[u8; KEY_LEN]) -> Zeroizing<[u8; PKCS8_PREFIX.len() +
 }
 
 /// Parses a peer's SPKI blob into its identity, rejecting the wrong shape or a weak key.
-pub(crate) fn node_id_from_spki(bytes: &[u8]) -> Result<NodeId, QuicError> {
+pub(crate) fn node_id_from_spki(bytes: &[u8]) -> Option<NodeId> {
     let prefix = bytes.get(..SPKI_PREFIX.len());
     let key = bytes.get(SPKI_PREFIX.len()..);
     match (prefix, key) {
         (Some(prefix), Some(key)) if prefix == SPKI_PREFIX && key.len() == KEY_LEN => {
             let mut raw = [0_u8; KEY_LEN];
             raw.copy_from_slice(key);
-            Ok(VerifyingKey::from_bytes(&raw)?.node_id())
+            VerifyingKey::from_bytes(&raw).ok().map(|k| k.node_id())
         }
-        _ => Err(QuicError::MalformedPeerKey),
+        _ => None,
     }
 }

@@ -15,8 +15,6 @@
 
 use std::time::Duration;
 
-mod auth;
-mod der;
 mod endpoint;
 
 pub use endpoint::{LinkHandshake, QuicEndpoint, QuicLink};
@@ -51,16 +49,13 @@ pub enum QuicError {
     Connection(#[from] quinn::ConnectionError),
     /// The TLS configuration is invalid.
     #[error("tls: {0}")]
-    Tls(#[from] rustls::Error),
+    Tls(#[from] kith_tls::Error),
     /// The configured crypto provider lacks the mandatory initial cipher suite.
     #[error("no initial cipher suite")]
     Cipher(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     /// Sending a datagram failed (too large, or datagrams unsupported by the peer).
     #[error("send datagram: {0}")]
     Send(#[source] quinn::SendDatagramError),
-    /// A key supplied by the caller or the peer is not a valid Ed25519 identity.
-    #[error("key: {0}")]
-    Key(#[from] kith_crypto::SignatureError),
     /// The peer presented no raw public key, or one of the wrong shape.
     #[error("malformed peer key")]
     MalformedPeerKey,
