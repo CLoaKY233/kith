@@ -1,7 +1,4 @@
 //! The relay client state machine.
-//!
-//! Packets sent before the relay accepts us are held (up to [`MAX_PENDING_BYTES`]) and
-//! released in order on acceptance.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -13,8 +10,7 @@ use kith_types::NodeId;
 use crate::auth::sign_challenge;
 use crate::frame::{Frame, HealthProblem, MAX_PAYLOAD_LEN, PROTOCOL_VERSION, RejectReason};
 
-/// Packet bytes the client holds while waiting for the relay to accept it.
-pub const MAX_PENDING_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_PENDING_BYTES: usize = 256 * 1024;
 
 /// Something the driver should know about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +68,7 @@ pub enum SendError {
     /// The payload exceeds [`MAX_PAYLOAD_LEN`].
     #[error("payload of {0} bytes exceeds the relay limit")]
     TooLarge(usize),
-    /// Not yet accepted and [`MAX_PENDING_BYTES`] are already held; the packet was dropped.
+    /// Not yet accepted and the pending queue is full; the packet was dropped.
     #[error("pending queue full; packet dropped")]
     QueueFull,
     /// The connection was rejected or failed.
@@ -88,8 +84,7 @@ enum State {
     Closed,
 }
 
-/// The relay client. `K` is anything that borrows the device's [`SigningKey`]: the key
-/// itself, a reference, or a shared pointer.
+/// The relay client, authenticating with anything that borrows the device's [`SigningKey`].
 #[derive(Debug)]
 pub struct RelayClient<K> {
     key: K,
@@ -180,9 +175,7 @@ impl<K: Borrow<SigningKey>> RelayClient<K> {
         Ok(())
     }
 
-    /// Queues `payload` for `dst`. Before acceptance the packet is held, and dropped once
-    /// [`MAX_PENDING_BYTES`] are held. After acceptance the driver applies backpressure by
-    /// not calling this while its stream is full.
+    /// Queues `payload` for `dst`, holding a bounded backlog until the relay accepts us.
     pub fn send(&mut self, dst: NodeId, payload: Vec<u8>) -> Result<(), SendError> {
         if payload.len() > MAX_PAYLOAD_LEN {
             return Err(SendError::TooLarge(payload.len()));
@@ -204,8 +197,7 @@ impl<K: Borrow<SigningKey>> RelayClient<K> {
         Ok(())
     }
 
-    /// Queues a liveness probe; the answer arrives as [`Event::Pong`]. Ignored until
-    /// connected.
+    /// Queues a liveness probe answered by [`Event::Pong`]; ignored until connected.
     pub fn ping(&mut self, data: [u8; 8]) {
         if self.state == State::Connected {
             self.transmit.push_back(Frame::Ping { data });

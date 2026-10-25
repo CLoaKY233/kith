@@ -1,9 +1,4 @@
-//! Challenge-response authentication.
-//!
-//! The relay sends a fresh nonce; the client signs `nonce || relay identity` under
-//! [`AUTH_CONTEXT`]. The nonce makes the signature single-use, and including the relay's
-//! identity binds it to this relay, so a malicious relay cannot replay a client's answer to
-//! impersonate that client at another relay.
+//! Challenge-response authentication, bound to the relay's identity against replay.
 
 use alloc::vec::Vec;
 

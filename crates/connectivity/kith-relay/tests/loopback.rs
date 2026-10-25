@@ -18,8 +18,6 @@ mod tests {
     const TLS_SEED: [u8; 32] = [42; 32];
     const WAIT: Duration = Duration::from_secs(5);
 
-    /// X.509 v3, CN=kith, valid 2025..2049. The signature is zeros: a pinned client compares
-    /// bytes and never checks it, and rustls only reads the key from it.
     fn certificate(public_key: [u8; 32]) -> CertificateDer<'static> {
         let name = [
             0x30, 0x0f, 0x31, 0x0d, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x04, b'k',
@@ -123,7 +121,6 @@ mod tests {
         until(&client_a, Status::Connected).await;
         until(&client_b, Status::Connected).await;
 
-        // Sizes span a single read chunk, several chunks, and the protocol maximum.
         let sizes = [0, 1, 1400, 20_000, 65_503];
         for (i, &size) in sizes.iter().enumerate() {
             let datagram: Vec<u8> = (0..size)

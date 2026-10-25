@@ -18,6 +18,7 @@ rustls-pki-types.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls.workspace = true
+tracing.workspace = true
 webpki-roots.workspace = true
 
 [dev-dependencies]

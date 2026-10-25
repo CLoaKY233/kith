@@ -1,27 +1,21 @@
-//! The relay client driver.
-//!
-//! A background task dials, authenticates and pumps datagrams, redialing with jittered
-//! exponential backoff whenever the connection drops. Datagrams are best-effort, as on any
-//! WireGuard path: sends while the queue is full are dropped rather than blocking.
-
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
 use kith_crypto::{SigningKey, fill_random};
-use kith_relay_proto::frame::MAX_PAYLOAD_LEN;
-use kith_relay_proto::{Decoder, Event, RejectReason, RelayClient};
+use kith_relay_proto::{Decoder, Event, MAX_PAYLOAD_LEN, RejectReason, RelayClient};
 use kith_types::NodeId;
 use rustls_pki_types::{CertificateDer, ServerName};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 use tokio_rustls::TlsConnector;
+use tracing::{debug, warn};
 
-use crate::{Error, READ_CHUNK, tls};
+use crate::{Ended, Error, READ_CHUNK, tls, write_flushed};
 
 /// Datagrams received through the relay, with their authenticated senders.
 pub type Incoming = mpsc::Receiver<(NodeId, Vec<u8>)>;
@@ -97,8 +91,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects over TLS to `address` (`host:port`), verifying the certificate for
-    /// `server_name`.
+    /// Connects over TLS to `address` (`host:port`), verifying the certificate for `server_name`.
     pub fn tls(
         address: String,
         server_name: &str,
@@ -166,8 +159,7 @@ impl Client {
         )
     }
 
-    /// Queues `datagram` for `to`. Datagrams sent while reconnecting are delivered once the
-    /// relay accepts the new connection, up to the queue length.
+    /// Queues `datagram` for `to`, holding it across reconnects up to the queue length.
     pub fn send(&self, to: NodeId, datagram: Vec<u8>) -> Result<(), SendError> {
         if datagram.len() > MAX_PAYLOAD_LEN {
             return Err(SendError::TooLarge(datagram.len()));
@@ -203,12 +195,6 @@ async fn dial_tcp(address: &str) -> io::Result<TcpStream> {
     Ok(stream)
 }
 
-enum Outcome {
-    Rejected(RejectReason),
-    Dropped { was_connected: bool },
-    Stopped,
-}
-
 struct Worker {
     key: Arc<SigningKey>,
     relay: NodeId,
@@ -227,65 +213,60 @@ impl Worker {
     {
         let mut backoff = self.options.min_backoff;
         loop {
-            self.status.send_replace(Status::Connecting);
-            let outcome = match timeout(self.options.idle_timeout, dial()).await {
+            let ended = match timeout(self.options.idle_timeout, dial()).await {
                 Ok(Ok(stream)) => self.drive(stream).await,
-                Ok(Err(_)) | Err(_) => Outcome::Dropped {
-                    was_connected: false,
-                },
+                Ok(Err(error)) => Ended::Io(error),
+                Err(_) => Ended::IdleTimeout,
             };
-            match outcome {
-                Outcome::Rejected(reason) => {
+            let was_connected = *self.status.borrow() == Status::Connected;
+            match ended {
+                Ended::Rejected(reason) => {
+                    warn!(relay = %self.relay, %ended, "relay refused this node");
                     self.status.send_replace(Status::Rejected(reason));
                     return;
                 }
-                Outcome::Stopped => return,
-                Outcome::Dropped { was_connected } => {
-                    if was_connected {
-                        backoff = self.options.min_backoff;
-                    }
+                Ended::Stopped => return,
+                Ended::Malformed(_) | Ended::Unencodable(_) | Ended::Misbehaved(_) => {
+                    warn!(relay = %self.relay, %ended, "relay connection failed");
                 }
+                Ended::PeerClosed | Ended::IdleTimeout | Ended::Io(_) | Ended::Closed(_) => {
+                    debug!(relay = %self.relay, was_connected, %ended, "relay connection lost");
+                }
+            }
+            if was_connected {
+                self.status.send_replace(Status::Connecting);
+                backoff = self.options.min_backoff;
             }
             sleep(jittered(backoff)).await;
             backoff = backoff.saturating_mul(2).min(self.options.max_backoff);
         }
     }
 
-    async fn drive<S: AsyncRead + AsyncWrite>(&mut self, stream: S) -> Outcome {
+    async fn drive<S: AsyncRead + AsyncWrite>(&mut self, stream: S) -> Ended {
         let mut client = RelayClient::new(Arc::clone(&self.key), self.relay);
         let (mut reader, mut writer) = tokio::io::split(stream);
         let mut decoder = Decoder::new();
         let mut read_buffer = vec![0_u8; READ_CHUNK];
         let mut write_buffer = Vec::new();
-        let mut was_connected = false;
         let mut deadline = Instant::now() + self.options.idle_timeout;
         let mut keepalive = tokio::time::interval(self.options.keepalive);
         let mut ping_counter = 0_u64;
         loop {
             tokio::select! {
                 read = reader.read(&mut read_buffer) => {
-                    let Some(chunk) =
-                        read.ok().filter(|&n| n > 0).and_then(|n| read_buffer.get(..n))
-                    else {
-                        return Outcome::Dropped { was_connected };
+                    let chunk = match read {
+                        Ok(0) => return Ended::PeerClosed,
+                        Ok(read) => read_buffer.get(..read).unwrap_or_default(),
+                        Err(error) => return Ended::Io(error),
                     };
                     deadline = Instant::now() + self.options.idle_timeout;
                     decoder.push(chunk);
-                    loop {
-                        match decoder.next_frame() {
-                            Ok(Some(frame)) => {
-                                if client.handle_frame(frame).is_err() {
-                                    return Outcome::Dropped { was_connected };
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(_) => return Outcome::Dropped { was_connected },
-                        }
+                    if let Err(ended) = feed(&mut decoder, &mut client) {
+                        return ended;
                     }
                 }
                 datagram = self.outgoing.recv() => {
-                    let Some((to, datagram)) = datagram else { return Outcome::Stopped };
-                    // Oversized datagrams were refused in `send`; a full pending queue drops.
+                    let Some((to, datagram)) = datagram else { return Ended::Stopped };
                     client.send(to, datagram).ok();
                     while let Ok((to, datagram)) = self.outgoing.try_recv() {
                         client.send(to, datagram).ok();
@@ -295,38 +276,43 @@ impl Worker {
                     ping_counter = ping_counter.wrapping_add(1);
                     client.ping(ping_counter.to_be_bytes());
                 }
-                () = sleep_until(deadline) => return Outcome::Dropped { was_connected },
+                () = sleep_until(deadline) => return Ended::IdleTimeout,
             }
             while let Some(event) = client.poll_event() {
                 match event {
                     Event::Connected => {
-                        was_connected = true;
+                        debug!(relay = %self.relay, "relay connected");
                         self.status.send_replace(Status::Connected);
                     }
-                    Event::Rejected { reason } => return Outcome::Rejected(reason),
+                    Event::Rejected { reason } => return Ended::Rejected(reason),
                     Event::Packet { src, payload } => {
-                        // The consumer is behind; drop like any congested datagram path.
                         drop(self.incoming.try_send((src, payload)));
                     }
                     Event::PeerGone { .. } | Event::Pong { .. } | Event::Health { .. } => {}
                 }
             }
             while let Some(frame) = client.poll_transmit() {
-                if frame.encode(&mut write_buffer).is_err() {
-                    return Outcome::Dropped { was_connected };
+                if let Err(error) = frame.encode(&mut write_buffer) {
+                    return Ended::Unencodable(error);
                 }
             }
-            if !write_buffer.is_empty() {
-                if writer.write_all(&write_buffer).await.is_err() || writer.flush().await.is_err() {
-                    return Outcome::Dropped { was_connected };
-                }
-                write_buffer.clear();
+            if !write_buffer.is_empty()
+                && let Err(ended) = write_flushed(&mut writer, &write_buffer).await
+            {
+                return ended;
             }
+            write_buffer.clear();
         }
     }
 }
 
-/// `base` scaled into `[base/2, base)` so clients that lost the same relay spread out.
+fn feed(decoder: &mut Decoder, client: &mut RelayClient<Arc<SigningKey>>) -> Result<(), Ended> {
+    while let Some(frame) = decoder.next_frame().map_err(Ended::Malformed)? {
+        client.handle_frame(frame).map_err(Ended::Misbehaved)?;
+    }
+    Ok(())
+}
+
 fn jittered(base: Duration) -> Duration {
     let mut random = [0_u8; 4];
     if fill_random(&mut random).is_err() {

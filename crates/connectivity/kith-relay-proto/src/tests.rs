@@ -1,5 +1,3 @@
-//! Client and server wired together in memory, through the real codec.
-
 extern crate std;
 
 use alloc::collections::BTreeMap;
@@ -10,9 +8,10 @@ use kith_crypto::{Signature, SigningKey};
 use kith_types::NodeId;
 
 use crate::auth::sign_challenge;
-use crate::frame::{Decoder, Frame, RejectReason};
-use crate::server::{Action, CloseReason, ConnId, MAX_QUEUED_BYTES, RelayServer};
-use crate::{Event, RelayClient, SendError};
+use crate::server::{
+    Action, CloseReason, ConnId, MAX_QUEUED_BYTES, MAX_RECENT_DESTINATIONS, RelayServer,
+};
+use crate::{Decoder, Event, Frame, MAX_PAYLOAD_LEN, RejectReason, RelayClient, SendError};
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_seed(&[seed; 32])
@@ -26,14 +25,12 @@ type Members = fn(&NodeId) -> bool;
 
 const MEMBERS: Members = members;
 
-/// Everyone except the node with seed 99 is a member.
 fn members(node: &NodeId) -> bool {
     *node != key(99).node_id()
 }
 
 struct Harness {
     server: RelayServer<Members>,
-    /// Bytes written by the server per connection, decoded on delivery.
     wire: BTreeMap<ConnId, Decoder>,
     closed: Vec<(ConnId, CloseReason)>,
 }
@@ -56,7 +53,6 @@ impl Harness {
         conn
     }
 
-    /// Runs the server's actions, encoding sent frames onto each connection's wire.
     fn drain_server(&mut self, report_written: bool) {
         while let Some(action) = self.server.poll_action() {
             match action {
@@ -73,7 +69,6 @@ impl Harness {
         }
     }
 
-    /// Frames the server wrote to `conn`.
     fn received(&mut self, conn: ConnId) -> Vec<Frame> {
         let decoder = self.wire.get_mut(&conn).unwrap();
         let mut frames = Vec::new();
@@ -83,7 +78,6 @@ impl Harness {
         frames
     }
 
-    /// Delivers the client's queued frames to the server. Returns how many.
     fn client_to_server(&mut self, conn: ConnId, client: &mut RelayClient<SigningKey>) -> usize {
         let mut count = 0_usize;
         while let Some(frame) = client.poll_transmit() {
@@ -98,14 +92,12 @@ impl Harness {
         count
     }
 
-    /// Pumps both directions between the server and one client until quiet.
     fn pump(&mut self, conn: ConnId, client: &mut RelayClient<SigningKey>) {
         loop {
             self.drain_server(true);
             let frames = self.received(conn);
             let received = frames.len();
             for frame in frames {
-                // Errors close the client; tests inspect its state afterwards.
                 let _ = client.handle_frame(frame);
             }
             if received == 0 && self.client_to_server(conn, client) == 0 {
@@ -184,7 +176,6 @@ fn hello_needs_own_key_signature_over_this_nonce_and_relay() {
     };
     assert_eq!(hello_rejection(hello), (reject.clone(), closed.clone()));
 
-    // A valid signature by someone else, claiming node 1.
     let mut nonce = [0_u8; 32];
     nonce[7] = 1;
     let hello = Frame::ClientHello {
@@ -193,7 +184,6 @@ fn hello_needs_own_key_signature_over_this_nonce_and_relay() {
     };
     assert_eq!(hello_rejection(hello), (reject.clone(), closed.clone()));
 
-    // A correct answer for the same nonce but another relay: replay across relays.
     let hello = Frame::ClientHello {
         node: key(1).node_id(),
         signature: sign_challenge(&key(1), &nonce, &key(3).node_id()),
@@ -237,7 +227,6 @@ fn forwarded_packets_carry_authenticated_source_not_client_claims() {
     events(&mut alice);
     events(&mut bob);
 
-    // The wire format has no source field for clients: the relay fills it in.
     alice.send(key(2).node_id(), vec![0xca, 0xfe]).unwrap();
     harness.client_to_server(alice_conn, &mut alice);
     harness.pump(bob_conn, &mut bob);
@@ -249,7 +238,6 @@ fn forwarded_packets_carry_authenticated_source_not_client_claims() {
         }]
     );
 
-    // A client sending a RecvPacket with a forged source is a protocol violation.
     harness.server.on_frame(
         alice_conn,
         Frame::RecvPacket {
@@ -303,7 +291,6 @@ fn newer_connection_replaces_older_for_same_node() {
     assert_eq!(harness.server.connection_of(&key(1).node_id()), Some(new));
     assert_eq!(harness.server.connection_stats(old), None);
 
-    // Late frames from the replaced connection are ignored; disconnecting it is harmless.
     harness.server.on_frame(old, Frame::Ping { data: [0; 8] });
     harness.server.on_disconnect(old);
     harness.drain_server(true);
@@ -329,7 +316,6 @@ fn unknown_or_departed_destinations_get_peer_gone_and_ping_gets_pong() {
     );
     assert_eq!(harness.server.stats().peer_gone, 1);
 
-    // A node that disconnects becomes unknown too.
     let (bob_conn, _) = harness.join(2, 2);
     harness.server.on_disconnect(bob_conn);
     client.send(key(2).node_id(), vec![1]).unwrap();
@@ -340,6 +326,47 @@ fn unknown_or_departed_destinations_get_peer_gone_and_ping_gets_pong() {
             node: key(2).node_id()
         }]
     );
+}
+
+#[test]
+fn departures_are_announced_once_to_recent_senders_and_replacements_are_not_departures() {
+    let mut harness = Harness::new();
+    let (alice_conn, mut alice) = harness.join(1, 1);
+    let (carol_conn, mut carol) = harness.join(3, 3);
+    let seeds: Vec<u8> = (10..).take(MAX_RECENT_DESTINATIONS + 1).collect();
+    for &seed in &seeds {
+        harness.join(u64::from(seed), seed);
+        alice.send(key(seed).node_id(), vec![1]).unwrap();
+    }
+    let (oldest, newest) = (seeds[0], seeds[MAX_RECENT_DESTINATIONS]);
+    carol.send(key(1).node_id(), vec![2]).unwrap();
+    harness.client_to_server(alice_conn, &mut alice);
+    harness.client_to_server(carol_conn, &mut carol);
+    let mut settle = |harness: &mut Harness| {
+        harness.pump(alice_conn, &mut alice);
+        harness.pump(carol_conn, &mut carol);
+        (events(&mut alice), events(&mut carol))
+    };
+    settle(&mut harness);
+
+    let (replacement, _) = harness.join(200, newest);
+    assert_eq!(settle(&mut harness), (vec![], vec![]));
+    harness.server.on_disconnect(ConnId(u64::from(oldest)));
+    harness.server.on_disconnect(replacement);
+    let gone = Event::PeerGone {
+        node: key(newest).node_id(),
+    };
+    assert_eq!(settle(&mut harness), (vec![gone], vec![]));
+
+    let (rejoined, _) = harness.join(201, newest);
+    harness.server.on_disconnect(rejoined);
+    assert_eq!(settle(&mut harness), (vec![], vec![]));
+
+    harness.server.on_disconnect(alice_conn);
+    let (reused, mut dave) = harness.join(alice_conn.0, 4);
+    harness.server.on_disconnect(ConnId(u64::from(seeds[1])));
+    harness.pump(reused, &mut dave);
+    assert_eq!(events(&mut dave), vec![Event::Connected]);
 }
 
 #[test]
@@ -354,7 +381,6 @@ fn server_drops_and_counts_beyond_queue_limit_then_recovers() {
     }
     .encoded_len();
     let fits = MAX_QUEUED_BYTES / frame_len;
-    // Bob's driver never reports anything written, so his queue fills.
     for _ in 0..fits + 5 {
         harness.server.on_frame(
             alice_conn,
@@ -373,7 +399,6 @@ fn server_drops_and_counts_beyond_queue_limit_then_recovers() {
     assert!(bob.queued_bytes <= MAX_QUEUED_BYTES);
     assert_eq!(harness.server.stats().packets_dropped, 5);
 
-    // Once the driver reports progress, packets flow again.
     harness.server.on_transmitted(bob_conn, bob.queued_bytes);
     harness.server.on_frame(
         alice_conn,
@@ -398,8 +423,8 @@ fn client_bounds_pending_queue_and_payload_size() {
     assert_eq!(accepted, 4);
     assert_eq!(client.packets_dropped(), 1);
     assert_eq!(
-        client.send(key(2).node_id(), vec![0; crate::frame::MAX_PAYLOAD_LEN + 1]),
-        Err(SendError::TooLarge(crate::frame::MAX_PAYLOAD_LEN + 1))
+        client.send(key(2).node_id(), vec![0; MAX_PAYLOAD_LEN + 1]),
+        Err(SendError::TooLarge(MAX_PAYLOAD_LEN + 1))
     );
 }
 

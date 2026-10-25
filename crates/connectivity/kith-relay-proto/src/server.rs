@@ -1,29 +1,16 @@
 //! The relay server state machine.
-//!
-//! The driver feeds events in, supplies challenge randomness, and pulls [`Action`]s with
-//! [`RelayServer::poll_action`].
-//!
-//! Rules the server enforces:
-//!
-//! - A connection must authenticate before anything else. The signature is checked before
-//!   membership, so an unauthenticated peer cannot probe who is a member.
-//! - Each node has at most one connection. A newer authenticated connection replaces the
-//!   older one, which is closed with [`CloseReason::Replaced`].
-//! - Forwarded packets carry the sender's *authenticated* identity as `src`; the client
-//!   never supplies a source, so spoofing is impossible.
-//! - Each connection has at most [`MAX_QUEUED_BYTES`] handed to the driver but not yet
-//!   reported written via [`RelayServer::on_transmitted`]. Packets beyond that are dropped and
-//!   counted instead of growing memory without bound.
 
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::vec::Vec;
 
 use kith_types::NodeId;
 
 use crate::auth::verify_challenge;
 use crate::frame::{Frame, NONCE_LEN, PROTOCOL_VERSION, RejectReason};
 
-/// Bytes a single connection may have queued toward its driver before packets are dropped.
-pub const MAX_QUEUED_BYTES: usize = 1 << 20;
+pub(crate) const MAX_QUEUED_BYTES: usize = 1 << 20;
+
+pub(crate) const MAX_RECENT_DESTINATIONS: usize = 64;
 
 /// Decides who may use this relay. The control plane implements it from the ledger.
 pub trait Authorizer {
@@ -57,16 +44,14 @@ pub enum CloseReason {
 /// Something the driver must do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Write `frame` to `conn`, then report its [`Frame::encoded_len`] via
-    /// [`RelayServer::on_transmitted`].
+    /// Write `frame` to `conn`, then report its length via [`RelayServer::on_transmitted`].
     Send {
         /// The destination connection.
         conn: ConnId,
         /// The frame to write.
         frame: Frame,
     },
-    /// Flush any frames already queued for `conn`, then close it. The server has already
-    /// forgotten the connection; [`RelayServer::on_disconnect`] is not needed.
+    /// Flush frames queued for `conn`, then close it; the server has already forgotten it.
     Close {
         /// The connection to close.
         conn: ConnId,
@@ -116,15 +101,39 @@ enum State {
 struct Connection {
     state: State,
     stats: ConnectionStats,
+    recent_destinations: VecDeque<NodeId>,
 }
 
-/// The relay server. See the [module documentation](self).
+#[derive(Debug)]
+struct RecentSenders(BTreeMap<NodeId, BTreeSet<ConnId>>);
+
+impl RecentSenders {
+    fn insert(&mut self, dst: NodeId, sender: ConnId) -> bool {
+        self.0.entry(dst).or_default().insert(sender)
+    }
+
+    fn remove(&mut self, dst: NodeId, sender: ConnId) {
+        if let Some(senders) = self.0.get_mut(&dst) {
+            senders.remove(&sender);
+            if senders.is_empty() {
+                self.0.remove(&dst);
+            }
+        }
+    }
+
+    fn take(&mut self, dst: &NodeId) -> BTreeSet<ConnId> {
+        self.0.remove(dst).unwrap_or_default()
+    }
+}
+
+/// The relay server: authenticates members and forwards packets under their proven identity.
 #[derive(Debug)]
 pub struct RelayServer<A> {
     identity: NodeId,
     authorizer: A,
     connections: BTreeMap<ConnId, Connection>,
     nodes: BTreeMap<NodeId, ConnId>,
+    recent_senders: RecentSenders,
     actions: VecDeque<Action>,
     stats: ServerStats,
 }
@@ -137,6 +146,7 @@ impl<A: Authorizer> RelayServer<A> {
             authorizer,
             connections: BTreeMap::new(),
             nodes: BTreeMap::new(),
+            recent_senders: RecentSenders(BTreeMap::new()),
             actions: VecDeque::new(),
             stats: ServerStats {
                 packets_forwarded: 0,
@@ -163,6 +173,7 @@ impl<A: Authorizer> RelayServer<A> {
             Connection {
                 state: State::AwaitingHello { nonce },
                 stats: ConnectionStats::default(),
+                recent_destinations: VecDeque::new(),
             },
         );
         self.enqueue(
@@ -198,10 +209,9 @@ impl<A: Authorizer> RelayServer<A> {
         }
     }
 
-    /// Closes every connection whose node is no longer a member. Call after membership
-    /// changes.
+    /// Closes every connection whose node is no longer a member; call after membership changes.
     pub fn refresh_membership(&mut self) {
-        let revoked: alloc::vec::Vec<ConnId> = self
+        let revoked: Vec<ConnId> = self
             .nodes
             .iter()
             .filter(|(node, _)| !self.authorizer.is_member(node))
@@ -247,13 +257,12 @@ impl<A: Authorizer> RelayServer<A> {
             self.reject(conn, RejectReason::NOT_MEMBER);
             return;
         }
-        if let Some(old) = self.nodes.get(&node).copied() {
-            self.close(old, CloseReason::Replaced);
-        }
         if let Some(connection) = self.connections.get_mut(&conn) {
             connection.state = State::Authenticated { node };
         }
-        self.nodes.insert(node, conn);
+        if let Some(old) = self.nodes.insert(node, conn) {
+            self.close(old, CloseReason::Replaced);
+        }
         self.enqueue(conn, Frame::ServerAccept);
     }
 
@@ -277,17 +286,33 @@ impl<A: Authorizer> RelayServer<A> {
         }
     }
 
-    fn forward(&mut self, from: ConnId, src: NodeId, dst: NodeId, payload: alloc::vec::Vec<u8>) {
+    fn forward(&mut self, from: ConnId, src: NodeId, dst: NodeId, payload: Vec<u8>) {
         let Some(to) = self.nodes.get(&dst).copied() else {
             self.stats.peer_gone = self.stats.peer_gone.saturating_add(1);
             self.enqueue_droppable(from, Frame::PeerGone { node: dst });
             return;
         };
+        self.note_destination(from, dst);
         let len = u64::try_from(payload.len()).unwrap_or(u64::MAX);
         if self.enqueue_droppable(to, Frame::RecvPacket { src, payload }) {
             self.stats.packets_forwarded = self.stats.packets_forwarded.saturating_add(1);
             self.stats.bytes_forwarded = self.stats.bytes_forwarded.saturating_add(len);
         }
+    }
+
+    fn note_destination(&mut self, from: ConnId, dst: NodeId) {
+        let Some(sender) = self.connections.get_mut(&from) else {
+            return;
+        };
+        if !self.recent_senders.insert(dst, from) {
+            return;
+        }
+        if sender.recent_destinations.len() >= MAX_RECENT_DESTINATIONS
+            && let Some(evicted) = sender.recent_destinations.pop_front()
+        {
+            self.recent_senders.remove(evicted, from);
+        }
+        sender.recent_destinations.push_back(dst);
     }
 
     fn reject(&mut self, conn: ConnId, reason: RejectReason) {
@@ -302,20 +327,31 @@ impl<A: Authorizer> RelayServer<A> {
         }
     }
 
-    /// Removes all state for `conn`. Returns whether it was open.
     fn forget(&mut self, conn: ConnId) -> bool {
         let Some(connection) = self.connections.remove(&conn) else {
             return false;
         };
+        for dst in connection.recent_destinations {
+            self.recent_senders.remove(dst, conn);
+        }
         if let State::Authenticated { node } = connection.state
             && self.nodes.get(&node) == Some(&conn)
         {
             self.nodes.remove(&node);
+            self.announce_departure(node);
         }
         true
     }
 
-    /// Queues a control frame that is always sent (it is small and sent at most once).
+    fn announce_departure(&mut self, node: NodeId) {
+        for conn in self.recent_senders.take(&node) {
+            if let Some(sender) = self.connections.get_mut(&conn) {
+                sender.recent_destinations.retain(|recent| *recent != node);
+            }
+            self.enqueue_droppable(conn, Frame::PeerGone { node });
+        }
+    }
+
     fn enqueue(&mut self, conn: ConnId, frame: Frame) {
         if let Some(connection) = self.connections.get_mut(&conn) {
             connection.stats.queued_bytes = connection
@@ -326,8 +362,6 @@ impl<A: Authorizer> RelayServer<A> {
         }
     }
 
-    /// Queues a frame unless it would push `conn` past [`MAX_QUEUED_BYTES`]. Returns whether
-    /// it was queued.
     fn enqueue_droppable(&mut self, conn: ConnId, frame: Frame) -> bool {
         let Some(connection) = self.connections.get_mut(&conn) else {
             return false;

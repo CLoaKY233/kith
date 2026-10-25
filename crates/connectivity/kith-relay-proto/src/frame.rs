@@ -1,49 +1,18 @@
-//! The relay frame codec.
-//!
-//! A relay connection is a reliable, ordered byte stream (TLS, WebSocket or a QUIC stream)
-//! carrying a sequence of frames:
-//!
-//! ```text
-//! type (u8) | body length (u16, big-endian) | body (length bytes)
-//! ```
-//!
-//! | Type   | Frame             | Body                                            |
-//! |--------|-------------------|-------------------------------------------------|
-//! | `0x01` | `ServerChallenge` | protocol version (u16 BE), nonce (32)           |
-//! | `0x02` | `ClientHello`     | node id (32), Ed25519 signature (64)            |
-//! | `0x03` | `ServerAccept`    | empty                                           |
-//! | `0x04` | `ServerReject`    | reason code (u8)                                |
-//! | `0x10` | `SendPacket`      | destination node id (32), payload               |
-//! | `0x11` | `RecvPacket`      | source node id (32), payload                    |
-//! | `0x12` | `PeerGone`        | node id (32)                                    |
-//! | `0x20` | `Ping`            | data (8)                                        |
-//! | `0x21` | `Pong`            | data (8)                                        |
-//! | `0x22` | `Health`          | empty when healthy, else one problem code (u8)  |
-//!
-//! Decoding is strict: a known frame whose body is not exactly the expected shape is an
-//! error, and the stream must then be closed. Unknown frame types are skipped whole and
-//! unknown reason and problem codes are preserved, for forward compatibility.
-
 use alloc::vec::Vec;
 
 use kith_crypto::Signature;
 use kith_types::NodeId;
 
-/// Bytes in a frame header: type (1) and body length (2).
-pub const HEADER_LEN: usize = 3;
-
-/// Largest body a frame can carry: the largest value of the u16 length field.
-pub const MAX_BODY_LEN: usize = 65_535;
-
-/// Largest packet payload: [`MAX_BODY_LEN`] minus the 32-byte node id that precedes it.
+/// Largest packet payload: the largest frame body minus the 32-byte node id that precedes it.
 pub const MAX_PAYLOAD_LEN: usize = 65_503;
-
-/// The protocol version this crate speaks, announced in [`Frame::ServerChallenge`].
-pub const PROTOCOL_VERSION: u16 = 1;
 
 /// Bytes in a challenge nonce.
 pub const NONCE_LEN: usize = 32;
 
+pub(crate) const PROTOCOL_VERSION: u16 = 1;
+
+const HEADER_LEN: usize = 3;
+const MAX_BODY_LEN: usize = 65_535;
 const NODE_ID_LEN: usize = 32;
 const SIGNATURE_LEN: usize = 64;
 const PING_LEN: usize = 8;
@@ -167,7 +136,7 @@ pub enum Frame {
     },
 }
 
-/// A frame's body exceeds [`MAX_BODY_LEN`]; only packet frames can hit this.
+/// A packet frame's body does not fit the 16-bit length field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("relay frame body of {len} bytes exceeds the {MAX_BODY_LEN}-byte limit")]
 pub struct FrameTooLarge {
@@ -255,7 +224,6 @@ impl Frame {
         Ok(())
     }
 
-    /// Parses one body. `Ok(None)` means the type is unknown and the frame is skipped.
     fn parse(frame_type: u8, body: &[u8]) -> Result<Option<Self>, DecodeError> {
         let mut reader = Reader {
             frame_type,
@@ -305,7 +273,6 @@ impl Frame {
     }
 }
 
-/// Reads fixed-size fields from a frame body, failing on short input.
 struct Reader<'a> {
     frame_type: u8,
     rest: &'a [u8],
@@ -331,7 +298,6 @@ impl Reader<'_> {
         rest
     }
 
-    /// Trailing bytes are an error: every frame has exactly one encoding.
     fn finish(self) -> Result<(), DecodeError> {
         if self.rest.is_empty() {
             Ok(())
@@ -343,14 +309,10 @@ impl Reader<'_> {
     }
 }
 
-/// Reassembles frames from arbitrary chunks of the byte stream.
-///
-/// Drain with [`next_frame`](Self::next_frame) after each [`push`](Self::push) to bound the
-/// buffer to one maximum-size frame plus one chunk.
+/// Reassembles frames from arbitrary chunks of the byte stream; drain it after each push.
 #[derive(Debug, Default)]
 pub struct Decoder {
     buffer: Vec<u8>,
-    /// Bytes at the front of `buffer` that were already consumed.
     consumed: usize,
 }
 
@@ -373,9 +335,7 @@ impl Decoder {
         self.buffer.extend_from_slice(bytes);
     }
 
-    /// Returns the next known frame, `Ok(None)` if more bytes are needed, or an error if the
-    /// stream is corrupt. Unknown frame types are skipped. After an error the stream must be
-    /// closed.
+    /// The next known frame, or `None` if more bytes are needed; close the stream on error.
     pub fn next_frame(&mut self) -> Result<Option<Frame>, DecodeError> {
         loop {
             let pending = self.buffer.get(self.consumed..).unwrap_or_default();
@@ -518,7 +478,6 @@ mod tests {
 
     #[test]
     fn known_frames_with_short_or_trailing_bytes_are_rejected() {
-        // Too short, then trailing bytes.
         assert_eq!(
             decode_all(&[0x20, 0x00, 0x07, 0, 0, 0, 0, 0, 0, 0]),
             Err(DecodeError { frame_type: 0x20 })

@@ -1,5 +1,3 @@
-//! TLS configuration for both ends.
-
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -42,8 +40,6 @@ pub(crate) fn client_config(verification: Verification) -> Result<ClientConfig, 
     })
 }
 
-/// Accepts exactly one end-entity certificate; handshake signatures are still checked
-/// against its key, so possession of the private key is proven.
 #[derive(Debug)]
 struct Pinned {
     certificate: CertificateDer<'static>,

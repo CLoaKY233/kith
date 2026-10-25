@@ -1,28 +1,27 @@
-//! The relay server driver.
-//!
-//! One core task owns the sans-IO [`RelayServer`]; each connection task owns its stream and
-//! talks to the core over channels. The core never waits on a connection, so a slow peer
-//! cannot stall the relay: its backlog is bounded by the core's per-connection byte limit.
-
 use std::collections::BTreeMap;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use kith_crypto::fill_random;
-use kith_relay_proto::frame::NONCE_LEN;
-use kith_relay_proto::{Action, Authorizer, ConnId, Decoder, Frame, RelayServer};
+use kith_relay_proto::{
+    Action, Authorizer, CloseReason, ConnId, Decoder, Frame, NONCE_LEN, RelayServer,
+};
 use kith_types::NodeId;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until, timeout};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 use tokio_rustls::TlsAcceptor;
+use tracing::{debug, warn};
 
-use crate::{Error, READ_CHUNK, tls};
+use crate::{Ended, Error, READ_CHUNK, tls, write_flushed};
+
+const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Server limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +71,7 @@ enum CoreEvent {
 
 enum Command {
     Send(Frame),
-    Close,
+    Close(CloseReason),
 }
 
 #[derive(Debug, Clone)]
@@ -144,14 +143,15 @@ impl Server {
         S: AsyncRead + AsyncWrite + Send + 'static,
     {
         if let Ok(permit) = Arc::clone(&self.shared.permits).try_acquire_owned() {
-            serve_connection(stream, &self.shared).await;
+            serve_connection(stream, None, &self.shared).await;
             drop(permit);
+        } else {
+            debug!("relay at its connection limit; refusing a stream");
         }
     }
 
     /// Closes connections of nodes the authorizer no longer accepts.
     pub async fn refresh_membership(&self) {
-        // Fails only once the core has stopped, when there is nothing to refresh.
         drop(self.shared.core.send(CoreEvent::RefreshMembership).await);
     }
 }
@@ -167,38 +167,50 @@ impl Drop for Server {
 
 async fn accept_loop(listener: TcpListener, acceptor: Option<TlsAcceptor>, shared: Shared) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                warn!(%error, "relay accept failed");
+                sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
         };
         let Ok(permit) = Arc::clone(&shared.permits).try_acquire_owned() else {
+            debug!(%peer, "relay at its connection limit; refusing a connection");
             continue;
         };
-        // Relay frames are small and latency-sensitive.
         drop(stream.set_nodelay(true));
         let shared = shared.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
             match acceptor {
-                Some(acceptor) => {
-                    if let Ok(Ok(stream)) =
-                        timeout(shared.idle_timeout, acceptor.accept(stream)).await
-                    {
-                        serve_connection(stream, &shared).await;
-                    }
-                }
-                None => serve_connection(stream, &shared).await,
+                Some(acceptor) => match timeout(shared.idle_timeout, acceptor.accept(stream)).await
+                {
+                    Ok(Ok(stream)) => serve_connection(stream, Some(peer), &shared).await,
+                    Ok(Err(error)) => debug!(%peer, %error, "relay TLS handshake failed"),
+                    Err(_) => debug!(%peer, "relay TLS handshake timed out"),
+                },
+                None => serve_connection(stream, Some(peer), &shared).await,
             }
             drop(permit);
         });
     }
 }
 
-async fn serve_connection<S>(stream: S, shared: &Shared)
+async fn serve_connection<S>(stream: S, peer: Option<SocketAddr>, shared: &Shared)
 where
     S: AsyncRead + AsyncWrite,
 {
     let conn = ConnId(shared.next_conn.fetch_add(1, Ordering::Relaxed));
-    let (commands, mut command_rx) = mpsc::unbounded_channel();
+    let (commands, command_rx) = mpsc::unbounded_channel();
     if shared
         .core
         .send(CoreEvent::Connect { conn, commands })
@@ -207,6 +219,22 @@ where
     {
         return;
     }
+    debug!(conn = conn.0, ?peer, "relay connection accepted");
+    let ended = pump(stream, conn, command_rx, shared).await;
+    if let Ended::Unencodable(_) = ended {
+        warn!(conn = conn.0, %ended, "relay connection failed");
+    } else {
+        debug!(conn = conn.0, %ended, "relay connection closed");
+    }
+    drop(shared.core.send(CoreEvent::Disconnect { conn }).await);
+}
+
+async fn pump<S: AsyncRead + AsyncWrite>(
+    stream: S,
+    conn: ConnId,
+    mut commands: mpsc::UnboundedReceiver<Command>,
+    shared: &Shared,
+) -> Ended {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let mut decoder = Decoder::new();
     let mut read_buffer = vec![0_u8; READ_CHUNK];
@@ -215,65 +243,59 @@ where
     loop {
         tokio::select! {
             read = reader.read(&mut read_buffer) => {
-                let Some(chunk) = read.ok().filter(|&n| n > 0).and_then(|n| read_buffer.get(..n))
-                else {
-                    break;
+                let chunk = match read {
+                    Ok(0) => return Ended::PeerClosed,
+                    Ok(read) => read_buffer.get(..read).unwrap_or_default(),
+                    Err(error) => return Ended::Io(error),
                 };
                 deadline = Instant::now() + shared.idle_timeout;
                 decoder.push(chunk);
-                if !forward_frames(&mut decoder, conn, &shared.core).await {
-                    break;
+                if let Err(ended) = forward_frames(&mut decoder, conn, &shared.core).await {
+                    return ended;
                 }
             }
-            command = command_rx.recv() => {
-                let Some(command) = command else { break };
-                let mut close = false;
+            command = commands.recv() => {
+                let Some(command) = command else { return Ended::Stopped };
+                let mut closing = None;
                 let mut next = Some(command);
                 while let Some(command) = next {
                     match command {
                         Command::Send(frame) => {
-                            if frame.encode(&mut write_buffer).is_err() {
-                                close = true;
+                            if let Err(error) = frame.encode(&mut write_buffer) {
+                                closing = Some(Ended::Unencodable(error));
                             }
                         }
-                        Command::Close => close = true,
+                        Command::Close(reason) => closing = Some(Ended::Closed(reason)),
                     }
-                    next = if close { None } else { command_rx.try_recv().ok() };
+                    next = if closing.is_some() { None } else { commands.try_recv().ok() };
                 }
-                let written = write_buffer.len();
-                if writer.write_all(&write_buffer).await.is_err() || writer.flush().await.is_err() {
-                    break;
+                if let Err(ended) = write_flushed(&mut writer, &write_buffer).await {
+                    return ended;
                 }
+                let bytes = write_buffer.len();
                 write_buffer.clear();
-                drop(shared.core.send(CoreEvent::Transmitted { conn, bytes: written }).await);
-                if close {
+                drop(shared.core.send(CoreEvent::Transmitted { conn, bytes }).await);
+                if let Some(ended) = closing {
                     drop(writer.shutdown().await);
-                    break;
+                    return ended;
                 }
             }
-            () = sleep_until(deadline) => break,
+            () = sleep_until(deadline) => return Ended::IdleTimeout,
         }
     }
-    drop(shared.core.send(CoreEvent::Disconnect { conn }).await);
 }
 
-/// Hands every complete frame to the core. Returns false if the stream is corrupt.
 async fn forward_frames(
     decoder: &mut Decoder,
     conn: ConnId,
     core: &mpsc::Sender<CoreEvent>,
-) -> bool {
-    loop {
-        match decoder.next_frame() {
-            Ok(Some(frame)) => {
-                if core.send(CoreEvent::Frame { conn, frame }).await.is_err() {
-                    return false;
-                }
-            }
-            Ok(None) => return true,
-            Err(_) => return false,
-        }
+) -> Result<(), Ended> {
+    while let Some(frame) = decoder.next_frame().map_err(Ended::Malformed)? {
+        core.send(CoreEvent::Frame { conn, frame })
+            .await
+            .map_err(|_| Ended::Stopped)?;
     }
+    Ok(())
 }
 
 async fn run_core<A: Authorizer>(
@@ -285,9 +307,8 @@ async fn run_core<A: Authorizer>(
         match event {
             CoreEvent::Connect { conn, commands } => {
                 let mut nonce = [0_u8; NONCE_LEN];
-                if fill_random(&mut nonce).is_err() {
-                    // Without randomness the challenge would be replayable; refuse service.
-                    drop(commands.send(Command::Close));
+                if let Err(error) = fill_random(&mut nonce) {
+                    warn!(conn = conn.0, %error, "relay refused a connection");
                     continue;
                 }
                 if server.on_connect(conn, nonce).is_ok() {
@@ -309,9 +330,9 @@ async fn run_core<A: Authorizer>(
                         drop(commands.send(Command::Send(frame)));
                     }
                 }
-                Action::Close { conn, .. } => {
+                Action::Close { conn, reason } => {
                     if let Some(commands) = connections.remove(&conn) {
-                        drop(commands.send(Command::Close));
+                        drop(commands.send(Command::Close(reason)));
                     }
                 }
             }
