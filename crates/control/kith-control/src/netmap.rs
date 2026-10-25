@@ -71,7 +71,7 @@ pub struct NetMap {
     network: NetworkId,
     name: String,
     is_member: bool,
-    local_addresses: Option<Addresses>,
+    local: Option<Peer>,
     resolver: [IpAddr; 2],
     ipv4_range: Ipv4Prefix,
     ipv6_range: Ipv6Prefix,
@@ -106,8 +106,13 @@ impl NetMap {
     }
 
     /// The local device's mesh addresses, if it is a member.
-    pub const fn local_addresses(&self) -> Option<Addresses> {
-        self.local_addresses
+    pub fn local_addresses(&self) -> Option<Addresses> {
+        self.local.as_ref().map(|local| local.addresses)
+    }
+
+    /// The local device's name, tags and addresses, if it is a member.
+    pub const fn local_device(&self) -> Option<&Peer> {
+        self.local.as_ref()
     }
 
     /// The mesh DNS resolver's addresses: IPv4 first, then IPv6.
@@ -165,7 +170,8 @@ impl NetMap {
     pub fn diff(old: &Self, new: &Self) -> NetMapDiff {
         let mut diff = NetMapDiff {
             filter_changed: old.filter != new.filter,
-            local_addresses_changed: old.local_addresses != new.local_addresses,
+            local_addresses_changed: old.local_addresses() != new.local_addresses(),
+            local_device_changed: old.local != new.local,
             routes_changed: old.routes() != new.routes(),
             relays_changed: old.relays() != new.relays(),
             dns_changed: old.dns_records() != new.dns_records(),
@@ -198,6 +204,7 @@ impl NetMap {
             peers_added: self.peers.clone(),
             filter_changed: true,
             local_addresses_changed: true,
+            local_device_changed: true,
             routes_changed: true,
             relays_changed: true,
             dns_changed: true,
@@ -224,6 +231,8 @@ pub struct NetMapDiff {
     pub filter_changed: bool,
     /// Whether the local device's addresses changed (including gaining or losing them).
     pub local_addresses_changed: bool,
+    /// Whether the local device's name, tags or addresses changed (including gaining or losing them).
+    pub local_device_changed: bool,
     /// Whether the subnet routes changed.
     pub routes_changed: bool,
     /// Whether the relay servers changed.
@@ -242,6 +251,7 @@ impl NetMapDiff {
             && self.peers_changed.is_empty()
             && !self.filter_changed
             && !self.local_addresses_changed
+            && !self.local_device_changed
             && !self.routes_changed
             && !self.relays_changed
             && !self.dns_changed
@@ -269,7 +279,7 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
     let mut warnings = Vec::new();
     let is_member = view.is_member(&local);
 
-    let (members, peers, records, filter) = if is_member {
+    let (local_device, peers, records, filter) = if is_member {
         let addresses = allocate(params.ipv4, params.ipv6, &admission_order(view))?;
         let members: Members = view
             .devices()
@@ -280,9 +290,8 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
                 Some((*node, Member { tags, addresses }))
             })
             .collect();
-        let peers = members
+        let mut peers: BTreeMap<NodeId, Peer> = members
             .iter()
-            .filter(|(node, _)| **node != local)
             .filter_map(|(node, member)| {
                 let device = view.devices().get(node)?;
                 let peer = Peer {
@@ -296,7 +305,8 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
         let policy = policy(view, &mut warnings);
         let filter = compile(&policy, &members, local);
         let records = typed_records(view, &mut warnings);
-        (Some(members), peers, records, filter)
+        let local_device = peers.remove(&local);
+        (local_device, peers, records, filter)
     } else {
         (
             None,
@@ -310,10 +320,7 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
         network: view.network_id(),
         name: String::from(view.name()),
         is_member,
-        local_addresses: members
-            .as_ref()
-            .and_then(|members| members.get(&local))
-            .map(|member| member.addresses),
+        local: local_device,
         resolver,
         ipv4_range: params.ipv4,
         ipv6_range: params.ipv6,
