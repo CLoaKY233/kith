@@ -32,6 +32,22 @@ fn log_filter(configured: LogLevel, verbose: usize) -> LevelFilter {
 
 /// Runs the daemon until shutdown.
 fn run_daemon(config: Config) -> Result<(), String> {
-    drop(config);
-    Err("the daemon is not built into this binary yet".to_owned())
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("cannot start the runtime: {e}"))?;
+    runtime
+        .block_on(kith_node::run(config))
+        .map_err(|e| format!("daemon failed: {}", error_chain(&e)))
+}
+
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }

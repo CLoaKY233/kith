@@ -4,7 +4,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use kith_relay::{Server, ServerOptions};
 use kith_stun::{encode_binding_response, is_stun, parse_binding_request};
-use kith_types::{IpPrefix, NodeId};
+use kith_types::NodeId;
 
 use crate::types::NodeError;
 
@@ -70,11 +70,6 @@ impl ServerMode {
     /// Whether this node routes and NATs exit traffic for members.
     pub(crate) const fn is_exit(&self) -> bool {
         self.exit
-    }
-
-    /// Mesh sources to NAT when acting as an exit.
-    pub(crate) fn nat_sources(&self, mesh: &[IpPrefix]) -> Vec<IpPrefix> {
-        if self.exit { mesh.to_vec() } else { Vec::new() }
     }
 }
 

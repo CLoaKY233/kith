@@ -9,6 +9,9 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[features]
+test-support = ["kith-dataplane/test-support"]
+
 [dependencies]
 kith-channel.workspace = true
 kith-config.workspace = true
@@ -24,6 +27,7 @@ kith-naming.workspace = true
 kith-netmon.workspace = true
 kith-policy.workspace = true
 kith-relay.workspace = true
+kith-router.workspace = true
 kith-stun.workspace = true
 kith-store.workspace = true
 kith-sys.workspace = true
@@ -37,6 +41,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[[test]]
+name = "e2e"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

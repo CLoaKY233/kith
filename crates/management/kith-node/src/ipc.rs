@@ -304,10 +304,10 @@ pub(crate) fn error_response(error: &NodeError) -> Response {
     let code = match error {
         NodeError::NotFound(_) => ErrorCode::NotFound,
         NodeError::InvalidArgument(_) | NodeError::Invite(_) => ErrorCode::InvalidArgument,
-        NodeError::Pending(_)
-        | NodeError::Poisoned
+        NodeError::Poisoned
         | NodeError::Channel(_)
         | NodeError::Stopped
+        | NodeError::NoMemoryTun
         | NodeError::Config(_)
         | NodeError::Store(_)
         | NodeError::Identity(_)

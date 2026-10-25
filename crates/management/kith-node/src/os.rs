@@ -9,7 +9,7 @@ use kith_types::{IpPrefix, NetworkId, NodeId};
 use crate::types::NodeError;
 
 /// A boxed [`System`], so the node is not generic over it.
-pub(crate) struct DynSystem(pub(crate) Box<dyn System + Send>);
+pub(crate) struct DynSystem(pub(crate) Box<dyn System + Send + Sync>);
 
 impl core::fmt::Debug for DynSystem {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

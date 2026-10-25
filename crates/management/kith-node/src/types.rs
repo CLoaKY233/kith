@@ -13,15 +13,15 @@ use tokio::sync::oneshot;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum NodeError {
-    /// The named part of the node is not implemented yet.
-    #[error("not implemented yet: {0}")]
-    Pending(&'static str),
     /// A ledger lock was poisoned by a panicking holder.
     #[error("a ledger lock is poisoned")]
     Poisoned,
     /// The control channel failed.
     #[error("control channel")]
     Channel(#[from] kith_channel::ChannelError),
+    /// The node was not started with an in-memory TUN.
+    #[error("the node has no in-memory TUN")]
+    NoMemoryTun,
     /// The node's event loop has stopped.
     #[error("the node has stopped")]
     Stopped,

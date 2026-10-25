@@ -107,17 +107,6 @@ impl NetworkRuntime {
         Ok(f(&mut ledger))
     }
 
-    /// Every op of the ledger, for persistence.
-    pub(crate) fn ops(&self) -> Result<Vec<SignedOp>, NodeError> {
-        self.with_ledger(|ledger| {
-            ledger
-                .op_ids()
-                .filter_map(|id| ledger.get(id))
-                .cloned()
-                .collect()
-        })
-    }
-
     /// Re-derives the map from the ledger; `None` when it did not change.
     pub(crate) fn rebuild(&mut self, local: NodeId) -> Result<Option<Change>, NodeError> {
         let netmap = self.with_ledger(|ledger| build_netmap(ledger.view(), local))??;

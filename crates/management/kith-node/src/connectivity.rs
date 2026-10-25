@@ -100,6 +100,7 @@ pub(crate) struct Connectivity {
     outputs: Vec<Output>,
     epoch: Instant,
     local_port: u16,
+    bound: IpAddr,
     secret: DiscoSecret,
     relay_key: Arc<SigningKey>,
     relays: BTreeMap<NodeId, RelayClient>,
@@ -122,16 +123,18 @@ impl Connectivity {
     )]
     pub(crate) fn start(
         identity: Arc<DeviceIdentity>,
-        local_port: u16,
+        bound: SocketAddr,
         tun_name: Option<String>,
         commands: mpsc::Sender<Command>,
     ) -> Result<Self, NodeError> {
         let tun_name = tun_name.unwrap_or_default();
+        let local_port = bound.port();
+        let bound = bound.ip();
         let interfaces = match NetworkSnapshot::capture(&tun_name) {
-            Ok(snapshot) => interface_endpoints(&snapshot, local_port),
+            Ok(snapshot) => interface_endpoints(Some(&snapshot), bound, local_port),
             Err(error) => {
                 warn!(%error, "could not read local interfaces");
-                Vec::new()
+                interface_endpoints(None, bound, local_port)
             }
         };
         let tasks = Tasks(vec![
@@ -148,6 +151,7 @@ impl Connectivity {
             outputs: Vec::new(),
             epoch: Instant::now(),
             local_port,
+            bound,
             secret,
             relay_key,
             relays: BTreeMap::new(),
@@ -383,7 +387,7 @@ impl Connectivity {
 
     /// Re-gathers local endpoints and re-probes every peer after a host network change.
     pub(crate) fn handle_network_change(&mut self, change: &Change, now: Instant) {
-        self.interfaces = interface_endpoints(&change.new, self.local_port);
+        self.interfaces = interface_endpoints(Some(&change.new), self.bound, self.local_port);
         self.reflexive.clear();
         self.observed.clear();
         self.probes.clear();
@@ -622,10 +626,17 @@ impl Connectivity {
     }
 }
 
-fn interface_endpoints(snapshot: &NetworkSnapshot, port: u16) -> Vec<SocketAddr> {
+fn interface_endpoints(
+    snapshot: Option<&NetworkSnapshot>,
+    bound: IpAddr,
+    port: u16,
+) -> Vec<SocketAddr> {
+    if !bound.is_unspecified() {
+        return vec![SocketAddr::new(bound, port)];
+    }
     snapshot
-        .addresses()
-        .iter()
+        .into_iter()
+        .flat_map(NetworkSnapshot::addresses)
         .map(|interface| interface.address)
         .filter(|address| match address {
             IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_unspecified() && !v4.is_link_local(),

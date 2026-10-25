@@ -3,7 +3,6 @@
 //! Plane: management. Driver: owns I/O and wraps sans-IO cores. See `docs/node.md`.
 
 #![forbid(unsafe_code)]
-#![expect(dead_code, reason = "skeleton; remove once every module is wired")]
 
 mod channel;
 mod connectivity;
