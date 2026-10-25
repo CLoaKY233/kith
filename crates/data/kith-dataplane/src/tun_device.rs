@@ -1,5 +1,7 @@
 //! The TUN operations the engine uses, so tests can swap in memory queues.
 
+use std::net::IpAddr;
+
 use kith_tun::{BatchError, PacketBatch, Tun, TunError};
 
 pub(crate) trait TunDevice {
@@ -14,6 +16,10 @@ pub(crate) trait TunDevice {
         &self,
         batch: &mut PacketBatch,
     ) -> impl Future<Output = Result<(), TunError>> + Send;
+
+    fn add_address(&self, address: IpAddr, prefix_len: u8) -> Result<(), TunError>;
+
+    fn remove_address(&self, address: IpAddr) -> Result<(), TunError>;
 }
 
 impl TunDevice for Tun {
@@ -33,6 +39,14 @@ impl TunDevice for Tun {
         batch: &mut PacketBatch,
     ) -> impl Future<Output = Result<(), TunError>> + Send {
         Self::send_batch(self, batch)
+    }
+
+    fn add_address(&self, address: IpAddr, prefix_len: u8) -> Result<(), TunError> {
+        Self::add_address(self, address, prefix_len)
+    }
+
+    fn remove_address(&self, address: IpAddr) -> Result<(), TunError> {
+        Self::remove_address(self, address)
     }
 }
 
@@ -64,6 +78,22 @@ impl TunDevice for AnyTun {
             Self::Os(tun) => tun.send_batch(batch).await,
             #[cfg(feature = "test-support")]
             Self::Memory(tun) => TunDevice::send_batch(tun, batch).await,
+        }
+    }
+
+    fn add_address(&self, address: IpAddr, prefix_len: u8) -> Result<(), TunError> {
+        match self {
+            Self::Os(tun) => tun.add_address(address, prefix_len),
+            #[cfg(feature = "test-support")]
+            Self::Memory(tun) => tun.add_address(address, prefix_len),
+        }
+    }
+
+    fn remove_address(&self, address: IpAddr) -> Result<(), TunError> {
+        match self {
+            Self::Os(tun) => tun.remove_address(address),
+            #[cfg(feature = "test-support")]
+            Self::Memory(tun) => tun.remove_address(address),
         }
     }
 }

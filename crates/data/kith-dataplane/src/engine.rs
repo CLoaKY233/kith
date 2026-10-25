@@ -16,7 +16,7 @@ use kith_wg::{
     RandomSource, StaticIdentity, Tai64N, Transmit, WgError, required_output_len,
 };
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::api::{
     Command, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface,
@@ -37,6 +37,7 @@ pub(crate) struct Engine<T> {
     state: State,
     commands: mpsc::Receiver<Command>,
     clock: Clock,
+    addresses: BTreeMap<NetworkId, Vec<(IpAddr, u8)>>,
 }
 
 impl<T> core::fmt::Debug for Engine<T> {
@@ -159,6 +160,7 @@ impl<T: TunDevice> Engine<T> {
             },
             commands,
             clock: Clock::new(),
+            addresses: BTreeMap::new(),
         };
         Ok((engine, handle, event_receiver))
     }
@@ -184,7 +186,7 @@ impl<T: TunDevice> Engine<T> {
             };
             let now = self.clock.now();
             match wake {
-                Wake::Command(command) => self.state.command(now, &self.clock, command),
+                Wake::Command(command) => self.command(now, command),
                 Wake::Tun => self.state.outbound(now, &self.io.tun_in),
                 Wake::Udp => self.inbound(now).await,
                 Wake::Timer => {}
@@ -192,6 +194,54 @@ impl<T: TunDevice> Engine<T> {
             deadline = self.state.service(now);
             self.flush().await;
         }
+    }
+
+    fn command(&mut self, now: Now, command: Command) {
+        if let Command::SetAddresses(network, addresses, reply) = command {
+            reply.send(self.set_addresses(network, addresses)).ok();
+            return;
+        }
+        if let Command::RemoveNetwork(network, _) = &command
+            && let Err(error) = self.set_addresses(*network, Vec::new())
+        {
+            warn!(network = %network.short(), %error, "removing TUN addresses failed");
+        }
+        self.state.command(now, &self.clock, command);
+    }
+
+    fn set_addresses(
+        &mut self,
+        network: NetworkId,
+        addresses: Vec<(IpAddr, u8)>,
+    ) -> Result<(), DataplaneError> {
+        let previous = self.addresses.remove(&network).unwrap_or_default();
+        let held_elsewhere = |address: IpAddr, addresses: &BTreeMap<_, Vec<(IpAddr, u8)>>| {
+            addresses
+                .values()
+                .flatten()
+                .any(|&(other, _)| other == address)
+        };
+        for &(address, _) in &previous {
+            if !addresses.iter().any(|&(kept, _)| kept == address)
+                && !held_elsewhere(address, &self.addresses)
+            {
+                self.io.tun.remove_address(address)?;
+            }
+        }
+        let mut applied = Vec::with_capacity(addresses.len());
+        let mut result = Ok(());
+        for (address, prefix_len) in addresses {
+            if let Err(error) = self.io.tun.add_address(address, prefix_len) {
+                result = Err(error.into());
+                break;
+            }
+            applied.push((address, prefix_len));
+        }
+        if !applied.is_empty() {
+            debug!(network = %network.short(), addresses = applied.len(), "TUN addresses set");
+            self.addresses.insert(network, applied);
+        }
+        result
     }
 
     async fn inbound(&mut self, now: Now) {
@@ -258,6 +308,9 @@ impl State {
             }
             Command::RemoveNetwork(network, reply) => {
                 self.remove_network(network);
+                reply.send(Ok(())).ok();
+            }
+            Command::SetAddresses(_, _, reply) => {
                 reply.send(Ok(())).ok();
             }
             Command::SetExternal(interface, reply) => {

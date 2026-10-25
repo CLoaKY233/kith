@@ -80,4 +80,12 @@ impl TunDevice for MemoryDevice {
         batch.clear();
         core::future::ready(Ok(()))
     }
+
+    fn add_address(&self, _address: std::net::IpAddr, _prefix_len: u8) -> Result<(), TunError> {
+        Ok(())
+    }
+
+    fn remove_address(&self, _address: std::net::IpAddr) -> Result<(), TunError> {
+        Ok(())
+    }
 }

@@ -1,6 +1,6 @@
 //! The dataplane's public face: configuration, commands and events.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use kith_crypto::SigningKey;
@@ -259,6 +259,7 @@ pub(crate) enum Command {
     SendRaw(SocketAddr, Vec<u8>),
     AcceptRelayed(NodeId, Vec<u8>),
     RemoveNetwork(NetworkId, Reply),
+    SetAddresses(NetworkId, Vec<(IpAddr, u8)>, Reply),
     SetExternal(ExternalInterface, Reply),
     RemoveExternal(String, Reply),
     Stats(oneshot::Sender<Stats>),
@@ -384,6 +385,16 @@ impl DataplaneHandle {
     /// Forgets `network`: its peers and their sessions, its routes, exit and filter.
     pub async fn remove_network(&self, network: NetworkId) -> Result<(), DataplaneError> {
         self.request(|reply| Command::RemoveNetwork(network, reply))
+            .await
+    }
+
+    /// Makes `addresses` (address, prefix length) the TUN addresses held for `network`, adding and removing the difference.
+    pub async fn set_addresses(
+        &self,
+        network: NetworkId,
+        addresses: Vec<(IpAddr, u8)>,
+    ) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::SetAddresses(network, addresses, reply))
             .await
     }
 
