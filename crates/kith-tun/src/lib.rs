@@ -1,5 +1,15 @@
 //! TUN device driver with batched reads and writes.
 //!
-//! Plane: data. Driver: owns I/O and wraps sans-IO cores. See `docs/architecture.md`.
+//! Linux uses GSO/GRO offload when available. macOS uses `utun`. On Windows
+//! [`Tun::create`] returns [`TunError::Unsupported`] until kith ships `wintun.dll`.
+//! Creating a device needs root, or `CAP_NET_ADMIN` on Linux.
 
 #![forbid(unsafe_code)]
+
+mod batch;
+mod config;
+mod device;
+
+pub use batch::{BATCH_SIZE, BatchError, HEADROOM, MAX_PACKET_CAPACITY, PacketBatch};
+pub use config::{ConfigError, MAX_MTU, MAX_NAME_LEN, MIN_MTU, MIN_MTU_IPV6, TunConfig};
+pub use device::{Tun, TunError};
