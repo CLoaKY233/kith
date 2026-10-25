@@ -788,6 +788,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "kith-channel"
+version = "0.0.0"
+dependencies = [
+ "kith-crypto",
+ "kith-ledger",
+ "kith-sync",
+ "kith-tls",
+ "kith-types",
+ "kith-wire",
+ "rustls",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "kith-cli"
 version = "0.0.0"
 dependencies = [

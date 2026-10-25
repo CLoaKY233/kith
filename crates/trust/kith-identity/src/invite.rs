@@ -16,7 +16,7 @@ use core::str::FromStr;
 
 use data_encoding::BASE32_NOPAD;
 use kith_crypto::{Hash, SigningKey, VerifyingKey};
-use kith_types::{NetworkId, Timestamp};
+use kith_types::{NetworkId, NodeId, Timestamp};
 use kith_wire::{WireError, envelope};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
@@ -111,6 +111,7 @@ impl From<WireError> for InviteError {
 /// on drop.
 pub struct InviteToken {
     network: NetworkId,
+    sponsor: NodeId,
     invite_secret: Zeroizing<[u8; 32]>,
     bootstrap: Vec<Bootstrap>,
     expires: Timestamp,
@@ -121,6 +122,7 @@ pub struct InviteToken {
 #[derive(Serialize)]
 struct InviteBodyRef<'token> {
     network: NetworkId,
+    sponsor: NodeId,
     invite_secret: &'token [u8; 32],
     bootstrap: &'token [Bootstrap],
     expires: Timestamp,
@@ -131,6 +133,7 @@ struct InviteBodyRef<'token> {
 #[derive(Deserialize)]
 struct InviteBody {
     network: NetworkId,
+    sponsor: NodeId,
     invite_secret: [u8; 32],
     bootstrap: Vec<Bootstrap>,
     expires: Timestamp,
@@ -153,6 +156,7 @@ impl InviteToken {
     /// Builds a token from its parts, validating every field and the link length.
     pub fn from_parts(
         network: NetworkId,
+        sponsor: NodeId,
         invite_secret: &[u8; 32],
         bootstrap: Vec<Bootstrap>,
         expires: Timestamp,
@@ -171,6 +175,7 @@ impl InviteToken {
         }
         let token = Self {
             network,
+            sponsor,
             invite_secret: Zeroizing::new(*invite_secret),
             bootstrap,
             expires,
@@ -187,19 +192,26 @@ impl InviteToken {
     #[cfg(feature = "getrandom")]
     pub fn generate(
         network: NetworkId,
+        sponsor: NodeId,
         bootstrap: Vec<Bootstrap>,
         expires: Timestamp,
         network_name: String,
     ) -> Result<Self, InviteError> {
         let mut secret = Zeroizing::new([0_u8; 32]);
         kith_crypto::fill_random(secret.as_mut()).map_err(|_| InviteError::Random)?;
-        Self::from_parts(network, &secret, bootstrap, expires, network_name)
+        Self::from_parts(network, sponsor, &secret, bootstrap, expires, network_name)
     }
 
     /// The network this invite joins.
     #[must_use]
     pub const fn network(&self) -> NetworkId {
         self.network
+    }
+
+    /// The device that created the invite; the joining device pins its control connection to it.
+    #[must_use]
+    pub const fn sponsor(&self) -> NodeId {
+        self.sponsor
     }
 
     /// Where the joining device first knocks, in order of preference.
@@ -295,6 +307,7 @@ impl InviteToken {
         let network_name = core::mem::take(&mut body.network_name);
         Self::from_parts(
             body.network,
+            body.sponsor,
             &body.invite_secret,
             bootstrap,
             body.expires,
@@ -306,6 +319,7 @@ impl InviteToken {
     fn payload(&self) -> Result<Zeroizing<String>, InviteError> {
         let body = InviteBodyRef {
             network: self.network,
+            sponsor: self.sponsor,
             invite_secret: &self.invite_secret,
             bootstrap: &self.bootstrap,
             expires: self.expires,
@@ -343,6 +357,7 @@ impl fmt::Debug for InviteToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InviteToken")
             .field("network", &self.network)
+            .field("sponsor", &self.sponsor)
             .field("invite_public_key", &self.invite_public_key())
             .field("invite_secret", &"<redacted>")
             .field("bootstrap", &self.bootstrap)
@@ -370,14 +385,16 @@ mod tests {
     };
     use crate::message_types;
     use crate::{Bootstrap, BootstrapError, Hostname};
-    use kith_types::{NetworkId, Timestamp};
+    use kith_types::{NetworkId, NodeId, Timestamp};
     use kith_wire::{WireError, envelope};
 
     const SECRET: [u8; 32] = [2; 32];
+    const SPONSOR: NodeId = NodeId::from_bytes([3; 32]);
 
     fn sample() -> InviteToken {
         InviteToken::from_parts(
             NetworkId::from_bytes([1; 32]),
+            SPONSOR,
             &SECRET,
             vec![
                 Bootstrap::Socket("192.0.2.1:41641".parse().unwrap()),
@@ -401,6 +418,7 @@ mod tests {
 
     fn assert_same(left: &InviteToken, right: &InviteToken) {
         assert_eq!(left.network(), right.network());
+        assert_eq!(left.sponsor(), right.sponsor());
         assert_eq!(*left.invite_secret, *right.invite_secret);
         assert_eq!(left.bootstrap(), right.bootstrap());
         assert_eq!(left.expires(), right.expires());
@@ -415,9 +433,9 @@ mod tests {
 
     const GOLDEN: &str = concat!(
         "kith://join/",
-        "nn2ccaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaebaeaqcaibaeaqcaibaeaqcai",
-        "baeaqcaibaeaqcaibaeaqcaibaeaqayaaaeanjyubaedlsmvwgc6jomv4gc3lqnrs3wa4audy4fmjuarug",
-        "63lflgt2pva",
+        "nn2ccaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaebqgaydambqgaydambqgaydam",
+        "bqgaydambqgaydambqgaydambqgaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaibaeaqcaiam",
+        "aaacagu4kaqcbvzgk3dbpexgk6dbnvygyzn3aoakb4ocwe2ai2dpnvsvpjazhy",
     );
 
     #[test]
@@ -573,6 +591,7 @@ mod tests {
         assert_eq!(
             InviteToken::from_parts(
                 network,
+                SPONSOR,
                 &SECRET,
                 vec![endpoint; MAX_BOOTSTRAP + 1],
                 expires,
@@ -585,7 +604,7 @@ mod tests {
         );
         for name in ["x".repeat(65), String::from("bad\nname")] {
             assert_eq!(
-                InviteToken::from_parts(network, &SECRET, Vec::new(), expires, name).err(),
+                InviteToken::from_parts(network, SPONSOR, &SECRET, Vec::new(), expires, name).err(),
                 Some(InviteError::InvalidNetworkName)
             );
         }
@@ -596,7 +615,15 @@ mod tests {
             7,
         )));
         assert_eq!(
-            InviteToken::from_parts(network, &SECRET, vec![scoped], expires, String::new()).err(),
+            InviteToken::from_parts(
+                network,
+                SPONSOR,
+                &SECRET,
+                vec![scoped],
+                expires,
+                String::new()
+            )
+            .err(),
             Some(InviteError::Bootstrap(BootstrapError::ScopedAddress))
         );
         let long_host =
@@ -604,6 +631,7 @@ mod tests {
         assert!(matches!(
             InviteToken::from_parts(
                 network,
+                SPONSOR,
                 &SECRET,
                 vec![Bootstrap::Host(long_host, 1); MAX_BOOTSTRAP],
                 expires,
@@ -626,6 +654,7 @@ mod tests {
         }
         let body = (
             [1_u8; 32],
+            [3_u8; 32],
             SECRET,
             vec![Wire::Host("RELAY.example".into(), 1)],
             1_u64,
@@ -656,6 +685,7 @@ mod tests {
         let make = || {
             InviteToken::generate(
                 NetworkId::from_bytes([1; 32]),
+                SPONSOR,
                 Vec::new(),
                 Timestamp::MAX,
                 String::from("net"),
@@ -700,6 +730,7 @@ mod tests {
         #[test]
         fn valid_tokens_round_trip(
             network in any::<[u8; 32]>(),
+            sponsor in any::<[u8; 32]>(),
             secret in any::<[u8; 32]>(),
             bootstrap in proptest::collection::vec(bootstrap_strategy(), 0..=MAX_BOOTSTRAP),
             expires in any::<u64>(),
@@ -707,6 +738,7 @@ mod tests {
         ) {
             let token = InviteToken::from_parts(
                 NetworkId::from_bytes(network),
+                NodeId::from_bytes(sponsor),
                 &secret,
                 bootstrap,
                 Timestamp::from_millis(expires),
