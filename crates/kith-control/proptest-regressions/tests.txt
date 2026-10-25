@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fa5744f76540ac7c7f9dc9f51e7b5ee28846e98d44a7d63c677c6371e17719cd # shrinks to steps = [(1, 6), (0, 0), (0, 1), (0, 6)], pairs = [(Index(0), Index(0)), (Index(71720203395), Index(5989472468174418339)), (Index(2849481030775396305), Index(16287029558113209055)), (Index(12661117115269654833), Index(8830379818894397251)), (Index(4953827868485176975), Index(12606747679255309374)), (Index(17657191493299023500), Index(12756001630077897492)), (Index(13765366971744315805), Index(17824664424336392166)), (Index(3043408011411738504), Index(837479713768135042))]

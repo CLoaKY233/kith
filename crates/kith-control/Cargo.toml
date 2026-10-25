@@ -10,13 +10,14 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
-kith-crypto.workspace = true
 kith-ledger.workspace = true
 kith-policy.workspace = true
 kith-types.workspace = true
+kith-wire.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+kith-crypto.workspace = true
 proptest.workspace = true
 
 [lints]
