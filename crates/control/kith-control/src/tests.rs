@@ -6,7 +6,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::net::IpAddr;
+use core::net::{IpAddr, Ipv4Addr};
 
 use kith_crypto::SigningKey;
 use kith_ledger::{Ledger, NetworkParams, OpBody, SignedOp};
@@ -14,9 +14,11 @@ use kith_policy::{
     PacketProtocol, Policy, PortSet, Protocol, Rule, Selector, TagName, Target, allocate,
 };
 use kith_types::{NodeId, OpId, Timestamp};
+use kith_wire::WireError;
 use proptest::prelude::*;
 
-use crate::{NetMap, Networks, Warning, build_netmap, records};
+use crate::records::{self, DnsData, DnsRecords, Record, RecordError, Relay};
+use crate::{NetMap, Networks, Warning, build_netmap};
 
 const NOW: Timestamp = Timestamp::from_millis(1_000);
 
@@ -68,6 +70,10 @@ fn set_record(key: &str, value: Vec<u8>) -> OpBody {
     }
 }
 
+fn put(record: &Record) -> OpBody {
+    set_record(&record.key(), record.encode().unwrap())
+}
+
 fn tag(name: &str) -> Selector {
     Selector::Tag(TagName::new(name).unwrap())
 }
@@ -96,11 +102,30 @@ fn netmap_follows_members_admission_order_and_policy() {
         add_device(4, "phone", &["Not_A_Tag", "phone"]),
     );
     act(&mut ledger, 1, set_record(records::POLICY, ssh_policy()));
-    let route = alloc::format!("{}192.168.1.0/24", records::ROUTE_PREFIX);
+    let route = Record::Route {
+        prefix: "192.168.1.0/24".parse().unwrap(),
+        via: id(3),
+    };
+    let relay = Relay::new("eu".into(), "relay.example.com:443".into(), id(3)).unwrap();
+    let nas = vec![DnsData::A(Ipv4Addr::new(192, 168, 1, 2))];
+    let dns = DnsRecords::new("nas".into(), 300, nas).unwrap();
+    let removed_exit = Record::Exit(id(9));
+    for record in [
+        route,
+        Record::Relay(relay.clone()),
+        Record::Dns(dns.clone()),
+        Record::Exit(id(1)),
+        removed_exit.clone(),
+    ] {
+        act(&mut ledger, 1, put(&record));
+    }
+    let exit_value = Record::Exit(id(1)).encode().unwrap();
+    act(&mut ledger, 1, set_record("relay/backup", exit_value));
+    let legacy_route = id(3).to_bytes().to_vec();
     act(
         &mut ledger,
         1,
-        set_record(&route, id(3).to_bytes().to_vec()),
+        set_record("route/10.9.0.0/16", legacy_route),
     );
 
     let map = build_netmap(ledger.view(), id(3)).unwrap();
@@ -118,10 +143,24 @@ fn netmap_follows_members_admission_order_and_policy() {
     assert_eq!(map.peers()[&id(4)].name, "phone");
     assert_eq!(
         map.warnings(),
-        [Warning::InvalidTag {
-            device: id(4),
-            tag: String::from("Not_A_Tag")
-        }]
+        [
+            Warning::InvalidTag {
+                device: id(4),
+                tag: String::from("Not_A_Tag")
+            },
+            Warning::RecordForNonMember {
+                key: removed_exit.key(),
+                device: id(9)
+            },
+            Warning::InvalidRecord {
+                key: String::from("relay/backup"),
+                error: RecordError::KindMismatch
+            },
+            Warning::InvalidRecord {
+                key: String::from("route/10.9.0.0/16"),
+                error: RecordError::Value(WireError::BadMagic)
+            },
+        ]
     );
 
     // Addresses follow admission order (genesis, then each add), not node-id order.
@@ -134,6 +173,9 @@ fn netmap_follows_members_admission_order_and_policy() {
         map.routes().iter().collect::<Vec<_>>(),
         [(&"192.168.1.0/24".parse().unwrap(), &id(3))]
     );
+    assert_eq!(map.relays(), [relay]);
+    assert_eq!(map.dns_records(), [dns]);
+    assert_eq!(map.exit_nodes().iter().collect::<Vec<_>>(), [&id(1)]);
 
     let filter = map.filter();
     let phone = v4(&map, 4);
@@ -242,10 +284,29 @@ fn random_body(action: u8, target: u8) -> OpBody {
             key: String::from(records::POLICY),
             value: None,
         },
-        _ => {
-            let route = alloc::format!("{}10.1.0.0/16", records::ROUTE_PREFIX);
-            set_record(&route, id(device).to_bytes().to_vec())
+        8 => put(&Record::Route {
+            prefix: "10.1.0.0/16".parse().unwrap(),
+            via: id(device),
+        }),
+        9 => {
+            let name = alloc::format!("r{}", target % 2);
+            let address = String::from("relay.example.com:443");
+            put(&Record::Relay(
+                Relay::new(name, address, id(device)).unwrap(),
+            ))
         }
+        10 => {
+            let data = vec![DnsData::A(Ipv4Addr::new(10, 0, 0, target))];
+            put(&Record::Dns(
+                DnsRecords::new("nas".into(), 60, data).unwrap(),
+            ))
+        }
+        11 => put(&Record::Exit(id(device))),
+        12 => OpBody::SetRecord {
+            key: Record::Exit(id(device)).key(),
+            value: None,
+        },
+        _ => set_record("relay/r0", vec![target]),
     }
 }
 
@@ -256,7 +317,7 @@ proptest! {
     /// yields the same map for every device.
     #[test]
     fn netmaps_are_identical_for_any_op_order(
-        steps in proptest::collection::vec((0_usize..3, 0_u8..9, 0_u8..7), 1..30),
+        steps in proptest::collection::vec((0_usize..3, 0_u8..14, 0_u8..7), 1..30),
         seeds in proptest::collection::vec(any::<u64>(), 2),
     ) {
         let base = network();
@@ -304,7 +365,7 @@ proptest! {
     /// peers, and the flags say exactly what else moved.
     #[test]
     fn applying_a_diff_reproduces_the_new_map(
-        steps in proptest::collection::vec((0_u8..9, 0_u8..7), 1..30),
+        steps in proptest::collection::vec((0_u8..14, 0_u8..7), 1..30),
         pairs in proptest::collection::vec((any::<prop::sample::Index>(), any::<prop::sample::Index>()), 8),
     ) {
         let mut ledger = network();
@@ -323,10 +384,16 @@ proptest! {
             prop_assert_eq!(diff.filter_changed, old.filter() != new.filter());
             prop_assert_eq!(diff.local_addresses_changed, old.local_addresses() != new.local_addresses());
             prop_assert_eq!(diff.routes_changed, old.routes() != new.routes());
+            prop_assert_eq!(diff.relays_changed, old.relays() != new.relays());
+            prop_assert_eq!(diff.dns_changed, old.dns_records() != new.dns_records());
+            prop_assert_eq!(diff.exit_nodes_changed, old.exit_nodes() != new.exit_nodes());
             prop_assert_eq!(diff.is_empty(), old.peers() == new.peers()
                 && old.filter() == new.filter()
                 && old.local_addresses() == new.local_addresses()
-                && old.routes() == new.routes());
+                && old.routes() == new.routes()
+                && old.relays() == new.relays()
+                && old.dns_records() == new.dns_records()
+                && old.exit_nodes() == new.exit_nodes());
         }
     }
 }

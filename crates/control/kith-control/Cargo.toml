@@ -14,6 +14,7 @@ kith-ledger.workspace = true
 kith-policy.workspace = true
 kith-types.workspace = true
 kith-wire.workspace = true
+serde = { workspace = true, features = ["alloc", "derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]

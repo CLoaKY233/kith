@@ -4,7 +4,6 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::net::IpAddr;
-use core::ops::Bound;
 
 use kith_ledger::{Device, NetworkView};
 use kith_policy::{
@@ -14,7 +13,7 @@ use kith_policy::{
 use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId};
 use kith_wire::WireError;
 
-use crate::records;
+use crate::records::{self, DnsRecords, Record, RecordError, Relay};
 
 /// Why a network map could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -38,15 +37,18 @@ pub enum Warning {
         /// The tag as stored in the ledger.
         tag: String,
     },
-    /// A `route/…` record has a malformed key or value. It is ignored.
-    InvalidRoute {
+    /// A typed record has a malformed key or value. It is ignored.
+    InvalidRecord {
         /// The record key.
         key: String,
+        /// What is wrong with it.
+        error: RecordError,
     },
-    /// A route is advertised by a device that is not a member. It is ignored.
-    RouteFromNonMember {
-        /// The advertised prefix.
-        prefix: IpPrefix,
+    /// A route, relay or exit record names a device that is not a member. It is ignored,
+    /// so removing a device revokes its roles.
+    RecordForNonMember {
+        /// The record key.
+        key: String,
         /// The named device.
         device: NodeId,
     },
@@ -74,9 +76,17 @@ pub struct NetMap {
     ipv4_range: Ipv4Prefix,
     ipv6_range: Ipv6Prefix,
     peers: BTreeMap<NodeId, Peer>,
-    routes: BTreeMap<IpPrefix, NodeId>,
+    records: TypedRecords,
     filter: CompiledFilter,
     warnings: Vec<Warning>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TypedRecords {
+    routes: BTreeMap<IpPrefix, NodeId>,
+    relays: Vec<Relay>,
+    dns: Vec<DnsRecords>,
+    exit_nodes: BTreeSet<NodeId>,
 }
 
 impl NetMap {
@@ -123,7 +133,22 @@ impl NetMap {
     /// Subnet routes advertised by members: prefix → advertising device. May include the
     /// local device's own advertisements.
     pub const fn routes(&self) -> &BTreeMap<IpPrefix, NodeId> {
-        &self.routes
+        &self.records.routes
+    }
+
+    /// Relay servers run by members, sorted by name. May include the local device.
+    pub fn relays(&self) -> &[Relay] {
+        &self.records.relays
+    }
+
+    /// Custom DNS records, sorted by name.
+    pub fn dns_records(&self) -> &[DnsRecords] {
+        &self.records.dns
+    }
+
+    /// Members that may act as exit nodes. May include the local device.
+    pub const fn exit_nodes(&self) -> &BTreeSet<NodeId> {
+        &self.records.exit_nodes
     }
 
     /// The local device's inbound packet filter.
@@ -141,7 +166,10 @@ impl NetMap {
         let mut diff = NetMapDiff {
             filter_changed: old.filter != new.filter,
             local_addresses_changed: old.local_addresses != new.local_addresses,
-            routes_changed: old.routes != new.routes,
+            routes_changed: old.routes() != new.routes(),
+            relays_changed: old.relays() != new.relays(),
+            dns_changed: old.dns_records() != new.dns_records(),
+            exit_nodes_changed: old.exit_nodes() != new.exit_nodes(),
             ..NetMapDiff::default()
         };
         for (node, peer) in &new.peers {
@@ -171,6 +199,9 @@ impl NetMap {
             filter_changed: true,
             local_addresses_changed: true,
             routes_changed: true,
+            relays_changed: true,
+            dns_changed: true,
+            exit_nodes_changed: true,
             ..NetMapDiff::default()
         }
     }
@@ -178,6 +209,10 @@ impl NetMap {
 
 /// The minimal changes between two maps of the same network.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent change flags, one per part of the map"
+)]
 pub struct NetMapDiff {
     /// Peers that are new, with their state.
     pub peers_added: BTreeMap<NodeId, Peer>,
@@ -191,6 +226,12 @@ pub struct NetMapDiff {
     pub local_addresses_changed: bool,
     /// Whether the subnet routes changed.
     pub routes_changed: bool,
+    /// Whether the relay servers changed.
+    pub relays_changed: bool,
+    /// Whether the custom DNS records changed.
+    pub dns_changed: bool,
+    /// Whether the exit nodes changed.
+    pub exit_nodes_changed: bool,
 }
 
 impl NetMapDiff {
@@ -202,6 +243,9 @@ impl NetMapDiff {
             && !self.filter_changed
             && !self.local_addresses_changed
             && !self.routes_changed
+            && !self.relays_changed
+            && !self.dns_changed
+            && !self.exit_nodes_changed
     }
 
     /// Applies the peer changes to `peers`, turning the old map's peers into the new one's.
@@ -225,7 +269,7 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
     let mut warnings = Vec::new();
     let is_member = view.is_member(&local);
 
-    let (members, peers, routes, filter) = if is_member {
+    let (members, peers, records, filter) = if is_member {
         let addresses = allocate(params.ipv4, params.ipv6, &admission_order(view))?;
         let members: Members = view
             .devices()
@@ -251,13 +295,13 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
             .collect();
         let policy = policy(view, &mut warnings);
         let filter = compile(&policy, &members, local);
-        let routes = routes(view, &mut warnings);
-        (Some(members), peers, routes, filter)
+        let records = typed_records(view, &mut warnings);
+        (Some(members), peers, records, filter)
     } else {
         (
             None,
             BTreeMap::new(),
-            BTreeMap::new(),
+            TypedRecords::default(),
             CompiledFilter::default(),
         )
     };
@@ -274,7 +318,7 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
         ipv4_range: params.ipv4,
         ipv6_range: params.ipv6,
         peers,
-        routes,
+        records,
         filter,
         warnings,
     })
@@ -320,23 +364,34 @@ fn policy(view: &NetworkView, warnings: &mut Vec<Warning>) -> Policy {
     }
 }
 
-/// The valid route advertisements by members.
-fn routes(view: &NetworkView, warnings: &mut Vec<Warning>) -> BTreeMap<IpPrefix, NodeId> {
-    let mut routes = BTreeMap::new();
-    let route_records = view
-        .records()
-        .range::<str, _>((Bound::Included(records::ROUTE_PREFIX), Bound::Unbounded))
-        .take_while(|(key, _)| key.starts_with(records::ROUTE_PREFIX));
-    for (key, value) in route_records {
-        match records::parse_route(key, value).flatten() {
-            None => warnings.push(Warning::InvalidRoute { key: key.clone() }),
-            Some((prefix, device)) if !view.is_member(&device) => {
-                warnings.push(Warning::RouteFromNonMember { prefix, device });
+/// The valid typed records, in key order, dropping those that name a non-member.
+fn typed_records(view: &NetworkView, warnings: &mut Vec<Warning>) -> TypedRecords {
+    let mut records = TypedRecords::default();
+    for (key, value) in view.records() {
+        let record = match Record::decode(key, value) {
+            None => continue,
+            Some(Err(error)) => {
+                let key = key.clone();
+                warnings.push(Warning::InvalidRecord { key, error });
+                continue;
             }
-            Some((prefix, device)) => {
-                routes.insert(prefix, device);
+            Some(Ok(record)) => record,
+        };
+        if let Some(device) = record.device().filter(|device| !view.is_member(device)) {
+            let key = key.clone();
+            warnings.push(Warning::RecordForNonMember { key, device });
+            continue;
+        }
+        match record {
+            Record::Route { prefix, via } => {
+                records.routes.insert(prefix, via);
+            }
+            Record::Relay(relay) => records.relays.push(relay),
+            Record::Dns(dns) => records.dns.push(dns),
+            Record::Exit(node) => {
+                records.exit_nodes.insert(node);
             }
         }
     }
-    routes
+    records
 }

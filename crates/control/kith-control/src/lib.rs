@@ -2,9 +2,9 @@
 //!
 //! Sans-IO: no I/O, no clock, no runtime. [`build_netmap`] is a pure function of a
 //! [`NetworkView`](kith_ledger::NetworkView), so every device holding the same ops builds
-//! the same [`NetMap`]: peers, local addresses, resolver, subnet routes and the inbound
-//! filter. Bad records become [`Warning`]s and never stop the build; only a mesh range too
-//! small for its members is an error.
+//! the same [`NetMap`]: peers, local addresses, resolver, subnet routes, relays, custom
+//! DNS records, exit nodes and the inbound filter. Bad records become [`Warning`]s and never
+//! stop the build; only a mesh range too small for its members is an error.
 //!
 //! [`NetMap::diff`] reports minimal changes, because rebuilding WireGuard peers and filters
 //! on every ledger change would drop sessions. [`Networks`] holds one map per joined
