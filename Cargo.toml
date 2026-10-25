@@ -27,6 +27,28 @@ kith-policy = { path = "crates/kith-policy" }
 kith-packet = { path = "crates/kith-packet" }
 kith-naming = { path = "crates/kith-naming" }
 kith-obfs = { path = "crates/kith-obfs" }
+kith-control = { path = "crates/kith-control" }
+kith-disco = { path = "crates/kith-disco" }
+kith-filter = { path = "crates/kith-filter" }
+kith-relay-proto = { path = "crates/kith-relay-proto" }
+kith-router = { path = "crates/kith-router" }
+kith-store = { path = "crates/kith-store" }
+kith-stun = { path = "crates/kith-stun" }
+kith-sync = { path = "crates/kith-sync" }
+kith-transport = { path = "crates/kith-transport" }
+kith-transport-udp = { path = "crates/kith-transport-udp" }
+kith-tun = { path = "crates/kith-tun" }
+kith-wg = { path = "crates/kith-wg" }
+kith-sys = { path = "crates/kith-sys" }
+kith-config = { path = "crates/kith-config" }
+kith-ipc = { path = "crates/kith-ipc" }
+kith-dns = { path = "crates/kith-dns" }
+kith-netmon = { path = "crates/kith-netmon" }
+kith-transport-quic = { path = "crates/kith-transport-quic" }
+kith-transport-ws = { path = "crates/kith-transport-ws" }
+kith-relay = { path = "crates/kith-relay" }
+kith-dataplane = { path = "crates/kith-dataplane" }
+kith-node = { path = "crates/kith-node" }
 
 # Cryptography (pure Rust, no C toolchain).
 blake2 = { version = "0.11.0", default-features = false }
@@ -39,12 +61,19 @@ x25519-dalek = { version = "3.0.0", default-features = false }
 zeroize = { version = "1.9.1", default-features = false }
 
 # Async runtime and OS I/O (drivers only; cores never depend on these).
+if-addrs = { version = "0.15.0", default-features = false }
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "1.15.1", default-features = false, features = ["std"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
+webpki-roots = { version = "1.0.11", default-features = false }
 quinn-udp = { version = "0.6.3", default-features = false }
 socket2 = { version = "0.6.5", default-features = false }
 tokio = { version = "1.54.1", default-features = false }
 tun-rs = { version = "2.8.13", default-features = false }
 
 # Encoding and errors.
+toml = { version = "1.1.8", default-features = false, features = ["display", "parse", "serde", "std"] }
 data-encoding = { version = "2.11.1", default-features = false }
 postcard = { version = "1.1.3", default-features = false }
 serde = { version = "1.0.229", default-features = false }
