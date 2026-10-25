@@ -9,5 +9,16 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[dependencies]
+data-encoding = { workspace = true, features = ["alloc"] }
+kith-types.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+thiserror = { workspace = true, features = ["std"] }
+toml.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

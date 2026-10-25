@@ -1,0 +1,84 @@
+# kith daemon configuration. Every setting is optional: an empty file (or none at all) is the
+# zero-config default. Lines starting with `#key` are settings shown at an example value;
+# remove the `#` to use one. Unknown keys are errors, so typos are caught.
+
+[daemon]
+# Keys, the network ledger and caches. Default depends on the OS:
+# /var/lib/kith (Linux), /Library/Application Support/kith (macOS).
+#state_dir = "/var/lib/kith"
+# Socket the `kith` CLI talks to.
+#socket_path = "/run/kith/kith.sock"
+# error | warn | info | debug | trace
+log_level = "info"
+
+[network]
+# WireGuard UDP port. 0 picks a random port at each start.
+listen_port = 41641
+# Interface name. Default: kith0 (Linux), next free utunN (macOS).
+#tun_name = "utun7"
+# 1280 is safe on every path; raise only on networks you control (max 9000).
+mtu = 1280
+
+[network.transports]
+# Enabled transports, most preferred first: udp, quic, websocket.
+order = ["udp", "quic", "websocket"]
+# Never send plain WireGuard UDP.
+stealth_only = false
+
+[stealth]
+# auto: obfuscate only when plain WireGuard looks blocked. Also: on, off.
+obfuscation = "auto"
+# SNI the QUIC transport presents.
+#quic_sni = "cdn.example.com"
+# WebSocket endpoints, tried in order.
+#websocket_urls = ["wss://ws.example.com/a8f3k2p9q1"]
+# Domain fronted through a CDN.
+#cdn_front = "front.example.com"
+
+# Fixed AmneziaWG parameters. By default they are derived per network.
+#[stealth.amnezia]
+#junk_packet_count = 4
+#junk_packet_min_size = 40
+#junk_packet_max_size = 70
+#init_padding = 32
+#response_padding = 40
+#init_header = 1733452311
+#response_header = 993811234
+#cookie_header = 2109876543
+#transport_header = 424242424
+
+[server]
+# Server mode, as set up by `kith server --exit --stealth`.
+enabled = false
+# Offer this node as an exit for the network.
+exit = false
+# Relay for peers that cannot connect directly.
+relay = false
+#public_hostname = "vps.example.com"
+#ws_listen = "0.0.0.0:443"
+#quic_listen = "0.0.0.0:443"
+# Omit both when a CDN terminates TLS.
+#tls_cert = "/etc/kith/cert.pem"
+#tls_key = "/etc/kith/key.pem"
+# Secret path; any other path gets an ordinary web response.
+#ws_path = "/a8f3k2p9q1"
+
+[dns]
+enabled = true
+# split: only mesh names go to kith. full: every query. off: leave the OS resolver alone.
+override_system = "split"
+# Port defaults to 53.
+#fallback_upstreams = ["1.1.1.1", "[2606:4700:4700::1111]:53"]
+
+[exit]
+# Route internet traffic through a mesh node...
+#use_exit = { network = "home", node = "vps1" }
+# ...or through an imported WireGuard config:
+#use_exit = { wireguard = "mullvad-se" }
+# Keep the local LAN reachable while using an exit.
+allow_lan = false
+
+# Bring your own exit: a standard wg-quick .conf (Mullvad, Proton, ...).
+#[[import_wireguard]]
+#name = "mullvad-se"
+#path = "/etc/kith/mullvad-se.conf"
