@@ -88,3 +88,14 @@ jobs:
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with: { tool: cargo-zigbuild }
       - run: cargo xtask size --zigbuild --target ${{ matrix.target }}
+
+  smoke-linux:
+    runs-on: ubuntu-latest
+    # The daemon is new; make this blocking once it is stable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build -p kith-cli --release --locked
+      - run: sudo --preserve-env=PATH,CARGO_HOME,RUSTUP_HOME sh tests/smoke/linux-netns.sh
