@@ -131,6 +131,19 @@ log "$DEV1 mesh address: $ADDR"
 log "pinging $ADDR from ns2"
 ip netns exec "$NS2" ping -c 3 -W 2 "$ADDR" || fail "ping over the mesh failed"
 
+log "footprint"
+RSS_LIMIT_KB=$((32 * 1024))
+n=0
+for pid in $PIDS; do
+    n=$((n + 1))
+    [ -r "/proc/$pid/status" ] || fail "daemon ns$n (pid $pid) not running"
+    rss=$(awk '$1 == "VmRSS:" { print $2 }' "/proc/$pid/status")
+    hwm=$(awk '$1 == "VmHWM:" { print $2 }' "/proc/$pid/status")
+    printf 'daemon ns%s pid %s: VmRSS %s kB, VmHWM %s kB\n' "$n" "$pid" "$rss" "$hwm"
+    [ "$rss" -le "$RSS_LIMIT_KB" ] || fail "daemon ns$n idle RSS ${rss} kB exceeds ${RSS_LIMIT_KB} kB"
+done
+printf 'kith binary: %s bytes\n' "$(wc -c <"$KITH" | tr -d ' ')"
+
 FQDN="$DEV1.$NETWORK.kith.internal"
 log "resolving $FQDN in ns2"
 if command -v dig >/dev/null; then

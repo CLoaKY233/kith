@@ -1,0 +1,92 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true }
+          - { target: armv7-unknown-linux-musleabihf, os: ubuntu-latest, profile: embedded, zig: true }
+          - { target: mipsel-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true, nightly: true }
+          - { target: mips-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true, nightly: true }
+          - { target: aarch64-apple-darwin, os: macos-latest, profile: dist }
+          - { target: x86_64-apple-darwin, os: macos-latest, profile: dist }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.nightly == true }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - if: ${{ !matrix.nightly }}
+        run: rustup target add ${{ matrix.target }}
+      - if: ${{ matrix.nightly }}
+        run: rustup toolchain install nightly --profile minimal --component rust-src,llvm-tools
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with: { key: "release-${{ matrix.target }}" }
+      - if: ${{ matrix.zig }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - if: ${{ matrix.zig }}
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with: { tool: cargo-zigbuild }
+      - if: ${{ matrix.zig && !matrix.nightly }}
+        run: cargo zigbuild -p kith-cli --profile ${{ matrix.profile }} --target ${{ matrix.target }} --locked
+      - if: ${{ matrix.nightly }}
+        run: cargo +nightly zigbuild -p kith-cli --profile ${{ matrix.profile }} --target ${{ matrix.target }} --locked -Zbuild-std=std,panic_abort
+      - if: ${{ !matrix.zig }}
+        run: cargo build -p kith-cli --profile ${{ matrix.profile }} --target ${{ matrix.target }} --locked
+      - name: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PROFILE: ${{ matrix.profile }}
+          TOOLCHAIN: ${{ matrix.nightly && 'nightly' || '' }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="kith-${version}-${TARGET}"
+          bin="target/${TARGET}/${PROFILE}/kith"
+          sysroot="$(rustc ${TOOLCHAIN:++$TOOLCHAIN} --print sysroot)"
+          strip_bin="$(find "$sysroot/lib/rustlib" -name llvm-strip -type f | head -n1)"
+          if [ -n "$strip_bin" ]; then "$strip_bin" "$bin"; elif [ "$RUNNER_OS" = macOS ]; then strip "$bin"; fi
+          mkdir -p "dist/$name"
+          cp "$bin" LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "ARCHIVE=dist/$name.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum kith-*.tar.gz > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag kith-*.tar.gz SHA256SUMS

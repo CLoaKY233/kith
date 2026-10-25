@@ -47,6 +47,8 @@ Each device has an Ed25519 identity. Networks are defined by a signed, causally 
 
 Protocol cores are sans-IO state machines, tested in a deterministic multi-node simulator. See [docs/architecture.md](docs/architecture.md) for the design and [docs/node.md](docs/node.md) for how the daemon fits together.
 
+To run an always-on relay and exit node on a VPS, see [docs/server.md](docs/server.md).
+
 ## Build
 
 ```sh
