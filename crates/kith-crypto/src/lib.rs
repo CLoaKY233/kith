@@ -22,6 +22,7 @@ mod context;
 mod hash;
 mod random;
 mod sign;
+pub mod wireguard;
 
 pub use aead::{AeadError, AeadKey, Nonce, TAG_LEN, Tag};
 pub use agree::{AgreementError, AgreementPublic, AgreementSecret, SharedSecret};

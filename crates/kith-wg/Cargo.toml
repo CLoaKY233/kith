@@ -1,6 +1,6 @@
 [package]
 name = "kith-wg"
-description = "WireGuard tunnel abstraction over a sans-IO implementation"
+description = "A sans-IO WireGuard protocol core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,8 @@ publish.workspace = true
 
 [dependencies]
 kith-crypto.workspace = true
-kith-types.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 boringtun.workspace = true
