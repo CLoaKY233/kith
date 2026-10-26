@@ -810,11 +810,13 @@ impl State {
                 entry.endpoint = endpoint;
             }
         }
+        let is_exit = self.router.exit_peer() == Some((entry.network, node));
         match output.result {
             Decapsulated::Packet(len) => {
                 if let Some(packet) = self.scratch.get(..len)
                     && admits(
                         entry,
+                        is_exit,
                         &mut self.filters,
                         &mut self.out.drops,
                         packet,
@@ -952,6 +954,7 @@ fn absorb(drops: &mut DropCounters, filter: Counters) {
 /// Cryptokey routing (the peer may use this source address), then the network's filter.
 fn admits(
     entry: &PeerEntry,
+    is_exit: bool,
     filters: &mut BTreeMap<NetworkId, Filter>,
     drops: &mut DropCounters,
     packet: &[u8],
@@ -961,10 +964,11 @@ fn admits(
         count(&mut drops.malformed);
         return false;
     };
-    if !entry
-        .allowed_ips
-        .iter()
-        .any(|prefix| prefix.contains(source))
+    if !is_exit
+        && !entry
+            .allowed_ips
+            .iter()
+            .any(|prefix| prefix.contains(source))
     {
         count(&mut drops.source_not_allowed);
         return false;

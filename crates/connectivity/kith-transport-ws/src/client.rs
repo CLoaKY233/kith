@@ -6,7 +6,6 @@ use rustls::crypto::{WebPkiSupportedAlgorithms, ring};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
 use crate::handshake::{client_request, key_from_nonce, parse_response};
@@ -165,7 +164,7 @@ async fn connect_inner(url: &str, options: &ClientOptions) -> Result<WsLink, Err
     let server_name =
         ServerName::try_from(name.to_owned()).map_err(|_| Error::InvalidField("server name"))?;
 
-    let tcp = TcpStream::connect((target.host, target.port)).await?;
+    let tcp = kith_transport_udp::connect_tcp((target.host, target.port)).await?;
     tcp.set_nodelay(true)?;
     let connector = TlsConnector::from(Arc::new(tls_config(options.pinned_certificate.as_ref())?));
     let tls = connector.connect(server_name, tcp).await?;

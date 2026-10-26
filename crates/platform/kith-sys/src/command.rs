@@ -167,7 +167,13 @@ impl System for OsSystem {
         }
         let tmp = path.with_extension("kith-tmp");
         fs::write(&tmp, contents).map_err(io_err(&tmp))?;
-        fs::rename(&tmp, path).map_err(io_err(path))
+        match fs::rename(&tmp, path) {
+            Err(e) if e.kind() == io::ErrorKind::ResourceBusy => {
+                fs::remove_file(&tmp).map_err(io_err(&tmp))?;
+                fs::write(path, contents).map_err(io_err(path))
+            }
+            other => other.map_err(io_err(path)),
+        }
     }
 
     fn remove(&mut self, path: &Path) -> Result<(), Error> {

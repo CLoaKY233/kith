@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use kith_naming::udp_payload_size;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout};
@@ -63,6 +63,8 @@ impl Forwarder {
         let v4 = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
         // IPv6 may be disabled on the host; IPv6 upstreams then fail over like dead ones.
         let v6 = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await.ok();
+        kith_transport_udp::mark_udp(&v4);
+        v6.iter().for_each(kith_transport_udp::mark_udp);
         let pending: Arc<PendingTable> = Arc::default();
         let sockets = [Some(Arc::new(v4)), v6.map(Arc::new)];
         let readers = sockets
@@ -219,7 +221,7 @@ async fn ask_tcp(query: &[u8], upstream: SocketAddr) -> Option<Vec<u8>> {
     outgoing.extend_from_slice(&length.to_be_bytes());
     outgoing.extend_from_slice(query);
     outgoing.get_mut(2..4)?.copy_from_slice(&id.to_be_bytes());
-    let mut stream = TcpStream::connect(upstream).await.ok()?;
+    let mut stream = kith_transport_udp::connect_tcp(upstream).await.ok()?;
     stream.write_all(&outgoing).await.ok()?;
     let reply_len = stream.read_u16().await.ok()?;
     let mut reply = vec![0; usize::from(reply_len)];

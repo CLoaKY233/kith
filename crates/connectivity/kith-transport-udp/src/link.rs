@@ -219,6 +219,10 @@ fn open_socket(addr: SocketAddr, options: BindOptions) -> Result<StdUdpSocket, U
     }
     if let Some(mark) = options.mark {
         set_mark(&socket, mark)?;
+    } else if let Some(mark) = crate::mark::socket_mark()
+        && let Err(error) = set_mark(&socket, mark)
+    {
+        tracing::debug!(%error, "cannot mark the UDP socket");
     }
     socket.bind(&addr.into()).map_err(bind_error)?;
     Ok(socket.into())

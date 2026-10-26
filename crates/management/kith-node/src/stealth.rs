@@ -461,7 +461,7 @@ impl RelayDialer {
 }
 
 async fn dial_tcp(address: &str) -> Result<RelayStream, FailureReason> {
-    let stream = tokio::time::timeout(DIAL_ATTEMPT, TcpStream::connect(address))
+    let stream = tokio::time::timeout(DIAL_ATTEMPT, kith_transport_udp::connect_tcp(address))
         .await
         .map_err(|_| FailureReason::Timeout)?
         .map_err(|error| {

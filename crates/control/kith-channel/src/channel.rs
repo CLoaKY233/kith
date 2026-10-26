@@ -87,7 +87,7 @@ impl<H> Hub<H> {
         expected: NodeId,
     ) -> Result<TlsStream<TcpStream>, ChannelError> {
         let config = kith_tls::client_config(&self.identity, expected, &[ALPN])?;
-        let tcp = timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+        let tcp = timeout(CONNECT_TIMEOUT, kith_transport_udp::connect_tcp(addr))
             .await
             .map_err(|_| ChannelError::TimedOut)??;
         tcp.set_nodelay(true)?;

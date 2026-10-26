@@ -259,17 +259,15 @@ fn server(config: &ServerConfig, report: &mut Report) {
             "must be `/` followed by at least 8 printable characters",
         );
     }
+    let configured =
+        config.exit || config.relay || config.ws_listen.is_some() || config.quic_listen.is_some();
     if config.enabled {
         report.require(
-            config.ws_listen.is_some() || config.quic_listen.is_some(),
+            configured,
             "server",
-            "server mode needs ws_listen or quic_listen",
+            "server mode needs exit, relay, ws_listen or quic_listen",
         );
     } else {
-        let configured = config.exit
-            || config.relay
-            || config.ws_listen.is_some()
-            || config.quic_listen.is_some();
         report.require(
             !configured,
             "server.enabled",

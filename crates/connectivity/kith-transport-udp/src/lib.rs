@@ -18,11 +18,13 @@
 mod classify;
 mod error;
 mod link;
+mod mark;
 mod recv;
 mod send;
 
 pub use classify::{Kind, classify};
 pub use error::UdpError;
 pub use link::{BindOptions, BufferSizes, UdpLink};
+pub use mark::{connect_tcp, mark_udp, set_socket_mark};
 pub use recv::{Datagram, MAX_SLOT_LEN, RecvBatch};
 pub use send::SendBatch;

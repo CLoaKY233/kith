@@ -92,11 +92,15 @@ fn members(nodes: &[&Node]) -> Members {
 
 /// An IPv4 UDP packet with a valid header checksum.
 fn udp_packet(source: &Node, destination: &Node, payload: &[u8]) -> Vec<u8> {
+    udp_between(source.addresses.v4, destination.addresses.v4, payload)
+}
+
+fn udp_between(source: Ipv4Addr, destination: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
     let total = u16::try_from(28 + payload.len()).unwrap();
     let mut packet = vec![0x45, 0, 0, 0, 0, 0, 0x40, 0, 64, 17, 0, 0];
     packet[2..4].copy_from_slice(&total.to_be_bytes());
-    packet.extend_from_slice(&source.addresses.v4.octets());
-    packet.extend_from_slice(&destination.addresses.v4.octets());
+    packet.extend_from_slice(&source.octets());
+    packet.extend_from_slice(&destination.octets());
     let sum: u32 = packet
         .chunks(2)
         .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
@@ -149,6 +153,25 @@ async fn packets_cross_loopback_intact_and_denied_ones_drop() {
     assert_eq!(next_packet(&mut b).await, request);
 
     let reply = udp_packet(&b, &a, b"reply");
+    b.tun.inject(reply.clone()).unwrap();
+    assert_eq!(next_packet(&mut a).await, reply);
+}
+
+#[tokio::test]
+async fn exit_traffic_and_its_replies_cross_the_exit_peer() {
+    let mut a = spawn_node(1);
+    let mut b = spawn_node(2);
+    let allow = Policy::default_allow_all();
+    connect(&a, &b, Endpoint::Direct(b.udp), &allow).await;
+    connect(&b, &a, Endpoint::Direct(a.udp), &allow).await;
+    a.handle.set_exit(Some((NETWORK, b.id))).await.unwrap();
+
+    let internet = Ipv4Addr::new(1, 1, 1, 1);
+    let request = udp_between(a.addresses.v4, internet, b"out");
+    a.tun.inject(request.clone()).unwrap();
+    assert_eq!(next_packet(&mut b).await, request);
+
+    let reply = udp_between(internet, a.addresses.v4, b"back");
     b.tun.inject(reply.clone()).unwrap();
     assert_eq!(next_packet(&mut a).await, reply);
 }

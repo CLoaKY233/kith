@@ -251,6 +251,7 @@ pub(crate) struct Daemon {
     dataplane_task: JoinHandle<()>,
     events: broadcast::Sender<Event>,
     endpoints: BTreeMap<NodeId, Vec<SocketAddr>>,
+    public_hostname: Option<String>,
     paths: BTreeMap<NodeId, Endpoint>,
     gossiped: Vec<SocketAddr>,
     exit: Option<(NetworkId, NodeId)>,
@@ -401,6 +402,7 @@ impl Daemon {
         commands: mpsc::Sender<Command>,
     ) -> Result<(Self, Started), NodeError> {
         let config = &options.config;
+        kith_transport_udp::set_socket_mark(kith_sys::socket_mark(Platform::current()?));
         let state = if options.memory_state {
             StateDir::in_memory()
         } else {
@@ -453,6 +455,7 @@ impl Daemon {
             None
         };
         let external = restore_external(&state, config).await?;
+        let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
         let ipc_task = if options.ipc {
             Some(start_ipc(config, commands.clone(), events.clone())?)
@@ -484,13 +487,15 @@ impl Daemon {
             dataplane_events: dataplanes.events,
             dataplane_task: dataplanes.task,
             events,
-            endpoints: BTreeMap::new(),
+            endpoints,
+            public_hostname: config.server.public_hostname.clone(),
             paths: BTreeMap::new(),
             gossiped: Vec::new(),
             exit: None,
             ipc_task,
         };
         daemon.refresh(None).await?;
+        daemon.advertise_server().await;
         Ok((daemon, started))
     }
 
@@ -676,6 +681,7 @@ impl Daemon {
         self.networks.insert(runtime)?;
         self.persist(network)?;
         self.refresh(Some(network)).await?;
+        self.advertise_server().await;
         Ok(Response::NetworkCreated { network })
     }
 
@@ -732,8 +738,10 @@ impl Daemon {
                 }
             }
         }
+        self.state.save_endpoints(&self.endpoints)?;
         self.persist(network)?;
         self.refresh(Some(network)).await?;
+        self.advertise_server().await;
         Ok(Response::Joined { network })
     }
 
@@ -805,6 +813,9 @@ impl Daemon {
 
     fn relay_address(&self) -> Option<String> {
         let bound = self.server.as_ref().and_then(ServerMode::relay_addr)?;
+        if let Some(host) = &self.public_hostname {
+            return Some(format!("{host}:{}", bound.port()));
+        }
         let public = self
             .connectivity
             .local_endpoints()
@@ -813,6 +824,20 @@ impl Daemon {
             .map(|addr| SocketAddr::new(addr.ip(), bound.port()));
         let fallback = (!bound.ip().is_unspecified()).then_some(bound);
         public.or(fallback).map(|addr| addr.to_string())
+    }
+
+    async fn advertise_server(&mut self) {
+        let Some((exit, relay)) = self
+            .server
+            .as_ref()
+            .map(|server| (server.is_exit(), server.relay_addr().is_some()))
+        else {
+            return;
+        };
+        match self.advertise_roles(exit, relay).await {
+            Ok(notes) => notes.iter().for_each(|note| tracing::info!("{note}")),
+            Err(error) => tracing::warn!(%error, "could not advertise server roles"),
+        }
     }
 
     async fn advertise_roles(&mut self, exit: bool, relay: bool) -> Result<Vec<String>, NodeError> {
@@ -1072,6 +1097,7 @@ impl Daemon {
                     known.truncate(MAX_BOOTSTRAP);
                 }
                 if changed {
+                    self.state.save_endpoints(&self.endpoints)?;
                     self.update_targets()?;
                 }
                 Ok(())

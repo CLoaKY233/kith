@@ -1,9 +1,10 @@
+use std::net::SocketAddr;
 use std::path::Path;
 
 use kith_identity::DeviceIdentity;
 use kith_ledger::{Ledger, SignedOp};
 use kith_store::{FsStore, Key, MemoryStore, Namespace, Store};
-use kith_types::NetworkId;
+use kith_types::{NetworkId, NodeId};
 
 use crate::types::NodeError;
 
@@ -124,6 +125,36 @@ impl StateDir {
         Ok(())
     }
 
+    /// Loads the last known endpoints of every peer; a corrupt file is ignored.
+    pub(crate) fn load_endpoints(&self) -> Result<Vec<(NodeId, Vec<SocketAddr>)>, NodeError> {
+        let Some(bytes) = self.store.get(&endpoints_key()?)? else {
+            return Ok(Vec::new());
+        };
+        Ok(decode_endpoints(&bytes).unwrap_or_else(|| {
+            tracing::warn!("ignoring corrupt endpoint cache");
+            Vec::new()
+        }))
+    }
+
+    /// Persists the last known endpoints of every peer.
+    pub(crate) fn save_endpoints<'a>(
+        &self,
+        endpoints: impl IntoIterator<Item = (&'a NodeId, &'a Vec<SocketAddr>)>,
+    ) -> Result<(), NodeError> {
+        let mut out = Vec::new();
+        for (node, addrs) in endpoints {
+            out.extend_from_slice(node.as_bytes());
+            encode_varint(&mut out, addrs.len());
+            for addr in addrs {
+                let text = addr.to_string();
+                encode_varint(&mut out, text.len());
+                out.extend_from_slice(text.as_bytes());
+            }
+        }
+        self.store.put(&endpoints_key()?, &out)?;
+        Ok(())
+    }
+
     /// Forgets a network's ledger.
     pub(crate) fn remove_network(&self, network: NetworkId) -> Result<(), NodeError> {
         self.store.delete(&network_key(network)?)?;
@@ -137,6 +168,30 @@ const NETWORKS_NAMESPACE: &str = "networks";
 const IMPORTS_NAMESPACE: &str = "imports";
 const EXTERNAL_NAMESPACE: &str = "external";
 const GATEWAY_NAME: &str = "gateway";
+const PEERS_NAMESPACE: &str = "peers";
+const ENDPOINTS_NAME: &str = "endpoints";
+
+fn endpoints_key() -> Result<Key, NodeError> {
+    Ok(Key::parse(PEERS_NAMESPACE, ENDPOINTS_NAME).map_err(kith_store::Error::from)?)
+}
+
+fn decode_endpoints(mut input: &[u8]) -> Option<Vec<(NodeId, Vec<SocketAddr>)>> {
+    let mut entries = Vec::new();
+    while !input.is_empty() {
+        let (id, rest) = input.split_first_chunk::<32>()?;
+        input = rest;
+        let count = decode_varint(&mut input)?;
+        let mut addrs = Vec::new();
+        for _ in 0..count {
+            let len = decode_varint(&mut input)?;
+            let (text, rest) = input.split_at_checked(len)?;
+            input = rest;
+            addrs.push(core::str::from_utf8(text).ok()?.parse().ok()?);
+        }
+        entries.push((NodeId::from_bytes(*id), addrs));
+    }
+    Some(entries)
+}
 
 fn gateway_key() -> Result<Key, NodeError> {
     Ok(Key::parse(EXTERNAL_NAMESPACE, GATEWAY_NAME).map_err(kith_store::Error::from)?)

@@ -190,7 +190,7 @@ impl Drop for Client {
 }
 
 async fn dial_tcp(address: &str) -> io::Result<TcpStream> {
-    let stream = TcpStream::connect(address).await?;
+    let stream = kith_transport_udp::connect_tcp(address).await?;
     stream.set_nodelay(true)?;
     Ok(stream)
 }

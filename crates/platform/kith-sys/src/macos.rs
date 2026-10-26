@@ -159,10 +159,8 @@ fn revert_hosts<S: System>(sys: &mut Sys<S>) -> Result<(), Error> {
     sys.system.remove(&path)
 }
 
+/// Installs split DNS; all-DNS mode also falls back to it, as macOS needs `scutil` for that.
 fn apply_dns<S: System>(sys: &mut Sys<S>, dns: &Dns) -> Result<(), Error> {
-    if dns.all {
-        return Err(Error::Unsupported("all-DNS mode on macOS"));
-    }
     for domain in &dns.domains {
         let path = Path::new(RESOLVER_DIR).join(domain.as_str());
         if sys

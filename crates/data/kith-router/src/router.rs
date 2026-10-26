@@ -299,6 +299,11 @@ impl Router {
         self.active_exit
     }
 
+    /// The network and peer of the active exit, if any.
+    pub fn exit_peer(&self) -> Option<(NetworkId, NodeId)> {
+        self.exit.as_ref().map(|exit| (exit.network, exit.peer))
+    }
+
     /// Where to send a packet for `dst`: the longest specific route in any network, else the
     /// active exit's default route, else `None`. Never allocates.
     pub fn route(&self, dst: IpAddr) -> Option<Route> {

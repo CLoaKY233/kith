@@ -10,6 +10,7 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+kith-transport-udp.workspace = true
 kith-crypto = { workspace = true, features = ["getrandom"] }
 kith-relay-proto.workspace = true
 kith-types.workspace = true

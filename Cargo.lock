@@ -821,6 +821,7 @@ dependencies = [
  "kith-ledger",
  "kith-sync",
  "kith-tls",
+ "kith-transport-udp",
  "kith-types",
  "kith-wire",
  "proptest",
@@ -926,6 +927,7 @@ version = "0.0.0"
 dependencies = [
  "getrandom 0.4.3",
  "kith-naming",
+ "kith-transport-udp",
  "tokio",
  "tracing",
 ]
@@ -1068,6 +1070,7 @@ version = "0.0.0"
 dependencies = [
  "kith-crypto",
  "kith-relay-proto",
+ "kith-transport-udp",
  "kith-types",
  "rustls",
  "rustls-pki-types",
@@ -1203,6 +1206,7 @@ version = "0.0.0"
 dependencies = [
  "data-encoding",
  "kith-crypto",
+ "kith-transport-udp",
  "proptest",
  "rustls",
  "rustls-pki-types",
