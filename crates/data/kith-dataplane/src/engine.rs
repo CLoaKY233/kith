@@ -1,6 +1,6 @@
 //! The single-task packet loop.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -67,6 +67,7 @@ struct State {
     next_slot: u64,
     timers: Timers<Key>,
     touched: Vec<Key>,
+    local: BTreeSet<IpAddr>,
     tun_out: PacketBatch,
     out: Output,
     scratch: Vec<u8>,
@@ -144,6 +145,7 @@ impl<T: TunDevice> Engine<T> {
                 next_slot: 0,
                 timers: Timers::new(),
                 touched: Vec::with_capacity(kith_tun::BATCH_SIZE),
+                local: BTreeSet::new(),
                 tun_out: tun.new_batch()?,
                 out: Output {
                     udp: SendBatch::with_capacity(kith_tun::BATCH_SIZE, 256 * 1024),
@@ -241,6 +243,12 @@ impl<T: TunDevice> Engine<T> {
             debug!(network = %network.short(), addresses = applied.len(), "TUN addresses set");
             self.addresses.insert(network, applied);
         }
+        self.state.local = self
+            .addresses
+            .values()
+            .flatten()
+            .map(|&(address, _)| address)
+            .collect();
         result
     }
 
@@ -487,6 +495,12 @@ impl State {
                 count(&mut self.out.drops.no_route);
                 continue;
             };
+            if self.local.contains(&destination) {
+                if self.tun_out.push(packet).is_err() {
+                    count(&mut self.out.drops.no_route);
+                }
+                continue;
+            }
             let route = self.router.route(destination);
             let mesh_rank = route.map(|route| (route.prefix.prefix_len(), false));
             if let Some((slot, id)) =

@@ -125,7 +125,14 @@ impl Config {
 fn daemon(config: &DaemonConfig, report: &mut Report) {
     report.absolute(Some(&config.state_dir), "daemon.state_dir");
     report.absolute(Some(&config.socket_path), "daemon.socket_path");
+    report.require(
+        config.socket_path.as_os_str().len() <= MAX_SOCKET_PATH,
+        "daemon.socket_path",
+        "must be at most 103 bytes, the limit for Unix socket paths on macOS",
+    );
 }
+
+const MAX_SOCKET_PATH: usize = 103;
 
 fn network(config: &NetworkConfig, report: &mut Report) {
     report.require(

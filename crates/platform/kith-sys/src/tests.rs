@@ -146,6 +146,7 @@ impl System for Fake {
                     return fail(cmd, "pfctl: invalid token");
                 }
             }
+            ("rmdir", [_]) => {}
             _ => self.unknown.push(cmd.to_string()),
         }
         ok("", "")
@@ -314,6 +315,7 @@ fn macos_golden() {
             "pfctl -X 1",
             "sysctl -w net.inet.ip.forwarding=0",
             "sysctl -w net.inet6.ip6.forwarding=0",
+            "rmdir /etc/resolver",
             "route -n delete -net 0.0.0.0/1 -interface kith0",
             "route -n delete -net 128.0.0.0/1 -interface kith0",
             "route -n delete -inet6 ::/1 -interface kith0",

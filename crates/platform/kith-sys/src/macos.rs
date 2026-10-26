@@ -190,5 +190,8 @@ fn revert_dns<S: System>(sys: &mut Sys<S>) -> Result<(), Error> {
             sys.system.remove(&path)?;
         }
     }
+    if sys.system.list(Path::new(RESOLVER_DIR))?.is_empty() {
+        sys.run(Cmd::new("rmdir").arg(RESOLVER_DIR).tolerate("No such file"))?;
+    }
     Ok(())
 }
