@@ -164,3 +164,6 @@ fn drops_parts(old: &Plan, new: &Plan) -> bool {
         || (old.forwarding && !new.forwarding)
         || old.routes.iter().any(|route| !new.routes.contains(route))
 }
+
+#[cfg(test)]
+mod tests;

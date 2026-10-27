@@ -257,6 +257,15 @@ impl Peer {
         self.keys.public
     }
 
+    /// Starts a new handshake as soon as the rate limit allows, as after the peer restarted.
+    /// A handshake already in flight is retransmitted now, since its path may have changed.
+    pub fn request_handshake(&mut self) {
+        self.handshake_wanted = true;
+        if self.initiation.is_some() {
+            self.retransmit_at = Some(Duration::ZERO);
+        }
+    }
+
     /// Whether a session usable for sending exists at `now`.
     #[must_use]
     pub fn has_session(&self, now: Duration) -> bool {

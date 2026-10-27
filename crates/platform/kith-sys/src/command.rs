@@ -201,13 +201,25 @@ impl System for OsSystem {
     }
 }
 
-/// A system that performs nothing: every command succeeds with empty output.
+/// A system that performs nothing: every command succeeds, and the queries kith makes get
+/// the answers of a plain host (sysctls off, a default route via `eth0` or `en0`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopSystem;
 
 impl System for NoopSystem {
-    fn run(&mut self, _cmd: &Cmd) -> Result<Output, Error> {
-        Ok(Output::default())
+    fn run(&mut self, cmd: &Cmd) -> Result<Output, Error> {
+        let args: Vec<&str> = cmd.args.iter().map(String::as_str).collect();
+        let stdout = match (cmd.program, args.as_slice()) {
+            ("sysctl", ["-n", _]) => "0\n",
+            ("ip", [_, "route", "show", "default"]) => "default via 192.0.2.1 dev eth0\n",
+            ("route", ["-n", "get", ..]) => "gateway: 192.0.2.1\ninterface: en0\n",
+            ("pfctl", ["-E"]) => "pf enabled\nToken : 1\n",
+            _ => "",
+        };
+        Ok(Output {
+            stdout: stdout.to_owned(),
+            stderr: String::new(),
+        })
     }
 
     fn read(&mut self, _path: &Path) -> Result<Option<String>, Error> {

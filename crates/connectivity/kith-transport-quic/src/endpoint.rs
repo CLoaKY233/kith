@@ -203,12 +203,13 @@ fn peer_node_id(connection: &Connection) -> Result<NodeId, QuicError> {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
 
     use kith_crypto::SigningKey;
     use kith_types::NodeId;
 
     use super::QuicEndpoint;
-    use crate::ALPN;
+    use crate::{ALPN, QuicLink};
 
     const SNI: &str = "www.example.com";
     const DATAGRAMS: u32 = 1000;
@@ -221,13 +222,7 @@ mod tests {
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
     }
 
-    async fn pair() -> (
-        QuicEndpoint,
-        super::QuicLink,
-        QuicEndpoint,
-        super::QuicLink,
-        NodeId,
-    ) {
+    async fn pair() -> (QuicEndpoint, QuicLink, QuicEndpoint, QuicLink, NodeId) {
         let server = QuicEndpoint::bind(loopback(), &[1; 32]).unwrap();
         let client = QuicEndpoint::bind(loopback(), &[2; 32]).unwrap();
         let server_addr = server.local_addr().unwrap();
@@ -242,6 +237,36 @@ mod tests {
         (server, server_link, client, client_link, accepted)
     }
 
+    /// Sends [`DATAGRAMS`] numbered datagrams; they may be dropped under load, never
+    /// duplicated or reordered, and most must arrive.
+    async fn stream(from: &QuicLink, to: &QuicLink) {
+        let sender = from.clone();
+        let send = tokio::spawn(async move {
+            for i in 0..DATAGRAMS {
+                sender.send(&i.to_le_bytes()).unwrap();
+                tokio::task::yield_now().await;
+            }
+        });
+        let mut received = Vec::new();
+        while let Ok(Ok(got)) = tokio::time::timeout(Duration::from_secs(2), to.recv()).await {
+            let value = u32::from_le_bytes(got.as_ref().try_into().unwrap());
+            received.push(value);
+            if value == DATAGRAMS - 1 {
+                break;
+            }
+        }
+        send.await.unwrap();
+        assert!(
+            received.is_sorted_by(|a, b| a < b),
+            "reordered or duplicated"
+        );
+        assert!(
+            received.len() * 10 >= usize::try_from(DATAGRAMS).unwrap() * 9,
+            "only {} arrived",
+            received.len()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mutual_auth_and_a_thousand_datagrams_each_way() {
         let (server, server_link, client, client_link, accepted) = pair().await;
@@ -251,36 +276,14 @@ mod tests {
         assert_eq!(server_link.remote_node(), client.node_id());
 
         let max = client_link.max_datagram_size().expect("datagrams enabled");
-        assert!(client_link.send(&vec![0_u8; max + 1]).is_err());
+        // Path MTU discovery may raise the limit at any time, so test with what UDP can't carry.
+        assert!(client_link.send(&vec![0_u8; 65_536]).is_err());
         client_link.send(&vec![7_u8; max]).unwrap();
         let probe = server_link.recv().await.unwrap();
         assert_eq!(probe.len(), max);
         assert!(probe.iter().all(|&b| b == 7));
-        let sender = server_link.clone();
-        let send = tokio::spawn(async move {
-            for i in 0..DATAGRAMS {
-                sender.send(&i.to_le_bytes()).unwrap();
-                tokio::task::yield_now().await;
-            }
-        });
-        for i in 0..DATAGRAMS {
-            let got = client_link.recv().await.unwrap();
-            assert_eq!(got.as_ref(), i.to_le_bytes());
-        }
-        send.await.unwrap();
-
-        let sender = client_link.clone();
-        let send = tokio::spawn(async move {
-            for i in 0..DATAGRAMS {
-                sender.send(&i.to_le_bytes()).unwrap();
-                tokio::task::yield_now().await;
-            }
-        });
-        for i in 0..DATAGRAMS {
-            let got = server_link.recv().await.unwrap();
-            assert_eq!(got.as_ref(), i.to_le_bytes());
-        }
-        send.await.unwrap();
+        stream(&server_link, &client_link).await;
+        stream(&client_link, &server_link).await;
 
         client.close();
         server.close();

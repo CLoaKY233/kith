@@ -365,6 +365,14 @@ impl State {
                 entry.allowed_ips = spec.allowed_ips;
                 if spec.endpoint.is_some() && spec.endpoint != entry.endpoint {
                     debug!(peer = %node.short(), endpoint = ?spec.endpoint, "peer endpoint set");
+                    let now_direct = matches!(spec.endpoint, Some(Endpoint::Direct(_)))
+                        && !matches!(entry.endpoint, Some(Endpoint::Direct(_)));
+                    if (entry.endpoint.is_none() || now_direct)
+                        && let Some(peer) = self.device.peer_mut(entry.id)
+                    {
+                        peer.request_handshake();
+                        touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
+                    }
                     entry.endpoint = spec.endpoint;
                 }
                 continue;
@@ -380,6 +388,11 @@ impl State {
                     .any(|external| external.peers.contains_key(&id))
             })?;
             debug!(peer = %node.short(), network = %spec.network.short(), "WireGuard peer added");
+            if spec.endpoint.is_some()
+                && let Some(peer) = self.device.peer_mut(id)
+            {
+                peer.request_handshake();
+            }
             self.by_index.insert(id, node);
             self.peers.insert(
                 node,

@@ -155,6 +155,37 @@ impl StateDir {
         Ok(())
     }
 
+    /// Loads the exit node in use, if one was saved.
+    pub(crate) fn load_exit(&self) -> Result<Option<(NetworkId, NodeId)>, NodeError> {
+        let Some(bytes) = self.store.get(&exit_key()?)? else {
+            return Ok(None);
+        };
+        let Some((network, node)) = bytes
+            .split_first_chunk::<32>()
+            .and_then(|(network, rest)| Some((*network, *rest.first_chunk::<32>()?)))
+        else {
+            tracing::warn!("ignoring corrupt exit setting");
+            return Ok(None);
+        };
+        Ok(Some((
+            NetworkId::from_bytes(network),
+            NodeId::from_bytes(node),
+        )))
+    }
+
+    /// Saves the exit node in use, or clears it with `None`.
+    pub(crate) fn save_exit(&self, exit: Option<(NetworkId, NodeId)>) -> Result<(), NodeError> {
+        match exit {
+            Some((network, node)) => {
+                let mut bytes = network.as_bytes().to_vec();
+                bytes.extend_from_slice(node.as_bytes());
+                self.store.put(&exit_key()?, &bytes)?;
+            }
+            None => self.store.delete(&exit_key()?)?,
+        }
+        Ok(())
+    }
+
     /// Forgets a network's ledger.
     pub(crate) fn remove_network(&self, network: NetworkId) -> Result<(), NodeError> {
         self.store.delete(&network_key(network)?)?;
@@ -170,6 +201,11 @@ const EXTERNAL_NAMESPACE: &str = "external";
 const GATEWAY_NAME: &str = "gateway";
 const PEERS_NAMESPACE: &str = "peers";
 const ENDPOINTS_NAME: &str = "endpoints";
+const EXIT_NAME: &str = "exit";
+
+fn exit_key() -> Result<Key, NodeError> {
+    Ok(Key::parse(PEERS_NAMESPACE, EXIT_NAME).map_err(kith_store::Error::from)?)
+}
 
 fn endpoints_key() -> Result<Key, NodeError> {
     Ok(Key::parse(PEERS_NAMESPACE, ENDPOINTS_NAME).map_err(kith_store::Error::from)?)

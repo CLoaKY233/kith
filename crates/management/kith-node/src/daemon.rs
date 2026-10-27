@@ -6,7 +6,9 @@ use kith_config::Config;
 use kith_control::records::{Record, Relay};
 use kith_control::{NetMap, Networks};
 use kith_dataplane::{Dataplane, DataplaneHandle, Endpoint, PeerSpec};
-use kith_identity::{Bootstrap, BootstrapAddr, DeviceIdentity, InviteToken, MAX_BOOTSTRAP};
+use kith_identity::{
+    Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
+};
 use kith_ipc::{Event, NetworkSummary, PeerInfo, Request, Response, Status};
 use kith_ledger::JoinProof;
 use kith_policy::Addresses;
@@ -30,6 +32,8 @@ use crate::state::StateDir;
 use crate::stealth::StealthOptions;
 use crate::types::{Action, ChannelEvent, Command, ConnectivityEvent, NodeError};
 
+/// Most nodes one gossip message may carry; the control channel caps it at 256.
+const MAX_GOSSIP_NODES: usize = 256;
 const COMMAND_QUEUE: usize = 256;
 const MEMORY_INTERFACE: &str = "kith0";
 
@@ -253,7 +257,7 @@ pub(crate) struct Daemon {
     endpoints: BTreeMap<NodeId, Vec<SocketAddr>>,
     public_hostname: Option<String>,
     paths: BTreeMap<NodeId, Endpoint>,
-    gossiped: Vec<SocketAddr>,
+    gossiped: BTreeMap<NetworkId, Vec<(NodeId, Vec<SocketAddr>)>>,
     exit: Option<(NetworkId, NodeId)>,
     ipc_task: Option<JoinHandle<()>>,
 }
@@ -411,19 +415,16 @@ impl Daemon {
         let identity = Arc::new(state.load_or_create_identity()?);
         let local = identity.node_id();
         let networks = load_networks(&state, local)?;
-        let link = UdpLink::bind(SocketAddr::new(
-            options.listen_ip,
-            config.network.listen_port,
-        ))?;
-        let bound = link.local_addr();
-        let dataplanes = start_dataplane(&identity, link, options.tun, config)?;
-        let channel = ChannelLayer::start(
-            Arc::clone(&identity),
-            networks.registry(),
-            bound,
-            commands.clone(),
+        let (link, channel) = bind_sockets(
+            &identity,
+            &networks,
+            SocketAddr::new(options.listen_ip, config.network.listen_port),
+            config.server.enabled && config.server.relay,
+            &commands,
         )
         .await?;
+        let bound = link.local_addr();
+        let dataplanes = start_dataplane(&identity, link, options.tun, config)?;
         let connectivity = Connectivity::start(
             Arc::clone(&identity),
             bound,
@@ -490,11 +491,12 @@ impl Daemon {
             endpoints,
             public_hostname: config.server.public_hostname.clone(),
             paths: BTreeMap::new(),
-            gossiped: Vec::new(),
+            gossiped: BTreeMap::new(),
             exit: None,
             ipc_task,
         };
         daemon.refresh(None).await?;
+        daemon.restore_exit().await?;
         daemon.advertise_server().await;
         Ok((daemon, started))
     }
@@ -692,6 +694,12 @@ impl Daemon {
         max_uses: u16,
     ) -> Result<Response, NodeError> {
         self.member_map(network)?;
+        if !self.is_admin(network)? {
+            return Err(NodeError::InvalidArgument(
+                "only an admin of this network can create invites; ask an admin to run `kith invite`"
+                    .to_owned(),
+            ));
+        }
         let bootstrap = self.bootstrap();
         let identity = Arc::clone(&self.identity);
         let token =
@@ -755,6 +763,7 @@ impl Daemon {
         if self.exit.is_some_and(|(exit, _)| exit == network) {
             self.exit = None;
             self.dataplane.set_exit(None).await?;
+            self.state.save_exit(None)?;
         }
         self.refresh(None).await?;
         Ok(Response::Left)
@@ -775,8 +784,27 @@ impl Daemon {
         }
         self.exit = node.map(|node| (network, node));
         self.dataplane.set_exit(self.exit).await?;
+        self.state.save_exit(self.exit)?;
         self.refresh(None).await?;
         Ok(Response::ExitSet)
+    }
+
+    async fn restore_exit(&mut self) -> Result<(), NodeError> {
+        let Some((network, node)) = self.state.load_exit()? else {
+            return Ok(());
+        };
+        let granted = self
+            .networks
+            .maps()
+            .get(&network)
+            .is_some_and(|map| map.exit_nodes().contains(&node));
+        if !granted {
+            tracing::warn!(%network, %node, "saved exit node is no longer an exit; not using it");
+            return self.state.save_exit(None);
+        }
+        self.exit = Some((network, node));
+        self.dataplane.set_exit(self.exit).await?;
+        self.refresh(None).await
     }
 
     fn is_admin(&self, network: NetworkId) -> Result<bool, NodeError> {
@@ -944,21 +972,36 @@ impl Daemon {
         Ok(Response::WireGuardConfig { conf_text })
     }
 
+    /// Where joiners reach us: `public_hostname` first, then public, then private addresses.
     fn bootstrap(&self) -> Vec<Bootstrap> {
         let control = self.channel.local_addr();
-        let addrs: Vec<SocketAddr> = if control.ip().is_unspecified() {
+        let port = control.port();
+        let mut sockets: Vec<SocketAddr> = if control.ip().is_unspecified() {
             self.connectivity
                 .local_endpoints()
                 .into_iter()
-                .map(|addr| SocketAddr::new(addr.ip(), control.port()))
+                .map(|addr| SocketAddr::new(addr.ip(), port))
                 .collect()
         } else {
             vec![control]
         };
+        sockets.sort_by_key(|addr| !is_public(addr.ip()));
+        let public =
+            self.public_hostname
+                .as_deref()
+                .and_then(|host| match host.parse::<IpAddr>() {
+                    Ok(ip) => Some(BootstrapAddr::Socket(SocketAddr::new(ip, port))),
+                    Err(_) => Hostname::new(host)
+                        .ok()
+                        .map(|name| BootstrapAddr::Host(name, port)),
+                });
         let node = self.identity.node_id();
         let mut bootstrap: Vec<Bootstrap> = Vec::new();
-        for addr in addrs {
-            let entry = Bootstrap::new(node, BootstrapAddr::Socket(addr));
+        for addr in public
+            .into_iter()
+            .chain(sockets.into_iter().map(BootstrapAddr::Socket))
+        {
+            let entry = Bootstrap::new(node, addr);
             if !bootstrap.contains(&entry) && entry.validate().is_ok() {
                 bootstrap.push(entry);
             }
@@ -1098,6 +1141,7 @@ impl Daemon {
                 }
                 if changed {
                     self.state.save_endpoints(&self.endpoints)?;
+                    self.gossip()?;
                     self.update_targets()?;
                 }
                 Ok(())
@@ -1327,19 +1371,30 @@ impl Daemon {
         self.channel.set_targets(targets)
     }
 
+    /// Shares our endpoints and every member's last known ones, so members who never met
+    /// directly can still find each other.
     fn gossip(&mut self) -> Result<(), NodeError> {
-        let endpoints = self.connectivity.local_endpoints();
-        if endpoints == self.gossiped {
-            return Ok(());
-        }
         let local = self.identity.node_id();
+        let own = self.connectivity.local_endpoints();
         for runtime in self.networks.iter() {
-            if runtime.netmap().is_member() {
-                self.channel
-                    .gossip(runtime.id(), vec![(local, endpoints.clone())])?;
+            let map = runtime.netmap();
+            if !map.is_member() {
+                continue;
             }
+            let mut entries = vec![(local, own.clone())];
+            entries.extend(
+                self.endpoints
+                    .iter()
+                    .filter(|(node, addrs)| map.peers().contains_key(node) && !addrs.is_empty())
+                    .map(|(node, addrs)| (*node, addrs.clone())),
+            );
+            entries.truncate(MAX_GOSSIP_NODES);
+            if self.gossiped.get(&runtime.id()) == Some(&entries) {
+                continue;
+            }
+            self.channel.gossip(runtime.id(), entries.clone())?;
+            self.gossiped.insert(runtime.id(), entries);
         }
-        self.gossiped = endpoints;
         Ok(())
     }
 
@@ -1386,6 +1441,48 @@ fn member_maps_with_ids(maps: &Networks) -> impl Iterator<Item = (NetworkId, &Ne
     maps.iter()
         .filter(|(_, map)| map.is_member())
         .map(|(id, map)| (*id, map))
+}
+
+/// Binds the WireGuard socket and the control channel on the same port. With port 0 the OS
+/// picks one, and we pick again until TCP (and a relay's ports, one above) are free too.
+async fn bind_sockets(
+    identity: &Arc<DeviceIdentity>,
+    networks: &NetworkSet,
+    listen: SocketAddr,
+    relay: bool,
+    commands: &mpsc::Sender<Command>,
+) -> Result<(UdpLink, ChannelLayer), NodeError> {
+    const ATTEMPTS: usize = 16;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let retry = listen.port() == 0 && attempt < ATTEMPTS;
+        let link = UdpLink::bind(listen)?;
+        let bound = link.local_addr();
+        let channel = match ChannelLayer::start(
+            Arc::clone(identity),
+            networks.registry(),
+            bound,
+            commands.clone(),
+        )
+        .await
+        {
+            Ok(channel) => channel,
+            Err(NodeError::Channel(kith_channel::ChannelError::Io(error)))
+                if retry && error.kind() == std::io::ErrorKind::AddrInUse =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let relay_free = !relay || {
+            let next = SocketAddr::new(bound.ip(), bound.port().saturating_add(1));
+            std::net::TcpListener::bind(next).is_ok() && std::net::UdpSocket::bind(next).is_ok()
+        };
+        if relay_free || !retry {
+            return Ok((link, channel));
+        }
+    }
 }
 
 fn is_public(ip: IpAddr) -> bool {
