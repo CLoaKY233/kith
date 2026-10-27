@@ -338,7 +338,7 @@ fn packet() -> impl Strategy<Value = (IpAddr, PacketProtocol, Option<u16>)> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(2000))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 2000 }))]
 
     #[test]
     fn compiled_filter_agrees_with_reference(

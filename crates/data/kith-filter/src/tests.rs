@@ -614,7 +614,7 @@ fn advance() -> impl Strategy<Value = Duration> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1024))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 1024 }))]
 
     #[test]
     fn inbound_verdicts_match_a_naive_reference_model(

@@ -311,7 +311,7 @@ fn random_body(action: u8, target: u8) -> OpBody {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 48 }))]
 
     /// Two admins act concurrently and gossip; any insertion order of the resulting ops
     /// yields the same map for every device.

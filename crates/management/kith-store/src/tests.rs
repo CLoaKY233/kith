@@ -234,7 +234,7 @@ fn name_strategy() -> impl Strategy<Value = String> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 64 }))]
 
     #[test]
     fn arbitrary_key_strings_never_panic_and_accepted_ones_are_safe(input in any::<String>()) {

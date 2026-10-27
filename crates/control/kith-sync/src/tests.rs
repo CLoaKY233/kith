@@ -143,7 +143,7 @@ fn random_op(ledger: &mut Ledger, side: u8, (key, value): (u8, u8)) -> SignedOp 
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 64 }))]
 
     #[test]
     fn divergent_replicas_converge_in_bounded_rounds(history in history()) {

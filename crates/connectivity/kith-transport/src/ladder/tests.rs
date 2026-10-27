@@ -365,7 +365,7 @@ fn is_live(sim: &Sim, attempt: AttemptId, kind: TransportKind) -> bool {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(512))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 512 }))]
 
     /// The ladder against an adversarial driver: answers arrive late, after
     /// roaming or restarts, for attempts never made, and in bursts, while the

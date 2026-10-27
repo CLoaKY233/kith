@@ -147,7 +147,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(512))]
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 512 }))]
         #[test]
         fn window_matches_reference_model(sequence in counters()) {
             let mut window = ReplayWindow::new();

@@ -464,7 +464,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(128))]
+        #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 128 }))]
 
         /// Garbage never panics, is never delivered, and never disturbs the live session.
         #[test]

@@ -1052,7 +1052,7 @@ fn shuffle<T>(items: &mut [T], mut seed: u64) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(ProptestConfig::with_cases(if cfg!(miri) { 4 } else { 48 }))]
 
     #[test]
     fn replicas_converge_in_any_order(
