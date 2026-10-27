@@ -81,6 +81,17 @@ impl fmt::Display for Domain {
     }
 }
 
+/// Whether `name` is a macOS network service name kith will pass to `networksetup`: like
+/// [`valid_arg`], plus spaces and parentheses, and never starting with `-`.
+pub(crate) fn valid_service(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b' ' | b'.' | b'_' | b'-' | b'/' | b'(' | b')' | b'+')
+        })
+}
+
 /// Whether `arg` uses only characters that are inert to every tool kith invokes.
 pub(crate) fn valid_arg(arg: &str) -> bool {
     !arg.is_empty()

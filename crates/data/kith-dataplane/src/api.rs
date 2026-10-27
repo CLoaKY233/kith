@@ -255,6 +255,8 @@ pub(crate) enum Command {
         reply: Reply,
     },
     SetExit(Option<(NetworkId, NodeId)>, Reply),
+    #[cfg(feature = "test-support")]
+    BlockDirectUdp(bool, Reply),
     SetFilter(NetworkId, CompiledFilter),
     SendRaw(SocketAddr, Vec<u8>),
     AcceptRelayed(NodeId, Vec<u8>),
@@ -329,6 +331,14 @@ pub struct DataplaneHandle {
 }
 
 impl DataplaneHandle {
+    /// Drops every direct UDP datagram in both directions while `blocked`, as a hostile
+    /// network would; relayed traffic still flows.
+    #[cfg(feature = "test-support")]
+    pub async fn block_direct_udp(&self, blocked: bool) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::BlockDirectUdp(blocked, reply))
+            .await
+    }
+
     /// Replaces the peer list. Peers whose key and keepalive are unchanged keep their sessions.
     pub async fn set_peers(&self, peers: Vec<PeerSpec>) -> Result<(), DataplaneError> {
         self.request(|reply| Command::SetPeers(peers, reply)).await

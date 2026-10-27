@@ -338,7 +338,9 @@ pub(crate) async fn dispatch(commands: &mpsc::Sender<Command>, action: Action) -
 pub(crate) fn error_response(error: &NodeError) -> Response {
     let code = match error {
         NodeError::NotFound(_) => ErrorCode::NotFound,
-        NodeError::InvalidArgument(_) | NodeError::Invite(_) => ErrorCode::InvalidArgument,
+        NodeError::InvalidArgument(_) | NodeError::Invite(_) | NodeError::PortInUse { .. } => {
+            ErrorCode::InvalidArgument
+        }
         NodeError::Poisoned
         | NodeError::Channel(_)
         | NodeError::Stopped

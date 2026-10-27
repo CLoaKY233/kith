@@ -6,6 +6,7 @@
 
 mod cli;
 mod daemon;
+mod doctor;
 mod duration;
 mod exec;
 mod render;
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Watch
+        | Cmd::Doctor
         | Cmd::Config(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

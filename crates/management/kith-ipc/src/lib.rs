@@ -19,11 +19,12 @@ pub use client::IpcClient;
 pub use error::IpcError;
 pub use message::{
     DnsRecord, ErrorCode, Event, NetworkSummary, PathKind, PeerInfo, Request, Response, Status,
+    Warning,
 };
 pub use server::{Connection, IpcServer, PeerCred};
 
 /// The protocol version both sides must agree on in [`Request::Hello`].
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The largest frame either side accepts.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;

@@ -25,6 +25,17 @@ pub enum NodeError {
     /// The node's event loop has stopped.
     #[error("the node has stopped")]
     Stopped,
+    /// A port kith needs is taken by another program.
+    #[error(
+        "port {port} ({protocol}) is already in use; another VPN (Tailscale also uses 41641) \
+         or a second kith may hold it; stop it, or set network.listen_port to a free port"
+    )]
+    PortInUse {
+        /// The port.
+        port: u16,
+        /// Which protocols kith needs on it.
+        protocol: &'static str,
+    },
     /// No joined network or peer matches.
     #[error("not found: {0}")]
     NotFound(String),

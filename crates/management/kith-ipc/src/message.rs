@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use core::net::{Ipv4Addr, Ipv6Addr};
 
 use kith_types::{NetworkId, NodeId};
@@ -249,6 +251,27 @@ pub struct Status {
     pub exit: bool,
     /// Whether this device offers itself as a relay.
     pub relay: bool,
+    /// The exit node in use, as `network/device`.
+    pub exit_node: Option<String>,
+    /// The WireGuard UDP port; the control channel uses the same TCP port.
+    pub listen_port: u16,
+    /// Where names outside the mesh are forwarded.
+    pub dns_upstreams: Vec<String>,
+    /// Packets the dataplane dropped, by reason; only reasons that occurred.
+    pub drops: BTreeMap<String, u64>,
+    /// Routes other interfaces hold inside kith's ranges, usually another VPN's.
+    pub route_conflicts: Vec<String>,
+    /// Recent warnings, newest last.
+    pub warnings: Vec<Warning>,
+}
+
+/// A warning the daemon logged, kept for `kith status` and `kith doctor`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Warning {
+    /// How long ago it happened.
+    pub secs_ago: u64,
+    /// What happened.
+    pub message: String,
 }
 
 /// One network in [`Status`].
@@ -275,6 +298,8 @@ pub struct PeerInfo {
     pub address: String,
     /// Current path, or `None` while offline.
     pub path: Option<PathKind>,
+    /// Why that path was chosen, such as which addresses failed to answer.
+    pub path_reason: Option<String>,
     /// Seconds since the last WireGuard handshake, or `None` if there has been none.
     pub last_handshake_secs: Option<u64>,
     /// The peer's current WireGuard endpoint, as text.

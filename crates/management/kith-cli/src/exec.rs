@@ -9,7 +9,7 @@ use kith_ipc::{DnsRecord, IpcClient, IpcError, Request, Response};
 use kith_types::{NetworkId, NodeId};
 
 use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, Opts, RelayCmd, WgCmd};
-use crate::render;
+use crate::{doctor, render};
 
 /// A failure worth one line on stderr.
 #[derive(Debug, PartialEq, Eq)]
@@ -207,7 +207,7 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             network: names.network(network)?,
             device_name: device_name.clone(),
         },
-        Cmd::Watch | Cmd::Config(_) | Cmd::Daemon { .. } => {
+        Cmd::Watch | Cmd::Doctor | Cmd::Config(_) | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));
         }
     })
@@ -307,6 +307,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Watch => {}
+        Cmd::Doctor => return doctor(opts, out).await,
     }
 
     let mut client = connect(&socket_path(opts)?).await?;
@@ -331,10 +332,19 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Config(_)
+        | Cmd::Doctor
         | Cmd::Daemon { .. } => {}
     }
 
-    let status = fetch_status(&mut client).await?;
+    let names = names_for(&opts.cmd, &mut client).await?;
+    let request = to_request(&opts.cmd, &names)?;
+    let response = client.request(request).await?;
+    render::response(out, &opts.cmd, response)
+}
+
+/// The names `cmd` needs resolved: networks always, and peers for exit and relay commands.
+async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError> {
+    let status = fetch_status(client).await?;
     let mut names = Names {
         networks: status
             .networks
@@ -348,7 +358,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
     }
     | Cmd::Join {
         device_name: None, ..
-    } = &opts.cmd
+    } = cmd
     {
         names.hostname = hostname();
     }
@@ -361,18 +371,16 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         network,
         node: Some(_),
         ..
-    }) = &opts.cmd
+    }) = cmd
     {
         let network = names.network(network)?;
-        names.peers = fetch_peers(&mut client, network)
+        names.peers = fetch_peers(client, network)
             .await?
             .into_iter()
             .map(|p| (p.node, p.name))
             .collect();
     }
-    let request = to_request(&opts.cmd, &names)?;
-    let response = client.request(request).await?;
-    render::response(out, &opts.cmd, response)
+    Ok(names)
 }
 
 async fn status(client: &mut IpcClient, json: bool, out: &mut impl Write) -> Result<(), CliError> {
@@ -385,6 +393,34 @@ async fn status(client: &mut IpcClient, json: bool, out: &mut impl Write) -> Res
         render::status_json(out, &status, &peers)?;
     } else {
         render::status(out, &status, &peers)?;
+    }
+    Ok(())
+}
+
+async fn doctor(opts: &Opts, out: &mut impl Write) -> Result<(), CliError> {
+    let socket = socket_path(opts)?;
+    let findings = match IpcClient::connect(&socket).await {
+        Ok(mut client) => {
+            let status = fetch_status(&mut client).await?;
+            let mut peers = Vec::with_capacity(status.networks.len());
+            for network in &status.networks {
+                peers.push(fetch_peers(&mut client, network.id).await?);
+            }
+            doctor::diagnose(&status, &peers)
+        }
+        Err(IpcError::Io(error)) => {
+            let port = load_config(None)?.network.listen_port;
+            doctor::offline(&socket, &error, port)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    doctor::render(out, &findings)?;
+    let failed = findings
+        .iter()
+        .filter(|f| f.level == doctor::Level::Fail)
+        .count();
+    if failed > 0 {
+        return Err(CliError(format!("{failed} problem(s) need fixing")));
     }
     Ok(())
 }

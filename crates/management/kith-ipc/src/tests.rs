@@ -1,4 +1,5 @@
 #[cfg(unix)]
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,7 +13,7 @@ use crate::codec::{decode, encode};
 use crate::message::ServerMessage;
 use crate::{
     DnsRecord, ErrorCode, Event, MAX_FRAME_LEN, NetworkSummary, PathKind, PeerInfo, Request,
-    Response, Status,
+    Response, Status, Warning,
 };
 #[cfg(unix)]
 use crate::{IpcClient, IpcError, IpcServer, PROTOCOL_VERSION};
@@ -29,7 +30,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 3, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 4, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -39,7 +40,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 3, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 4, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -47,15 +48,16 @@ fn golden_bytes() {
         name: "a".to_owned(),
         address: "b".to_owned(),
         path: Some(PathKind::Direct),
+        path_reason: None,
         last_handshake_secs: Some(300),
         endpoint: Some("c".to_owned()),
         rx_bytes: 1,
         tx_bytes: 128,
     }]));
-    let mut expected = vec![54, b'k', b't', 0x70, 3, 0, 6, 1];
+    let mut expected = vec![55, b'k', b't', 0x70, 4, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
-        1, b'a', 1, b'b', 1, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01,
+        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01,
     ]);
     assert_eq!(encode(&peers).unwrap(), expected);
 }
@@ -144,8 +146,8 @@ fn request() -> impl Strategy<Value = Request> {
     ]
 }
 
-fn server_message() -> impl Strategy<Value = ServerMessage> {
-    let status = (
+fn status() -> impl Strategy<Value = Status> {
+    (
         proptest::option::of(node()),
         proptest::collection::vec(
             (net(), text(), any::<u32>(), any::<u32>()).prop_map(
@@ -166,7 +168,20 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
             networks,
             exit,
             relay,
-        });
+            exit_node: exit.then(|| "home/vps".to_owned()),
+            listen_port: 41641,
+            dns_upstreams: vec!["192.0.2.53:53".to_owned()],
+            drops: [("policy".to_owned(), 3)].into(),
+            route_conflicts: Vec::new(),
+            warnings: vec![Warning {
+                secs_ago: 5,
+                message: "w".to_owned(),
+            }],
+        })
+}
+
+fn server_message() -> impl Strategy<Value = ServerMessage> {
+    let status = status();
     let peers = proptest::collection::vec(
         (
             (node(), text(), text(), proptest::option::of(path())),
@@ -187,6 +202,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                         name,
                         address,
                         path,
+                        path_reason: None,
                         last_handshake_secs,
                         endpoint,
                         rx_bytes,
@@ -294,6 +310,12 @@ async fn serve_one(server: IpcServer) -> Option<u32> {
                     networks: Vec::new(),
                     exit: false,
                     relay: true,
+                    exit_node: None,
+                    listen_port: 41641,
+                    dns_upstreams: Vec::new(),
+                    drops: BTreeMap::new(),
+                    route_conflicts: Vec::new(),
+                    warnings: Vec::new(),
                 }))
                 .await
                 .unwrap(),

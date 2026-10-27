@@ -38,6 +38,8 @@ pub(crate) struct Engine<T> {
     commands: mpsc::Receiver<Command>,
     clock: Clock,
     addresses: BTreeMap<NetworkId, Vec<(IpAddr, u8)>>,
+    /// Set only by tests, to simulate a network that drops direct UDP.
+    udp_blocked: bool,
 }
 
 impl<T> core::fmt::Debug for Engine<T> {
@@ -163,6 +165,7 @@ impl<T: TunDevice> Engine<T> {
             commands,
             clock: Clock::new(),
             addresses: BTreeMap::new(),
+            udp_blocked: false,
         };
         Ok((engine, handle, event_receiver))
     }
@@ -190,6 +193,7 @@ impl<T: TunDevice> Engine<T> {
             match wake {
                 Wake::Command(command) => self.command(now, command),
                 Wake::Tun => self.state.outbound(now, &self.io.tun_in),
+                Wake::Udp if self.udp_blocked => {}
                 Wake::Udp => self.inbound(now).await,
                 Wake::Timer => {}
             }
@@ -199,6 +203,13 @@ impl<T: TunDevice> Engine<T> {
     }
 
     fn command(&mut self, now: Now, command: Command) {
+        #[cfg(feature = "test-support")]
+        if let Command::BlockDirectUdp(blocked, reply) = command {
+            debug!(blocked, "direct UDP blocked for testing");
+            self.udp_blocked = blocked;
+            reply.send(Ok(())).ok();
+            return;
+        }
         if let Command::SetAddresses(network, addresses, reply) = command {
             reply.send(self.set_addresses(network, addresses)).ok();
             return;
@@ -276,7 +287,9 @@ impl<T: TunDevice> Engine<T> {
     /// UDP and TUN writes are best effort, like the networks behind them.
     async fn flush(&mut self) {
         if !self.state.out.udp.is_empty() {
-            self.io.link.send_batch(&self.state.out.udp).await.ok();
+            if !self.udp_blocked {
+                self.io.link.send_batch(&self.state.out.udp).await.ok();
+            }
             self.state.out.udp.clear();
         }
         if !self.state.tun_out.is_empty() {
@@ -288,6 +301,10 @@ impl<T: TunDevice> Engine<T> {
 impl State {
     fn command(&mut self, now: Now, clock: &Clock, command: Command) {
         match command {
+            #[cfg(feature = "test-support")]
+            Command::BlockDirectUdp(_, reply) => {
+                reply.send(Ok(())).ok();
+            }
             Command::SetPeers(peers, reply) => {
                 reply.send(self.set_peers(peers)).ok();
             }
@@ -407,6 +424,11 @@ impl State {
             );
             self.touched.push(Key::Mesh(node));
         }
+        debug_assert_eq!(
+            self.by_index.len(),
+            self.peers.len(),
+            "the session index and the peer table disagree"
+        );
         Ok(())
     }
 

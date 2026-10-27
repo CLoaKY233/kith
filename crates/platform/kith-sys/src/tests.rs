@@ -4,7 +4,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use core::fmt::Write as _;
 use kith_types::IpPrefix;
+
 use proptest::prelude::*;
 
 use crate::{
@@ -25,6 +27,12 @@ struct World {
     resolved: BTreeMap<String, String>,
     resolvconf: BTreeMap<String, String>,
     programs: BTreeSet<String>,
+    /// Docker's `DOCKER-USER` chain by rule handle, when Docker runs.
+    docker: Option<BTreeMap<u64, String>>,
+    /// macOS network services and their manual DNS servers; `*` marks a disabled one.
+    services: Vec<(String, String)>,
+    /// What `ip route show table all` or `netstat -rn` prints, by address family.
+    route_table: BTreeMap<bool, String>,
 }
 
 #[derive(Debug, Default)]
@@ -32,7 +40,8 @@ struct Fake {
     world: World,
     log: Vec<String>,
     unknown: Vec<String>,
-    next_token: u64,
+    /// Fails the command this many commands from now.
+    fail_in: Option<usize>,
 }
 
 fn fail(cmd: &Cmd, stderr: &str) -> Result<Output, Error> {
@@ -51,17 +60,10 @@ fn ok(stdout: &str, stderr: &str) -> Result<Output, Error> {
     })
 }
 
-impl System for Fake {
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "the fake asserts on impossible commands"
-    )]
-    fn run(&mut self, cmd: &Cmd) -> Result<Output, Error> {
-        self.log.push(cmd.to_string());
+impl Fake {
+    fn linux(&mut self, cmd: &Cmd, args: &[&str], stdin: String) -> Option<Result<Output, Error>> {
         let w = &mut self.world;
-        let args: Vec<&str> = cmd.argv().iter().map(String::as_str).collect();
-        let stdin = cmd.input().unwrap_or_default().to_owned();
-        match (cmd.program(), args.as_slice()) {
+        match (cmd.program(), args) {
             ("ip", [fam, "route", "replace", dst, "dev", dev, rest @ ..]) => {
                 let table = rest.get(1).unwrap_or(&"main");
                 w.routes
@@ -69,7 +71,7 @@ impl System for Fake {
             }
             ("ip", [fam, "route", "del", dst, "dev", _]) => {
                 if w.routes.remove(&format!("{fam} {dst} main")).is_none() {
-                    return fail(cmd, "RTNETLINK answers: No such process");
+                    return Some(fail(cmd, "RTNETLINK answers: No such process"));
                 }
             }
             ("ip", [fam, "route", "flush", "table", t]) => {
@@ -77,7 +79,7 @@ impl System for Fake {
                     .retain(|k, _| !(k.starts_with(fam) && k.ends_with(&format!(" {t}"))));
             }
             ("ip", ["-4", "route", "show", "default"]) => {
-                return ok("default via 192.168.1.1 dev eth0 proto dhcp\n", "");
+                return Some(ok("default via 192.168.1.1 dev eth0 proto dhcp\n", ""));
             }
             ("ip", [fam, "rule", op, spec @ ..]) => {
                 let key = format!("{fam} {}", spec.join(" "));
@@ -85,21 +87,62 @@ impl System for Fake {
                     "add" => w.rules.push(key),
                     _ => match w.rules.iter().position(|r| *r == key) {
                         Some(i) => drop(w.rules.remove(i)),
-                        None => return fail(cmd, "RTNETLINK answers: No such file or directory"),
+                        None => {
+                            return Some(fail(cmd, "RTNETLINK answers: No such file or directory"));
+                        }
                     },
                 }
             }
-            ("sysctl", ["-n", key]) => return ok(&format!("{}\n", w.sysctl[*key]), ""),
+            ("sysctl", ["-n", key]) => return Some(ok(&format!("{}\n", w.sysctl[*key]), "")),
             ("sysctl", ["-w", kv]) => {
-                let (k, v) = kv.split_once('=').unwrap();
+                let (k, v) = kv.split_once('=')?;
                 assert!(w.sysctl.contains_key(k), "unknown sysctl {k}");
                 w.sysctl.insert(k.to_owned(), v.to_owned());
             }
             ("nft", ["-f", "-"]) => w.nft = Some(stdin),
             ("nft", ["delete", "table", "inet", "kith"]) => {
                 if w.nft.take().is_none() {
-                    return fail(cmd, "Error: No such file or directory");
+                    return Some(fail(cmd, "Error: No such file or directory"));
                 }
+            }
+            ("nft", ["-a", "list", "chain", "ip", "filter", "DOCKER-USER"]) => {
+                let Some(rules) = &w.docker else {
+                    return Some(fail(cmd, "Error: No such file or directory"));
+                };
+                let mut listing = String::new();
+                for (handle, rule) in rules {
+                    writeln!(listing, "\t\t{rule} # handle {handle}").ok()?;
+                }
+                return Some(ok(&listing, ""));
+            }
+            ("nft", ["insert", "rule", "ip", "filter", "DOCKER-USER", rule @ ..]) => {
+                let rules = w.docker.as_mut()?;
+                let handle = rules.keys().max().map_or(1, |h| h + 1);
+                let rule = rule.join(" ").replace("comment kith", "comment \"kith\"");
+                rules.insert(handle, rule);
+            }
+            (
+                "nft",
+                [
+                    "delete",
+                    "rule",
+                    "ip",
+                    "filter",
+                    "DOCKER-USER",
+                    "handle",
+                    handle,
+                ],
+            ) => {
+                let handle: u64 = handle.parse().ok()?;
+                w.docker.as_mut()?.remove(&handle)?;
+            }
+            ("ip", [fam, "route", "show", "table", "all"]) => {
+                return Some(ok(
+                    w.route_table
+                        .get(&(*fam == "-6"))
+                        .map_or("", String::as_str),
+                    "",
+                ));
             }
             ("resolvectl", ["revert", dev]) => {
                 w.resolved.retain(|k, _| !k.starts_with(&format!("{dev} ")));
@@ -109,47 +152,135 @@ impl System for Fake {
             }
             ("resolvconf", ["-a", dev]) => drop(w.resolvconf.insert((*dev).to_owned(), stdin)),
             ("resolvconf", ["-d", dev]) => drop(w.resolvconf.remove(*dev)),
+            _ => return None,
+        }
+        Some(ok("", ""))
+    }
+
+    fn macos(&mut self, cmd: &Cmd, args: &[&str], stdin: String) -> Option<Result<Output, Error>> {
+        let w = &mut self.world;
+        match (cmd.program(), args) {
             ("route", ["-n", "get", rest @ ..]) => {
-                return if rest.contains(&"-inet6") {
+                return Some(if rest.contains(&"-inet6") {
                     ok("gateway: fe80::1%en0\n  interface: en0\n", "")
                 } else {
                     ok(
                         "   route to: default\n    gateway: 192.168.1.1\n  interface: en0\n",
                         "",
                     )
-                };
+                });
             }
             ("route", ["-n", verb, rest @ ..]) => {
                 let dest = rest
                     .iter()
-                    .find(|a| a.parse::<IpPrefix>().is_ok() || a.parse::<IpAddr>().is_ok())
-                    .unwrap();
+                    .find(|a| a.parse::<IpPrefix>().is_ok() || a.parse::<IpAddr>().is_ok())?;
                 let key = format!("mac {dest}");
                 if *verb == "add" {
                     if w.routes.contains_key(&key) {
-                        return fail(cmd, "route: writing to routing socket: File exists");
+                        return Some(fail(cmd, "route: writing to routing socket: File exists"));
                     }
                     w.routes.insert(key, rest.join(" "));
                 } else if w.routes.remove(&key).is_none() {
-                    return fail(cmd, "route: writing to routing socket: not in table");
+                    return Some(fail(cmd, "route: writing to routing socket: not in table"));
                 }
             }
             ("pfctl", ["-a", "com.apple/kith", "-f", "-"]) => w.pf_anchor = Some(stdin),
             ("pfctl", ["-a", "com.apple/kith", "-F", "all"]) => w.pf_anchor = None,
             ("pfctl", ["-E"]) => {
-                self.next_token += 1;
-                w.pf_tokens.insert(self.next_token);
-                return ok("", &format!("pf enabled\nToken : {}\n", self.next_token));
+                let token = (1..=u64::MAX).find(|t| !w.pf_tokens.contains(t))?;
+                w.pf_tokens.insert(token);
+                return Some(ok("", &format!("pf enabled\nToken : {token}\n")));
             }
             ("pfctl", ["-X", token]) => {
                 if !w.pf_tokens.remove(&token.parse().unwrap_or(0)) {
-                    return fail(cmd, "pfctl: invalid token");
+                    return Some(fail(cmd, "pfctl: invalid token"));
                 }
             }
+            ("networksetup", ["-listallnetworkservices"]) => {
+                let mut names = String::new();
+                for (name, _) in &w.services {
+                    writeln!(names, "{name}").ok()?;
+                }
+                return Some(ok(
+                    &format!(
+                        "An asterisk (*) denotes that a network service is disabled.\n{names}"
+                    ),
+                    "",
+                ));
+            }
+            ("networksetup", ["-getdnsservers", name]) => {
+                let (_, servers) = w.services.iter().find(|(n, _)| n == name)?;
+                let text = if servers.is_empty() {
+                    format!("There aren't any DNS Servers set on {name}.\n")
+                } else {
+                    format!("{}\n", servers.replace(' ', "\n"))
+                };
+                return Some(ok(&text, ""));
+            }
+            ("networksetup", ["-setdnsservers", name, servers @ ..]) => {
+                let slot = w.services.iter_mut().find(|(n, _)| n == name)?;
+                slot.1 = if servers == ["Empty"] {
+                    String::new()
+                } else {
+                    servers.join(" ")
+                };
+            }
+            ("scutil", ["--dns"]) => {
+                let primary = w
+                    .services
+                    .iter()
+                    .find(|(name, servers)| !name.starts_with('*') && !servers.is_empty())
+                    .map_or("192.168.1.1", |(_, servers)| servers.as_str());
+                let mut lines = String::new();
+                for (i, ip) in primary.split(' ').enumerate() {
+                    writeln!(lines, "  nameserver[{i}] : {ip}").ok()?;
+                }
+                return Some(ok(
+                    &format!(
+                        "\nDNS configuration\n\nresolver #1\n{lines}  if_index : 15 (en0)\n\n\
+                         resolver #2\n  domain   : local\n  options  : mdns\n"
+                    ),
+                    "",
+                ));
+            }
+            ("netstat", ["-rn", "-f", family]) => {
+                return Some(ok(
+                    w.route_table
+                        .get(&(*family == "inet6"))
+                        .map_or("", String::as_str),
+                    "",
+                ));
+            }
             ("rmdir", [_]) => {}
-            _ => self.unknown.push(cmd.to_string()),
+            _ => return None,
         }
-        ok("", "")
+        Some(ok("", ""))
+    }
+}
+
+impl System for Fake {
+    fn run(&mut self, cmd: &Cmd) -> Result<Output, Error> {
+        self.log.push(cmd.to_string());
+        match self.fail_in {
+            Some(0) => {
+                self.fail_in = None;
+                return fail(cmd, "injected failure");
+            }
+            Some(n) => self.fail_in = Some(n - 1),
+            None => {}
+        }
+        let args: Vec<&str> = cmd.argv().iter().map(String::as_str).collect();
+        let stdin = cmd.input().unwrap_or_default().to_owned();
+        let handled = match cmd.program() {
+            "route" | "pfctl" | "networksetup" | "scutil" | "netstat" | "rmdir" => {
+                self.macos(cmd, &args, stdin)
+            }
+            _ => self.linux(cmd, &args, stdin),
+        };
+        handled.unwrap_or_else(|| {
+            self.unknown.push(cmd.to_string());
+            ok("", "")
+        })
     }
 
     fn read(&mut self, path: &Path) -> Result<Option<String>, Error> {
@@ -240,6 +371,7 @@ fn linux_golden() {
         "/run/systemd/resolve/io.systemd.Resolve".into(),
         String::new(),
     );
+    world.docker = Some(BTreeMap::new());
     golden(
         Platform::Linux,
         world,
@@ -266,6 +398,12 @@ fn linux_golden() {
             "sysctl -w net.ipv6.conf.all.forwarding=1",
             "ip -4 route show default",
             "nft -f -",
+            "nft -a list chain ip filter DOCKER-USER",
+            "nft insert rule ip filter DOCKER-USER iifname kith0 accept comment kith",
+            "nft insert rule ip filter DOCKER-USER oifname kith0 ct state established accept comment kith",
+            "nft -a list chain ip filter DOCKER-USER",
+            "nft delete rule ip filter DOCKER-USER handle 1",
+            "nft delete rule ip filter DOCKER-USER handle 2",
             "nft delete table inet kith",
             "sysctl -w net.ipv4.ip_forward=0",
             "sysctl -w net.ipv6.conf.all.forwarding=0",
@@ -284,10 +422,16 @@ fn linux_golden() {
 
 #[test]
 fn macos_golden() {
+    let mut world = base_world();
+    world.services = vec![
+        ("Wi-Fi".to_owned(), String::new()),
+        ("USB 10/100 LAN".to_owned(), "192.0.2.53".to_owned()),
+        ("*Bluetooth PAN".to_owned(), String::new()),
+    ];
     golden(
         Platform::MacOs,
-        base_world(),
-        &full_plan(false),
+        world,
+        &full_plan(true),
         &[
             "route -n delete -net 100.64.0.0/10 -interface kith0",
             "route -n add -net 100.64.0.0/10 -interface kith0",
@@ -304,6 +448,12 @@ fn macos_golden() {
             "route -n add -net 128.0.0.0/1 -interface kith0",
             "route -n add -inet6 ::/1 -interface kith0",
             "route -n add -inet6 8000::/1 -interface kith0",
+            "scutil --dns",
+            "networksetup -listallnetworkservices",
+            "networksetup -getdnsservers Wi-Fi",
+            "networksetup -getdnsservers USB 10/100 LAN",
+            "networksetup -setdnsservers Wi-Fi 100.100.100.100",
+            "networksetup -setdnsservers USB 10/100 LAN 100.100.100.100",
             "sysctl -n net.inet.ip.forwarding",
             "sysctl -n net.inet6.ip6.forwarding",
             "sysctl -w net.inet.ip.forwarding=1",
@@ -315,6 +465,8 @@ fn macos_golden() {
             "pfctl -X 1",
             "sysctl -w net.inet.ip.forwarding=0",
             "sysctl -w net.inet6.ip6.forwarding=0",
+            "networksetup -setdnsservers Wi-Fi Empty",
+            "networksetup -setdnsservers USB 10/100 LAN 192.0.2.53",
             "rmdir /etc/resolver",
             "route -n delete -net 0.0.0.0/1 -interface kith0",
             "route -n delete -net 128.0.0.0/1 -interface kith0",
@@ -325,6 +477,113 @@ fn macos_golden() {
             "route -n delete -inet6 fd7a::/48 -interface kith0",
         ],
     );
+}
+
+#[test]
+fn upstream_resolvers_skip_kith_and_survive_its_own_overrides() {
+    let resolvers = |platform, world: World| {
+        let mut sys = Sys::new(
+            Fake {
+                world,
+                ..Fake::default()
+            },
+            platform,
+            "/var/lib/kith/sys",
+        );
+        let found = sys.system_resolvers().unwrap();
+        (sys, found)
+    };
+    let ips =
+        |list: &[&str]| -> Vec<IpAddr> { list.iter().map(|ip| ip.parse().unwrap()).collect() };
+
+    let mut world = base_world();
+    world
+        .files
+        .insert("/etc/resolv.conf".into(), "nameserver 127.0.0.53\n".into());
+    world.files.insert(
+        "/run/systemd/resolve/resolv.conf".into(),
+        "nameserver 10.0.0.2\nnameserver 100.100.100.100\nnameserver 2001:db8::53\n".into(),
+    );
+    assert_eq!(
+        resolvers(Platform::Linux, world).1,
+        ips(&["10.0.0.2", "2001:db8::53"])
+    );
+
+    let mut world = base_world();
+    world
+        .files
+        .insert("/etc/resolv.conf".into(), "nameserver 192.0.2.1\n".into());
+    let (mut sys, before) = resolvers(Platform::Linux, world);
+    sys.apply(&full_plan(false)).unwrap();
+    assert_eq!(
+        sys.system_resolvers().unwrap(),
+        before,
+        "kith's rewrite must not hide the originals"
+    );
+
+    let mut world = base_world();
+    world.services = vec![("Wi-Fi".to_owned(), String::new())];
+    let (mut sys, before) = resolvers(Platform::MacOs, world);
+    assert_eq!(
+        before,
+        ips(&["192.168.1.1"]),
+        "DHCP-provided servers count too"
+    );
+    sys.apply(&full_plan(true)).unwrap();
+    assert_eq!(
+        sys.system_resolvers().unwrap(),
+        before,
+        "kith's override must not hide the originals"
+    );
+}
+
+#[test]
+fn routes_another_vpn_holds_in_kiths_ranges_are_reported() {
+    let ranges: Vec<IpPrefix> = vec![
+        "100.64.0.0/10".parse().unwrap(),
+        "fd7a:115c:a1e0::/48".parse().unwrap(),
+    ];
+    let own = Interface::new("kith0").unwrap();
+    let conflicts = |platform, v4: &str, v6: &str| {
+        let mut world = base_world();
+        world.route_table.insert(false, v4.to_owned());
+        world.route_table.insert(true, v6.to_owned());
+        let mut sys = Sys::new(
+            Fake {
+                world,
+                ..Fake::default()
+            },
+            platform,
+            "/var/lib/kith/sys",
+        );
+        let found = sys.route_conflicts(&ranges, &own).unwrap();
+        found.iter().map(ToString::to_string).collect::<Vec<_>>()
+    };
+
+    let linux = conflicts(
+        Platform::Linux,
+        "default via 192.168.1.1 dev eth0\n100.64.0.0/10 dev kith0 scope link\n\
+         100.100.100.100 dev tailscale0 table 52\nlocal 100.70.1.2 dev kith0 table local\n\
+         10.0.0.0/8 dev eth1\n",
+        "fd7a:115c:a1e0::/48 dev tailscale0 table 52 metric 1024\n",
+    );
+    assert_eq!(
+        linux,
+        [
+            "100.100.100.100/32 via tailscale0",
+            "fd7a:115c:a1e0::/48 via tailscale0"
+        ]
+    );
+
+    let macos = conflicts(
+        Platform::MacOs,
+        "Routing tables\n\nInternet:\nDestination        Gateway            Flags  Netif Expire\n\
+         default            192.168.29.1       UGScg  en0\n100.64/10          link#61            UCS    kith0\n\
+         100.67.254.51      100.67.254.51      UH     utun37\n100.127.255.255    100.121.0.1        UH     kith0\n\
+         127                127.0.0.1          UCS    lo0\n",
+        "Routing tables\n\nInternet6:\nDestination   Gateway   Flags   Netif Expire\nfe80::%utun0/64  fe80::1%utun0  UcI  utun0\n",
+    );
+    assert_eq!(macos, ["100.67.254.51/32 via utun37"]);
 }
 
 #[test]
@@ -418,37 +677,58 @@ fn world() -> impl Strategy<Value = World> {
         0..3_u8,
         proptest::option::of("[a-z ]{0,20}"),
         proptest::option::of("[a-z]{1,6}"),
+        any::<bool>(),
+        proptest::collection::vec(
+            (
+                "\\*?[A-Za-z][A-Za-z0-9 /-]{0,12}",
+                proptest::option::of(any::<[u8; 4]>()),
+            ),
+            0..3,
+        ),
     )
-        .prop_map(|(sysctls, dns_backend, resolv_conf, foreign)| {
-            let mut w = base_world();
-            for (value, slot) in sysctls.iter().zip(w.sysctl.values_mut()) {
-                *slot = u8::from(*value).to_string();
-            }
-            match dns_backend {
-                0 => {
-                    w.programs.insert("resolvectl".to_owned());
+        .prop_map(
+            |(sysctls, dns_backend, resolv_conf, foreign, docker, services)| {
+                let mut w = base_world();
+                w.docker = docker.then(BTreeMap::new);
+                w.services = services
+                    .into_iter()
+                    .map(|(name, dns)| {
+                        (
+                            name,
+                            dns.map(|ip| IpAddr::from(ip).to_string())
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                for (value, slot) in sysctls.iter().zip(w.sysctl.values_mut()) {
+                    *slot = u8::from(*value).to_string();
+                }
+                match dns_backend {
+                    0 => {
+                        w.programs.insert("resolvectl".to_owned());
+                        w.files.insert(
+                            "/run/systemd/resolve/io.systemd.Resolve".into(),
+                            String::new(),
+                        );
+                    }
+                    1 => drop(w.programs.insert("resolvconf".to_owned())),
+                    _ => {}
+                }
+                if let Some(text) = resolv_conf {
                     w.files.insert(
-                        "/run/systemd/resolve/io.systemd.Resolve".into(),
-                        String::new(),
+                        "/etc/resolv.conf".into(),
+                        format!("nameserver 1.1.1.1\n{text}\n"),
                     );
                 }
-                1 => drop(w.programs.insert("resolvconf".to_owned())),
-                _ => {}
-            }
-            if let Some(text) = resolv_conf {
-                w.files.insert(
-                    "/etc/resolv.conf".into(),
-                    format!("nameserver 1.1.1.1\n{text}\n"),
-                );
-            }
-            if let Some(domain) = foreign {
-                w.files.insert(
-                    Path::new("/etc/resolver").join(domain),
-                    "nameserver 9.9.9.9\n".to_owned(),
-                );
-            }
-            w
-        })
+                if let Some(domain) = foreign {
+                    w.files.insert(
+                        Path::new("/etc/resolver").join(domain),
+                        "nameserver 9.9.9.9\n".to_owned(),
+                    );
+                }
+                w
+            },
+        )
 }
 
 proptest! {
@@ -468,6 +748,31 @@ proptest! {
         }
         sys.revert(&plan).unwrap();
         sys.revert(&plan).unwrap();
+        prop_assert!(sys.system().unknown.is_empty(), "{:?}", sys.system().unknown);
+        prop_assert_eq!(&sys.system().world, &world);
+    }
+
+    /// Changing between any two plans, with any one command failing, either lands on the
+    /// new plan or leaves exactly the old one; reverting afterwards restores the host.
+    #[test]
+    fn change_lands_on_the_new_plan_or_keeps_the_old(
+        old in plan(),
+        new in plan(),
+        world in world(),
+        linux in any::<bool>(),
+        fail_in in proptest::option::of(0..48_usize),
+    ) {
+        let platform = if linux { Platform::Linux } else { Platform::MacOs };
+        let mut sys = Sys::new(Fake { world: world.clone(), ..Fake::default() }, platform, "/var/lib/kith/sys");
+        prop_assume!(sys.apply(&old).is_ok());
+        let with_old = sys.system().world.clone();
+        sys.system_mut().fail_in = fail_in;
+        if sys.change(Some(&old), &new).is_err() {
+            prop_assert_eq!(&sys.system().world, &with_old, "a failed change must keep the old plan");
+        }
+        sys.system_mut().fail_in = None;
+        sys.revert(&new).unwrap();
+        sys.revert(&old).unwrap();
         prop_assert!(sys.system().unknown.is_empty(), "{:?}", sys.system().unknown);
         prop_assert_eq!(&sys.system().world, &world);
     }

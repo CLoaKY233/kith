@@ -35,6 +35,23 @@ impl Plan {
     }
 }
 
+impl Plan {
+    /// Whether `new` leaves out something this plan installed, which applying `new` on top
+    /// would keep.
+    pub(crate) fn drops_into(&self, new: &Self) -> bool {
+        self.interface != new.interface
+            || (self.exit_node.is_some() && new.exit_node.is_none())
+            || self.dns.as_ref().is_some_and(|dns| {
+                new.dns.as_ref().is_none_or(|next| {
+                    (dns.all && !next.all) || dns.domains.iter().any(|d| !next.domains.contains(d))
+                })
+            })
+            || (self.nat.is_some() && new.nat.is_none())
+            || (self.forwarding && !new.forwarding)
+            || self.routes.iter().any(|route| !new.routes.contains(route))
+    }
+}
+
 /// Exit-node client mode.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ExitNode {

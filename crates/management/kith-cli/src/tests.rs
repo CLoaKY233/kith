@@ -1,6 +1,6 @@
 use kith_ipc::{DnsRecord, Request, Status};
 #[cfg(unix)]
-use kith_ipc::{IpcServer, NetworkSummary, PathKind, PeerInfo, Response};
+use kith_ipc::{IpcServer, NetworkSummary, PathKind, PeerInfo, Response, Warning};
 use kith_types::{NetworkId, NodeId};
 
 use crate::cli::{Cmd, opts};
@@ -218,11 +218,68 @@ async fn run_against(path: &std::path::Path, command: &[&str]) -> String {
 }
 
 #[cfg(unix)]
+const PHONE: NodeId = NodeId::from_bytes([0xcc; 32]);
+
+/// What the fake daemon reports: a relay using `nas` as its exit, beside another VPN.
+#[cfg(unix)]
+fn fake_status() -> Status {
+    Status {
+        node: Some(NodeId::from_bytes([0x12; 32])),
+        networks: vec![NetworkSummary {
+            id: NET,
+            name: "home".into(),
+            peers_online: 1,
+            peers_total: 2,
+        }],
+        exit: false,
+        relay: true,
+        exit_node: Some("home/nas".into()),
+        listen_port: 41641,
+        dns_upstreams: vec!["192.168.1.1:53".into()],
+        drops: [("policy".to_owned(), 2)].into(),
+        route_conflicts: vec!["100.100.100.100/32 via utun37".into()],
+        warnings: vec![Warning {
+            secs_ago: 30,
+            message: "control channel: connection refused".into(),
+        }],
+    }
+}
+
+#[cfg(unix)]
+fn fake_peers() -> Vec<PeerInfo> {
+    let phone = PHONE;
+    vec![
+        PeerInfo {
+            node: NODE,
+            name: "nas".into(),
+            address: "100.64.0.2".into(),
+            path: Some(PathKind::Direct),
+            path_reason: Some("direct to 198.51.100.7:41641 (12 ms)".into()),
+            last_handshake_secs: Some(75),
+            endpoint: Some("198.51.100.7:41641".into()),
+            rx_bytes: 1_234_567,
+            tx_bytes: 512,
+        },
+        PeerInfo {
+            node: phone,
+            name: "phone \"old\"".into(),
+            address: "100.64.0.3".into(),
+            path: None,
+            path_reason: Some("relay: no direct addresses known for this peer yet".into()),
+            last_handshake_secs: None,
+            endpoint: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        },
+    ]
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn status_renders_what_the_daemon_reports() {
     let path = std::env::temp_dir().join(format!("kith-cli-{}.sock", std::process::id()));
     let server = IpcServer::bind(&path).unwrap();
-    let phone = NodeId::from_bytes([0xcc; 32]);
+    let phone = PHONE;
     tokio::spawn(async move {
         loop {
             let mut conn = server.accept().await.unwrap();
@@ -232,39 +289,8 @@ async fn status_renders_what_the_daemon_reports() {
                     reason = "the fake answers only what status asks"
                 )]
                 let response = match request {
-                    Request::Status => Response::Status(Status {
-                        node: Some(NodeId::from_bytes([0x12; 32])),
-                        networks: vec![NetworkSummary {
-                            id: NET,
-                            name: "home".into(),
-                            peers_online: 1,
-                            peers_total: 2,
-                        }],
-                        exit: false,
-                        relay: true,
-                    }),
-                    Request::Peers { network: NET } => Response::Peers(vec![
-                        PeerInfo {
-                            node: NODE,
-                            name: "nas".into(),
-                            address: "100.64.0.2".into(),
-                            path: Some(PathKind::Direct),
-                            last_handshake_secs: Some(75),
-                            endpoint: Some("198.51.100.7:41641".into()),
-                            rx_bytes: 1_234_567,
-                            tx_bytes: 512,
-                        },
-                        PeerInfo {
-                            node: phone,
-                            name: "phone \"old\"".into(),
-                            address: "100.64.0.3".into(),
-                            path: None,
-                            last_handshake_secs: None,
-                            endpoint: None,
-                            rx_bytes: 0,
-                            tx_bytes: 0,
-                        },
-                    ]),
+                    Request::Status => Response::Status(fake_status()),
+                    Request::Peers { network: NET } => Response::Peers(fake_peers()),
                     _ => Response::Left,
                 };
                 conn.respond(response).await.unwrap();
@@ -275,23 +301,35 @@ async fn status_renders_what_the_daemon_reports() {
     assert_eq!(
         run_against(&path, &["status"]).await,
         "device 12121212 (relay)\n\
+         internet traffic goes through home/nas\n\
          \n\
          network home (aaaaaaaa)  1/2 online\n  \
          NAME         ADDRESS     PATH     ENDPOINT            HANDSHAKE  RX       TX     NODE\n  \
          nas          100.64.0.2  direct   198.51.100.7:41641  1m ago     1.1 MiB  512 B  bbbbbbbb\n  \
-         phone \"old\"  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n"
+         phone \"old\"  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n\
+         \n\
+         notes (run `kith doctor` for fixes):\n  \
+         100.100.100.100/32 via utun37 overlaps kith's addresses (another VPN?)\n  \
+         2 packets dropped: policy\n  \
+         30s ago: control channel: connection refused\n"
     );
     assert_eq!(
         run_against(&path, &["status", "--json"]).await,
         format!(
             concat!(
-                r#"{{"node":"{me}","exit":false,"relay":true,"networks":[{{"id":"{net}","#,
+                r#"{{"node":"{me}","exit":false,"relay":true,"listen_port":41641,"#,
+                r#""exit_node":"home/nas","dns_upstreams":["192.168.1.1:53"],"#,
+                r#""route_conflicts":["100.100.100.100/32 via utun37"],"drops":{{"policy":2}},"#,
+                r#""warnings":[{{"secs_ago":30,"message":"control channel: connection refused"}}],"#,
+                r#""networks":[{{"id":"{net}","#,
                 r#""name":"home","peers_online":1,"peers_total":2,"peers":["#,
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
+                r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
                 r#""endpoint":"198.51.100.7:41641","last_handshake_secs":75,"#,
                 r#""rx_bytes":1234567,"tx_bytes":512}},"#,
                 r#"{{"node":"{phone}","name":"phone \"old\"","address":"100.64.0.3","#,
-                r#""path":null,"endpoint":null,"last_handshake_secs":null,"#,
+                r#""path":null,"path_reason":"relay: no direct addresses known for this peer yet","#,
+                r#""endpoint":null,"last_handshake_secs":null,"#,
                 r#""rx_bytes":0,"tx_bytes":0}}]}}]}}"#,
                 "\n",
             ),
@@ -300,5 +338,50 @@ async fn status_renders_what_the_daemon_reports() {
             nas = NODE,
             phone = phone,
         )
+    );
+    assert_eq!(
+        run_against(&path, &["doctor"]).await,
+        "ok    daemon is running on port 41641\n\
+         ok    home/nas: direct to 198.51.100.7:41641 (12 ms)\n\
+         warn  home/phone \"old\" is unreachable: relay: no direct addresses known for this peer yet\n      \
+         fix: make sure it is on, or run a relay with `kith server --relay` on a public host\n\
+         ok    exit node home/nas is reachable\n\
+         warn  100.100.100.100/32 via utun37 overlaps kith's addresses; kith peers there are unreachable\n      \
+         fix: quit the other VPN (often Tailscale) while using kith\n\
+         warn  2 packets refused by the network's policy (policy)\n      \
+         fix: check the policy an admin set for this network\n\
+         warn  30s ago: control channel: connection refused\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_fails_on_a_lost_exit_and_explains_a_daemon_that_cannot_start() {
+    use crate::doctor::{Level, diagnose, offline};
+
+    let mut status = fake_status();
+    status.exit_node = Some("home/phone \"old\"".into());
+    let lost = diagnose(&status, &[fake_peers()]);
+    assert!(
+        lost.iter()
+            .any(|f| f.level == Level::Fail && f.what.contains("nowhere to go")),
+        "{lost:?}"
+    );
+
+    let holder = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    let port = holder.local_addr().unwrap().port();
+    let socket = std::path::Path::new("/run/kith/kith.sock");
+    let down = offline(socket, &std::io::ErrorKind::NotFound.into(), port);
+    let levels: Vec<Level> = down.iter().map(|f| f.level).collect();
+    assert_eq!(levels, [Level::Fail, Level::Fail]);
+    assert!(down[1].what.contains(&format!("port {port}")), "{down:?}");
+
+    let denied = offline(socket, &std::io::ErrorKind::PermissionDenied.into(), port);
+    assert_eq!(denied.len(), 1);
+    assert!(
+        denied[0]
+            .fix
+            .as_deref()
+            .is_some_and(|fix| fix.contains("sudo"))
     );
 }

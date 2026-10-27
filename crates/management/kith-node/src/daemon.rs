@@ -1,15 +1,15 @@
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use kith_config::Config;
 use kith_control::records::{Record, Relay};
 use kith_control::{NetMap, Networks};
-use kith_dataplane::{Dataplane, DataplaneHandle, Endpoint, PeerSpec};
+use kith_dataplane::{Dataplane, DataplaneHandle, DropCounters, Endpoint, PeerSpec};
 use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
-use kith_ipc::{Event, NetworkSummary, PeerInfo, Request, Response, Status};
+use kith_ipc::{Event, NetworkSummary, PeerInfo, Request, Response, Status, Warning};
 use kith_ledger::JoinProof;
 use kith_policy::Addresses;
 use kith_router::MeshRanges;
@@ -34,6 +34,8 @@ use crate::types::{Action, ChannelEvent, Command, ConnectivityEvent, NodeError};
 
 /// Most nodes one gossip message may carry; the control channel caps it at 256.
 const MAX_GOSSIP_NODES: usize = 256;
+/// Warnings kept for `kith status`.
+const MAX_WARNINGS: usize = 20;
 const COMMAND_QUEUE: usize = 256;
 const MEMORY_INTERFACE: &str = "kith0";
 
@@ -133,6 +135,8 @@ impl Node {
             control_addr: started.control_addr,
             #[cfg(feature = "test-support")]
             tun: started.tun.map(tokio::sync::Mutex::new),
+            #[cfg(feature = "test-support")]
+            dataplane: started.dataplane,
         })
     }
 }
@@ -146,6 +150,8 @@ pub struct NodeHandle {
     control_addr: SocketAddr,
     #[cfg(feature = "test-support")]
     tun: Option<tokio::sync::Mutex<kith_dataplane::MemoryTun>>,
+    #[cfg(feature = "test-support")]
+    dataplane: DataplaneHandle,
 }
 
 impl NodeHandle {
@@ -182,6 +188,12 @@ impl NodeHandle {
     pub async fn recv_packet(&self) -> Result<Vec<u8>, NodeError> {
         let tun = self.tun.as_ref().ok_or(NodeError::NoMemoryTun)?;
         tun.lock().await.receive().await.ok_or(NodeError::Stopped)
+    }
+
+    /// Drops all direct UDP in and out while `blocked`, leaving relays as the only path.
+    #[cfg(feature = "test-support")]
+    pub async fn block_direct_udp(&self, blocked: bool) -> Result<(), NodeError> {
+        Ok(self.dataplane.block_direct_udp(blocked).await?)
     }
 
     /// Reverts OS changes and stops the node.
@@ -231,6 +243,9 @@ pub(crate) struct Started {
     /// The test end of the in-memory TUN.
     #[cfg(feature = "test-support")]
     pub(crate) tun: Option<kith_dataplane::MemoryTun>,
+    /// The dataplane, for fault injection.
+    #[cfg(feature = "test-support")]
+    pub(crate) dataplane: DataplaneHandle,
 }
 
 /// The event loop's state; owned by one task, so nothing is locked.
@@ -256,6 +271,10 @@ pub(crate) struct Daemon {
     events: broadcast::Sender<Event>,
     endpoints: BTreeMap<NodeId, Vec<SocketAddr>>,
     public_hostname: Option<String>,
+    /// Recent warnings with when they happened, for `kith status` and `kith doctor`.
+    warnings: VecDeque<(Instant, String)>,
+    /// Where the DNS server forwards names outside the mesh.
+    dns_forwarding: Vec<SocketAddr>,
     paths: BTreeMap<NodeId, Endpoint>,
     gossiped: BTreeMap<NetworkId, Vec<(NodeId, Vec<SocketAddr>)>>,
     exit: Option<(NetworkId, NodeId)>,
@@ -468,6 +487,8 @@ impl Daemon {
             control_addr: channel.local_addr(),
             #[cfg(feature = "test-support")]
             tun: dataplanes.memory,
+            #[cfg(feature = "test-support")]
+            dataplane: dataplanes.handle.clone(),
         };
         let mut daemon = Self {
             identity,
@@ -490,6 +511,8 @@ impl Daemon {
             events,
             endpoints,
             public_hostname: config.server.public_hostname.clone(),
+            warnings: VecDeque::new(),
+            dns_forwarding: Vec::new(),
             paths: BTreeMap::new(),
             gossiped: BTreeMap::new(),
             exit: None,
@@ -559,9 +582,13 @@ impl Daemon {
         self.report(flushed);
     }
 
-    fn report(&self, result: Result<(), NodeError>) {
+    fn report(&mut self, result: Result<(), NodeError>) {
         if let Err(error) = result {
             tracing::warn!(%error, "node event failed");
+            if self.warnings.len() >= MAX_WARNINGS {
+                self.warnings.pop_front();
+            }
+            self.warnings.push_back((Instant::now(), error.to_string()));
             let _receivers = self.events.send(Event::Warning {
                 message: error.to_string(),
             });
@@ -1029,6 +1056,7 @@ impl Daemon {
                 peers_total: count(map.peers().iter()),
             })
             .collect();
+        let now = Instant::now();
         Ok(Response::Status(Status {
             node: Some(self.identity.node_id()),
             networks,
@@ -1037,6 +1065,31 @@ impl Daemon {
                 .server
                 .as_ref()
                 .is_some_and(|server| server.relay_addr().is_some()),
+            exit_node: self.exit.and_then(|(network, node)| {
+                let map = self.networks.maps().get(&network)?;
+                Some(format!("{}/{}", map.name(), map.peers().get(&node)?.name))
+            }),
+            listen_port: self.channel.local_addr().port(),
+            dns_upstreams: self
+                .dns_forwarding
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            drops: drop_reasons(&stats.drops),
+            route_conflicts: self
+                .os
+                .conflicts()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            warnings: self
+                .warnings
+                .iter()
+                .map(|(at, message)| Warning {
+                    secs_ago: now.saturating_duration_since(*at).as_secs(),
+                    message: message.clone(),
+                })
+                .collect(),
         }))
     }
 
@@ -1057,6 +1110,7 @@ impl Daemon {
                     name: peer.name.clone(),
                     address: peer.addresses.v4.to_string(),
                     path: self.connectivity.path_kind(node),
+                    path_reason: self.connectivity.path_reason(node),
                     last_handshake_secs: stat
                         .and_then(|stat| stat.last_handshake)
                         .map(|when| at.saturating_duration_since(when).as_secs()),
@@ -1284,7 +1338,19 @@ impl Daemon {
             return;
         };
         let listen = SocketAddr::new(map.resolver()[0], 53);
-        match DnsService::start(listen, upstreams.clone()).await {
+        let upstreams = if upstreams.is_empty() {
+            self.os.system_resolvers()
+        } else {
+            upstreams.clone()
+        };
+        if upstreams.is_empty() {
+            tracing::warn!(
+                "no upstream DNS servers found; names outside the mesh will not resolve; set dns.fallback_upstreams"
+            );
+        }
+        tracing::debug!(?upstreams, "DNS upstreams");
+        self.dns_forwarding.clone_from(&upstreams);
+        match DnsService::start(listen, upstreams).await {
             Ok(dns) => {
                 tracing::debug!(%listen, "DNS listening");
                 self.dns = Some(dns);
@@ -1389,6 +1455,10 @@ impl Daemon {
                     .map(|(node, addrs)| (*node, addrs.clone())),
             );
             entries.truncate(MAX_GOSSIP_NODES);
+            debug_assert!(
+                entries.iter().skip(1).all(|(node, _)| *node != local),
+                "gossip lists this node twice"
+            );
             if self.gossiped.get(&runtime.id()) == Some(&entries) {
                 continue;
             }
@@ -1457,7 +1527,18 @@ async fn bind_sockets(
     loop {
         attempt += 1;
         let retry = listen.port() == 0 && attempt < ATTEMPTS;
-        let link = UdpLink::bind(listen)?;
+        let link = match UdpLink::bind(listen) {
+            Ok(link) => link,
+            Err(kith_transport_udp::UdpError::Bind { source, .. })
+                if source.kind() == std::io::ErrorKind::AddrInUse =>
+            {
+                return Err(NodeError::PortInUse {
+                    port: listen.port(),
+                    protocol: "UDP, WireGuard",
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
         let bound = link.local_addr();
         let channel = match ChannelLayer::start(
             Arc::clone(identity),
@@ -1469,9 +1550,15 @@ async fn bind_sockets(
         {
             Ok(channel) => channel,
             Err(NodeError::Channel(kith_channel::ChannelError::Io(error)))
-                if retry && error.kind() == std::io::ErrorKind::AddrInUse =>
+                if error.kind() == std::io::ErrorKind::AddrInUse =>
             {
-                continue;
+                if retry {
+                    continue;
+                }
+                return Err(NodeError::PortInUse {
+                    port: bound.port(),
+                    protocol: "TCP, control channel",
+                });
             }
             Err(error) => return Err(error),
         };
@@ -1479,10 +1566,34 @@ async fn bind_sockets(
             let next = SocketAddr::new(bound.ip(), bound.port().saturating_add(1));
             std::net::TcpListener::bind(next).is_ok() && std::net::UdpSocket::bind(next).is_ok()
         };
-        if relay_free || !retry {
+        if relay_free {
             return Ok((link, channel));
         }
+        if !retry {
+            return Err(NodeError::PortInUse {
+                port: bound.port().saturating_add(1),
+                protocol: "TCP and UDP, relay and STUN",
+            });
+        }
     }
+}
+
+/// Nonzero drop counters by name.
+fn drop_reasons(drops: &DropCounters) -> BTreeMap<String, u64> {
+    [
+        ("no_route", drops.no_route),
+        ("no_endpoint", drops.no_endpoint),
+        ("invalid", drops.invalid),
+        ("source_not_allowed", drops.source_not_allowed),
+        ("policy", drops.policy),
+        ("malformed", drops.malformed),
+        ("table_full", drops.table_full),
+        ("overflow", drops.overflow),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(name, count)| (name.to_owned(), count))
+    .collect()
 }
 
 fn is_public(ip: IpAddr) -> bool {

@@ -24,5 +24,5 @@ pub mod paths;
 pub mod seal;
 
 pub use message::{CallMeMaybe, Message, ParseError, Ping, Pong, TxId};
-pub use paths::{Event, PathTarget, PeerPaths, Transmit};
+pub use paths::{Event, PathReason, PathTarget, PeerPaths, Transmit};
 pub use seal::{OpenError, RandomSource, SealError, is_disco, open, seal};

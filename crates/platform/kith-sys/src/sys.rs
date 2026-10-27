@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use crate::{Cmd, Error, Output, Plan, System, linux, macos};
@@ -28,7 +29,7 @@ impl Platform {
 #[derive(Debug)]
 pub struct Sys<S> {
     pub(crate) system: S,
-    platform: Platform,
+    pub(crate) platform: Platform,
     state_dir: PathBuf,
 }
 
@@ -42,6 +43,11 @@ impl<S: System> Sys<S> {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn system_mut(&mut self) -> &mut S {
+        &mut self.system
+    }
+
     /// The underlying system.
     pub fn system(&self) -> &S {
         &self.system
@@ -53,6 +59,35 @@ impl<S: System> Sys<S> {
             Platform::Linux => linux::apply(self, plan),
             Platform::MacOs => macos::apply(self, plan),
         }
+    }
+
+    /// The DNS servers the host used before kith, for forwarding names kith does not own.
+    pub fn system_resolvers(&mut self) -> Result<Vec<IpAddr>, Error> {
+        match self.platform {
+            Platform::Linux => linux::system_resolvers(self),
+            Platform::MacOs => macos::system_resolvers(self),
+        }
+    }
+
+    /// Moves from `old`, the plan applied now if any, to `new`. Anything `new` leaves out is
+    /// removed first; if `new` fails part-way, what it installed is removed and `old` restored.
+    pub fn change(&mut self, old: Option<&Plan>, new: &Plan) -> Result<(), Error> {
+        if let Some(old) = old.filter(|old| old.drops_into(new))
+            && let Err(error) = self.revert(old)
+        {
+            self.apply(old)?;
+            return Err(error);
+        }
+        let Err(error) = self.apply(new) else {
+            return Ok(());
+        };
+        let mut errors = Errors::default();
+        errors.keep(self.revert(new));
+        if let Some(old) = old {
+            errors.keep(self.apply(old));
+        }
+        errors.finish()?;
+        Err(error)
     }
 
     /// Removes everything `plan` (or a crashed earlier run) installed, attempting every step.
@@ -166,4 +201,21 @@ pub(crate) fn field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+/// Parses resolver addresses, dropping kith's own mesh resolvers and loopback stubs that
+/// would forward straight back to kith.
+pub(crate) fn nameservers<'a>(candidates: impl Iterator<Item = &'a str>) -> Vec<IpAddr> {
+    let mut found: Vec<IpAddr> = Vec::new();
+    for ip in candidates.filter_map(|text| text.trim().parse::<IpAddr>().ok()) {
+        let mesh = match ip {
+            IpAddr::V4(v4) => v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64,
+            IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        };
+        let stub = ip == IpAddr::from([127, 0, 0, 53]) || ip == IpAddr::from([127, 0, 0, 54]);
+        if !mesh && !stub && !found.contains(&ip) {
+            found.push(ip);
+        }
+    }
+    found
 }

@@ -3,15 +3,24 @@
 use kith_config::{Config, LogLevel};
 use tracing_subscriber::filter::LevelFilter;
 
-/// Installs the stderr logger, then runs the daemon until shutdown.
+/// Installs the stderr logger, then runs the daemon until shutdown. Debug builds log at
+/// debug level with source locations; release builds follow the config.
 pub(crate) fn start(config: Config, verbose: usize) -> Result<(), String> {
     tracing_subscriber::fmt()
-        .with_max_level(log_filter(config.daemon.log_level, verbose))
+        .with_max_level(log_filter(config.daemon.log_level, verbose).max(DEBUG_BUILD_FLOOR))
+        .with_file(cfg!(debug_assertions))
+        .with_line_number(cfg!(debug_assertions))
         .with_writer(std::io::stderr)
         .try_init()
         .map_err(|e| format!("cannot install the logger: {e}"))?;
     run_daemon(config)
 }
+
+const DEBUG_BUILD_FLOOR: LevelFilter = if cfg!(debug_assertions) {
+    LevelFilter::DEBUG
+} else {
+    LevelFilter::OFF
+};
 
 /// `-v` and `-vv` raise the configured level to debug and trace; they never lower it.
 fn log_filter(configured: LogLevel, verbose: usize) -> LevelFilter {

@@ -95,6 +95,9 @@ pub(crate) enum Cmd {
     /// Stream daemon events
     #[bpaf(command)]
     Watch,
+    /// Check what is wrong and say how to fix it
+    #[bpaf(command)]
+    Doctor,
     /// Check or show the configuration file
     #[bpaf(command)]
     Config(#[bpaf(external(config_cmd))] ConfigCmd),

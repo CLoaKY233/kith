@@ -1,9 +1,12 @@
 use std::collections::BTreeSet;
+use std::net::SocketAddr;
 use std::path::Path;
 
 use kith_control::Networks;
 use kith_sys::Dns;
-use kith_sys::{Cmd, Error, ExitNode, Interface, Nat, Output, Plan, Platform, Sys, System};
+use kith_sys::{
+    Cmd, Error, ExitNode, Interface, Nat, Output, Plan, Platform, RouteConflict, Sys, System,
+};
 use kith_types::{IpPrefix, NetworkId, NodeId};
 
 use crate::types::NodeError;
@@ -64,6 +67,7 @@ pub(crate) struct OsPlanner {
     sys: Sys<DynSystem>,
     interface: Interface,
     applied: Option<Plan>,
+    conflicts: Vec<RouteConflict>,
 }
 
 impl OsPlanner {
@@ -78,6 +82,7 @@ impl OsPlanner {
             sys: Sys::new(system, platform, state_dir),
             interface,
             applied: None,
+            conflicts: Vec::new(),
         }
     }
 
@@ -127,23 +132,47 @@ impl OsPlanner {
         if self.applied.as_ref() == Some(&plan) {
             return Ok(());
         }
-        if let Some(old) = self.applied.as_ref().filter(|old| drops_parts(old, &plan)) {
-            self.sys.revert(old)?;
-            self.applied = None;
-        }
-        if let Err(error) = self.sys.apply(&plan) {
-            if let Err(revert) = self.sys.revert(&plan) {
-                tracing::warn!(%revert, "could not undo a partly applied OS plan");
-            }
-            if let Some(old) = &self.applied
-                && let Err(restore) = self.sys.apply(old)
-            {
-                tracing::warn!(%restore, "could not restore the previous OS plan");
-            }
-            return Err(error.into());
-        }
+        self.check_conflicts(&plan.routes);
+        self.sys.change(self.applied.as_ref(), &plan)?;
         self.applied = Some(plan);
         Ok(())
+    }
+
+    /// Routes other interfaces hold inside kith's ranges, as of the last plan.
+    pub(crate) fn conflicts(&self) -> &[RouteConflict] {
+        &self.conflicts
+    }
+
+    fn check_conflicts(&mut self, ranges: &[IpPrefix]) {
+        let found = match self.sys.route_conflicts(ranges, &self.interface) {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::debug!(%error, "could not read the routing table");
+                return;
+            }
+        };
+        if found == self.conflicts {
+            return;
+        }
+        for conflict in found.iter().filter(|c| !self.conflicts.contains(c)) {
+            tracing::warn!(
+                %conflict,
+                "another interface routes addresses in kith's range, usually another VPN such as Tailscale; \
+                 kith peers at those addresses will be unreachable"
+            );
+        }
+        self.conflicts = found;
+    }
+
+    /// The host's own DNS servers on port 53, for names outside the mesh.
+    pub(crate) fn system_resolvers(&mut self) -> Vec<SocketAddr> {
+        match self.sys.system_resolvers() {
+            Ok(ips) => ips.into_iter().map(|ip| SocketAddr::new(ip, 53)).collect(),
+            Err(error) => {
+                tracing::warn!(%error, "could not read the system DNS servers");
+                Vec::new()
+            }
+        }
     }
 
     /// Reverts the applied plan, if any.
@@ -154,16 +183,3 @@ impl OsPlanner {
         Ok(())
     }
 }
-
-/// Whether `new` leaves out something `old` installed, which applying `new` alone would keep.
-fn drops_parts(old: &Plan, new: &Plan) -> bool {
-    old.interface != new.interface
-        || (old.exit_node.is_some() && new.exit_node.is_none())
-        || (old.dns.is_some() && new.dns.is_none())
-        || (old.nat.is_some() && new.nat.is_none())
-        || (old.forwarding && !new.forwarding)
-        || old.routes.iter().any(|route| !new.routes.contains(route))
-}
-
-#[cfg(test)]
-mod tests;

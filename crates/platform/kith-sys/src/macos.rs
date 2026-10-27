@@ -1,16 +1,21 @@
 //! macOS: `route` for routes, `/etc/resolver` files for split DNS, and a pf
 //! anchor under `com.apple/`, which the stock `/etc/pf.conf` already references.
 
+use std::net::IpAddr;
 use std::path::Path;
 
 use kith_types::IpPrefix;
 
 use crate::{
     Cmd, Dns, Error, Interface, Plan, System,
-    sys::{Errors, Sys, field, lines},
+    sys::{Errors, Sys, field, lines, nameservers},
 };
 
 const RESOLVER_DIR: &str = "/etc/resolver";
+/// Each network service's DNS servers before kith overrode them, `name<TAB>servers`.
+const DNS_SERVICES: &str = "dns-services";
+/// The resolvers macOS used before kith overrode DNS, one per line.
+const DNS_UPSTREAMS: &str = "dns-upstreams";
 const RESOLVER_MARKER: &str = "# Managed by kith; removed when kith stops.\n";
 const ANCHOR: &str = "com.apple/kith";
 const NOT_IN_TABLE: &str = "not in table";
@@ -29,7 +34,7 @@ fn net(verb: &str, v6: bool, dest: impl core::fmt::Display, dev: &Interface) -> 
         .arg(dev)
 }
 
-fn host(verb: &str, addr: core::net::IpAddr) -> Cmd {
+fn host(verb: &str, addr: IpAddr) -> Cmd {
     let cmd = Cmd::new("route").args(["-n", verb]);
     let cmd = if addr.is_ipv6() {
         cmd.arg("-inet6")
@@ -159,8 +164,12 @@ fn revert_hosts<S: System>(sys: &mut Sys<S>) -> Result<(), Error> {
     sys.system.remove(&path)
 }
 
-/// Installs split DNS; all-DNS mode also falls back to it, as macOS needs `scutil` for that.
+/// Split DNS through `/etc/resolver` files; all-DNS mode also points every network service
+/// at the mesh resolver, saving each service's servers first so stopping restores them.
 fn apply_dns<S: System>(sys: &mut Sys<S>, dns: &Dns) -> Result<(), Error> {
+    if dns.all {
+        override_dns(sys, dns)?;
+    }
     for domain in &dns.domains {
         let path = Path::new(RESOLVER_DIR).join(domain.as_str());
         if sys
@@ -178,7 +187,120 @@ fn apply_dns<S: System>(sys: &mut Sys<S>, dns: &Dns) -> Result<(), Error> {
     Ok(())
 }
 
+fn override_dns<S: System>(sys: &mut Sys<S>, dns: &Dns) -> Result<(), Error> {
+    let saved_path = sys.state(DNS_SERVICES);
+    if sys.system.read(&saved_path)?.is_none() {
+        let upstreams = system_resolvers(sys)?;
+        sys.system
+            .write(&sys.state(DNS_UPSTREAMS), &lines(upstreams))?;
+        let mut saved = Vec::new();
+        for service in network_services(sys)? {
+            let servers = service_dns(sys, &service)?;
+            let servers = if servers.is_empty() {
+                "Empty".to_owned()
+            } else {
+                servers.join(" ")
+            };
+            saved.push(format!("{service}\t{servers}"));
+        }
+        sys.system.write(&saved_path, &lines(saved))?;
+    }
+    for line in sys.read_list(&saved_path)? {
+        let Some((service, _)) = line.split_once('\t') else {
+            continue;
+        };
+        sys.run(
+            Cmd::new("networksetup")
+                .arg("-setdnsservers")
+                .arg(service)
+                .arg(dns.resolver),
+        )?;
+    }
+    Ok(())
+}
+
+/// Enabled network services whose names kith can pass to `networksetup`.
+fn network_services<S: System>(sys: &mut Sys<S>) -> Result<Vec<String>, Error> {
+    let out = sys
+        .exec(&Cmd::new("networksetup").arg("-listallnetworkservices"))?
+        .stdout;
+    Ok(out
+        .lines()
+        .skip(1)
+        .filter(|name| !name.starts_with('*'))
+        .filter(|name| {
+            let ok = crate::validate::valid_service(name);
+            if !ok {
+                tracing::warn!(
+                    service = name,
+                    "skipping a network service kith cannot name safely"
+                );
+            }
+            ok
+        })
+        .map(str::to_owned)
+        .collect())
+}
+
+/// A service's manually set DNS servers; empty when it uses the ones DHCP provides.
+fn service_dns<S: System>(sys: &mut Sys<S>, service: &str) -> Result<Vec<String>, Error> {
+    let out = sys
+        .exec(&Cmd::new("networksetup").arg("-getdnsservers").arg(service))?
+        .stdout;
+    Ok(out
+        .lines()
+        .filter(|line| line.parse::<IpAddr>().is_ok())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn restore_dns<S: System>(sys: &mut Sys<S>) -> Result<(), Error> {
+    let saved_path = sys.state(DNS_SERVICES);
+    for line in sys.read_list(&saved_path)? {
+        let Some((service, servers)) = line.split_once('\t') else {
+            continue;
+        };
+        sys.run(
+            Cmd::new("networksetup")
+                .arg("-setdnsservers")
+                .arg(service)
+                .args(servers.split(' ')),
+        )?;
+    }
+    sys.system.remove(&sys.state(DNS_UPSTREAMS))?;
+    sys.system.remove(&saved_path)
+}
+
+/// The resolvers macOS uses for names outside any `/etc/resolver` domain, skipping kith's
+/// own; while kith overrides DNS, the ones it saved before doing so.
+pub(crate) fn system_resolvers<S: System>(sys: &mut Sys<S>) -> Result<Vec<IpAddr>, Error> {
+    let out = sys.exec(&Cmd::new("scutil").arg("--dns"))?.stdout;
+    let primary = out
+        .split("\nresolver #")
+        .skip(1)
+        .find(|block| !block.lines().any(|l| l.trim_start().starts_with("domain")))
+        .unwrap_or_default();
+    let found = nameservers(primary.lines().filter_map(|l| {
+        l.trim_start()
+            .strip_prefix("nameserver[")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(_, ip)| ip.trim())
+    }));
+    if !found.is_empty() {
+        return Ok(found);
+    }
+    let saved = sys.read_list(&sys.state(DNS_UPSTREAMS))?;
+    Ok(nameservers(saved.iter().map(String::as_str)))
+}
+
 fn revert_dns<S: System>(sys: &mut Sys<S>) -> Result<(), Error> {
+    let mut errors = Errors::default();
+    errors.keep(restore_dns(sys));
+    errors.keep(revert_resolver_files(sys));
+    errors.finish()
+}
+
+fn revert_resolver_files<S: System>(sys: &mut Sys<S>) -> Result<(), Error> {
     for path in sys.system.list(Path::new(RESOLVER_DIR))? {
         if sys
             .system

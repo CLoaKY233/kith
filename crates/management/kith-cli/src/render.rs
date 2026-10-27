@@ -127,6 +127,9 @@ pub(crate) fn status(
     } else {
         writeln!(out, " ({})", roles.join(", "))?;
     }
+    if let Some(exit) = &status.exit_node {
+        writeln!(out, "internet traffic goes through {exit}")?;
+    }
     if status.networks.is_empty() {
         return writeln!(
             out,
@@ -144,7 +147,46 @@ pub(crate) fn status(
         )?;
         peer_table(out, peers, "  ")?;
     }
+    notes(out, status)
+}
+
+/// Conflicts, drops and recent warnings, when there are any.
+fn notes(out: &mut impl Write, status: &Status) -> io::Result<()> {
+    let drops = status
+        .drops
+        .iter()
+        .map(|(reason, count)| format!("{count} packets dropped: {reason}"));
+    let lines: Vec<String> = status
+        .route_conflicts
+        .iter()
+        .map(|c| format!("{c} overlaps kith's addresses (another VPN?)"))
+        .chain(drops)
+        .chain(
+            status
+                .warnings
+                .iter()
+                .map(|w| format!("{}s ago: {}", w.secs_ago, w.message)),
+        )
+        .collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    writeln!(out, "\nnotes (run `kith doctor` for fixes):")?;
+    for line in lines {
+        writeln!(out, "  {line}")?;
+    }
     Ok(())
+}
+
+fn json_strings(out: &mut impl Write, items: impl IntoIterator<Item = String>) -> io::Result<()> {
+    out.write_all(b"[")?;
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        json_str(out, &item)?;
+    }
+    out.write_all(b"]")
 }
 
 fn json_str(out: &mut impl Write, text: &str) -> io::Result<()> {
@@ -174,6 +216,11 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
         match peer.path {
             Some(_) => write!(out, ",\"path\":\"{}\"", path_name(peer.path))?,
             None => out.write_all(b",\"path\":null")?,
+        }
+        out.write_all(b",\"path_reason\":")?;
+        match &peer.path_reason {
+            Some(reason) => json_str(out, reason)?,
+            None => out.write_all(b"null")?,
         }
         out.write_all(b",\"endpoint\":")?;
         match &peer.endpoint {
@@ -205,9 +252,35 @@ pub(crate) fn status_json(
     }
     write!(
         out,
-        ",\"exit\":{},\"relay\":{},\"networks\":[",
-        status.exit, status.relay
+        ",\"exit\":{},\"relay\":{},\"listen_port\":{},\"exit_node\":",
+        status.exit, status.relay, status.listen_port
     )?;
+    match &status.exit_node {
+        Some(exit) => json_str(out, exit)?,
+        None => out.write_all(b"null")?,
+    }
+    out.write_all(b",\"dns_upstreams\":")?;
+    json_strings(out, status.dns_upstreams.iter().cloned())?;
+    out.write_all(b",\"route_conflicts\":")?;
+    json_strings(out, status.route_conflicts.iter().cloned())?;
+    out.write_all(b",\"drops\":{")?;
+    for (i, (reason, count)) in status.drops.iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        json_str(out, reason)?;
+        write!(out, ":{count}")?;
+    }
+    out.write_all(b"},\"warnings\":[")?;
+    for (i, warning) in status.warnings.iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        write!(out, "{{\"secs_ago\":{},\"message\":", warning.secs_ago)?;
+        json_str(out, &warning.message)?;
+        out.write_all(b"}")?;
+    }
+    out.write_all(b"],\"networks\":[")?;
     for (i, (network, peers)) in status.networks.iter().zip(peers).enumerate() {
         if i > 0 {
             out.write_all(b",")?;

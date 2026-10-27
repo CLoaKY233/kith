@@ -381,6 +381,20 @@ mod tests {
             .await
             .map_err(|e| format!("beta to alpha: {e}"))?;
 
+        let Response::Status(status) = a.request(Request::Status).await else {
+            return Err("status failed".into());
+        };
+        if status.listen_port == 0 || status.networks.first().map(|n| n.peers_total) != Some(2) {
+            return Err(format!("status is wrong: {status:?}").into());
+        }
+        let reason = peer_info(&a, network, "gamma").await?.path_reason;
+        if !reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("direct to 127.0.0.1:"))
+        {
+            return Err(format!("gamma's path reason is {reason:?}").into());
+        }
+
         let dns = c.dns_addr().ok_or("no DNS server")?;
         for (name, expected) in [("alpha", alpha), ("beta", beta), ("gamma", gamma)] {
             let resolved = resolve(dns, &format!("{name}.home.kith.internal")).await?;
@@ -432,10 +446,62 @@ mod tests {
 
         deliver(&a, &b, &udp_packet(alpha, beta, b"via relay")?).await?;
         deliver(&b, &a, &udp_packet(beta, alpha, b"via relay")?).await?;
-        let path = peer_info(&a, network, "beta").await?.endpoint;
-        if path.as_deref() != Some("relay") {
-            return Err(format!("beta reached over {path:?}, not the relay").into());
+        let beta_info = peer_info(&a, network, "beta").await?;
+        if beta_info.endpoint.as_deref() != Some("relay")
+            || !beta_info
+                .path_reason
+                .as_deref()
+                .is_some_and(|r| r.starts_with("relay: "))
+        {
+            return Err(format!("beta is not shown as relayed: {beta_info:?}").into());
         }
+        shutdown([a, b, s]).await
+    }
+
+    /// Waits until `node` reaches `name` over a path matching `want`.
+    async fn path_becomes(
+        node: &NodeHandle,
+        network: NetworkId,
+        name: &str,
+        want: impl Fn(&str) -> bool,
+    ) -> TestResult<String> {
+        let mut last = None;
+        for _ in 0..300 {
+            last = peer_info(node, network, name).await?.endpoint;
+            if last.as_deref().is_some_and(&want) {
+                return Ok(last.unwrap_or_default());
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err(format!("{name} stayed on {last:?}").into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn traffic_falls_back_to_the_relay_and_returns_to_direct() -> TestResult {
+        let s = start_server(false, true, None).await?;
+        let a = start().await?;
+        let b = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        join(&s, &b, network, "beta").await?;
+        let alpha = peer(&b, network, "alpha").await?;
+        let beta = peer(&a, network, "beta").await?;
+        let direct = |path: &str| path != "relay";
+
+        deliver(&a, &b, &udp_packet(alpha, beta, b"direct")?).await?;
+        path_becomes(&a, network, "beta", direct).await?;
+
+        a.block_direct_udp(true).await?;
+        b.block_direct_udp(true).await?;
+        deliver(&a, &b, &udp_packet(alpha, beta, b"relayed")?).await?;
+        deliver(&b, &a, &udp_packet(beta, alpha, b"relayed")?).await?;
+        path_becomes(&a, network, "beta", |path| path == "relay").await?;
+
+        a.block_direct_udp(false).await?;
+        b.block_direct_udp(false).await?;
+        path_becomes(&a, network, "beta", direct).await?;
+        path_becomes(&b, network, "alpha", direct).await?;
+        deliver(&a, &b, &udp_packet(alpha, beta, b"direct again")?).await?;
         shutdown([a, b, s]).await
     }
 
@@ -484,6 +550,29 @@ mod tests {
             .await
             .map_err(|e| format!("exit off after restart: {e}"))?;
         shutdown([a, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_taken_port_fails_with_an_error_that_names_it() -> TestResult {
+        let port = free_port()?;
+        let _holder = std::net::UdpSocket::bind(SocketAddr::new(LOCALHOST, port))?;
+        let started = start_node(
+            |mut config| {
+                config.network.listen_port = port;
+                config
+            },
+            |options| options,
+            true,
+        )
+        .await;
+        let Err(error) = started else {
+            return Err("started on a port another program holds".into());
+        };
+        let message = error.to_string();
+        if !message.contains(&format!("port {port}")) || !message.contains("listen_port") {
+            return Err(format!("unhelpful error: {message}").into());
+        }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]

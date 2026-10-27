@@ -71,6 +71,49 @@ pub enum PathTarget {
     Relay,
 }
 
+/// Why [`PeerPaths::best_path`] chose what it did, for diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathReason {
+    /// A direct endpoint answered pings recently.
+    Direct {
+        /// The endpoint in use.
+        endpoint: SocketAddr,
+        /// Its smoothed round-trip time, once measured.
+        latency: Option<Duration>,
+    },
+    /// No direct endpoint answered; `candidates` were tried.
+    NoDirectAnswer {
+        /// Known direct endpoints.
+        candidates: usize,
+        /// Whether a relay carries traffic meanwhile.
+        relay: bool,
+    },
+}
+
+impl fmt::Display for PathReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Direct {
+                endpoint,
+                latency: Some(latency),
+            } => write!(f, "direct to {endpoint} ({} ms)", latency.as_millis()),
+            Self::Direct { endpoint, .. } => write!(f, "direct to {endpoint}"),
+            Self::NoDirectAnswer { candidates, relay } => {
+                f.write_str(if relay {
+                    "relay: "
+                } else {
+                    "offline: no relay, and "
+                })?;
+                match candidates {
+                    0 => f.write_str("no direct addresses known for this peer yet"),
+                    1 => f.write_str("its one known address did not answer"),
+                    n => write!(f, "none of its {n} known addresses answered"),
+                }
+            }
+        }
+    }
+}
+
 /// A message the driver should seal and send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transmit {
@@ -194,6 +237,20 @@ impl PeerPaths {
         self.best_direct
             .map(PathTarget::Direct)
             .or(self.relay_available.then_some(PathTarget::Relay))
+    }
+
+    /// Why the current path was chosen.
+    pub fn explain(&self) -> PathReason {
+        match self.best_direct {
+            Some(endpoint) => PathReason::Direct {
+                endpoint,
+                latency: self.candidates.get(&endpoint).and_then(|c| c.latency),
+            },
+            None => PathReason::NoDirectAnswer {
+                candidates: self.candidates.len(),
+                relay: self.relay_available,
+            },
+        }
     }
 
     /// Whether the peer's relay can be used.
@@ -623,6 +680,7 @@ fn is_private(ip: IpAddr) -> bool {
     reason = "simulated test time is small and never overflows"
 )]
 mod tests {
+    use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
     use core::net::SocketAddr;
@@ -723,6 +781,10 @@ mod tests {
             message: Message::CallMeMaybe(CallMeMaybe::new(vec![ours]).unwrap()),
         };
         assert_eq!(paths.best_path(), Some(PathTarget::Relay));
+        assert_eq!(
+            paths.explain().to_string(),
+            "relay: no direct addresses known for this peer yet"
+        );
         paths.set_local_endpoints(&[ours]);
         paths.note_activity(ms(0));
         paths.set_candidates(ms(0), &[direct]);
@@ -749,6 +811,10 @@ mod tests {
         assert_eq!(paths.poll_transmit(answered), None);
         assert_eq!(paths.best_path(), Some(PathTarget::Direct(direct)));
         assert_eq!(
+            paths.explain().to_string(),
+            "direct to 203.0.113.1:41641 (20 ms)"
+        );
+        assert_eq!(
             events(&mut paths),
             [
                 Event::PathChanged(Some(PathTarget::Relay)),
@@ -765,6 +831,10 @@ mod tests {
         assert_eq!(paths.best_path(), Some(PathTarget::Direct(direct)));
         paths.handle_timeout(expiry);
         assert_eq!(paths.best_path(), Some(PathTarget::Relay));
+        assert_eq!(
+            paths.explain().to_string(),
+            "relay: its one known address did not answer"
+        );
         assert_eq!(
             events(&mut paths),
             [Event::PathChanged(Some(PathTarget::Relay))]

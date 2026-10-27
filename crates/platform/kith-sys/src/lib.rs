@@ -13,6 +13,7 @@
 //! The only `unsafe` is the `geteuid` call behind [`effective_uid`].
 
 mod command;
+mod conflicts;
 mod error;
 mod linux;
 mod macos;
@@ -24,6 +25,7 @@ mod validate;
 mod tests;
 
 pub use command::{Cmd, NoopSystem, OsSystem, Output, System, effective_uid};
+pub use conflicts::RouteConflict;
 pub use error::Error;
 pub use plan::{Dns, ExitNode, Nat, Plan};
 pub use sys::{Platform, Sys};

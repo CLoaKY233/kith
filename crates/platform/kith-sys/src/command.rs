@@ -6,7 +6,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::{Error, validate::valid_arg};
+use crate::{
+    Error,
+    validate::{valid_arg, valid_service},
+};
 
 /// A program invocation: an argument vector and optional stdin, never a shell line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,7 +55,9 @@ impl Cmd {
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        match self.args.iter().find(|a| !valid_arg(a)) {
+        let valid =
+            |arg: &String| valid_arg(arg) || (self.program == "networksetup" && valid_service(arg));
+        match self.args.iter().find(|a| !valid(a)) {
             Some(bad) => Err(Error::InvalidArgument(bad.clone())),
             None => Ok(()),
         }

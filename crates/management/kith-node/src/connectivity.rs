@@ -7,7 +7,7 @@ use std::sync::Arc;
 use kith_control::records::Relay;
 use kith_crypto::{AgreementPublic, AgreementSecret, RandomError, SigningKey, VerifyingKey};
 use kith_dataplane::Endpoint;
-use kith_disco::{Event, Message, PathTarget, PeerPaths, RandomSource, Transmit};
+use kith_disco::{Event, Message, PathReason, PathTarget, PeerPaths, RandomSource, Transmit};
 use kith_identity::DeviceIdentity;
 use kith_ipc::PathKind;
 use kith_netmon::{Change, NetworkSnapshot, PortMapConfig, PortMapper};
@@ -539,13 +539,26 @@ impl Connectivity {
     }
 
     /// The path currently used for a peer.
+    /// Why traffic to `peer` takes its current path.
+    pub(crate) fn path_reason(&self, peer: &NodeId) -> Option<String> {
+        let state = self.peers.get(peer)?;
+        let reason = state.paths.explain();
+        Some(match reason {
+            PathReason::Direct { .. } if self.stealth.stealth_only() => {
+                "relay: direct UDP is turned off (transports.stealth_only)".to_owned()
+            }
+            PathReason::Direct { .. } | PathReason::NoDirectAnswer { .. } => reason.to_string(),
+        })
+    }
+
+    /// The path traffic to `peer` takes now, as the dataplane sees it.
     pub(crate) fn path_kind(&self, peer: &NodeId) -> Option<PathKind> {
         self.peers
             .get(peer)
             .and_then(|state| state.paths.best_path())
             .map(|target| match target {
-                PathTarget::Direct(_) => PathKind::Direct,
-                PathTarget::Relay => PathKind::Relay,
+                PathTarget::Direct(_) if !self.stealth.stealth_only() => PathKind::Direct,
+                PathTarget::Direct(_) | PathTarget::Relay => PathKind::Relay,
             })
     }
 
