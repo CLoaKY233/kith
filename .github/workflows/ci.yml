@@ -90,13 +90,15 @@ jobs:
         with: { tool: cargo-zigbuild }
       - run: cargo xtask size --zigbuild --target ${{ matrix.target }}
 
+  # Mesh, DNS, relay fallback, exit through a Docker-style firewall, restart and cleanup,
+  # on a real kernel in network namespaces.
   smoke-linux:
     runs-on: ubuntu-latest
-    # The daemon is new; make this blocking once it is stable.
-    continue-on-error: true
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: sudo apt-get install -y -qq nftables dnsutils jq
       - run: cargo build -p kith-cli --release --locked
-      - run: sudo --preserve-env=PATH,CARGO_HOME,RUSTUP_HOME sh tests/smoke/linux-netns.sh
+      - run: sudo sh tests/smoke/linux-netns.sh
