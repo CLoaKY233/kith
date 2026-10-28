@@ -169,10 +169,16 @@ listen_port = $PORT
 $extra
 CONF
     # Hide the host's systemd-resolved: it manages the host's links, not this namespace's.
-    # Background `ip` itself, not a function, so `$!` is the daemon and not a subshell.
-    ip netns exec "$(ns "$_sn")" unshare --mount sh -c \
-        'mount -t tmpfs none /run/systemd/resolve 2>/dev/null; exec "$0" daemon --config "$1" -v' \
-        "$KITH" "$WORK/$_sn/config.toml" >>"$WORK/$_sn/daemon.log" 2>&1 &
+    # Where /etc/resolv.conf links into its directory, point the link at this namespace's
+    # file again. Background `ip` itself, not a function, so `$!` is the daemon.
+    ip netns exec "$(ns "$_sn")" unshare --mount sh -c '
+        if mount -t tmpfs none /run/systemd/resolve 2>/dev/null && [ -L /etc/resolv.conf ]; then
+            target=$(readlink -f /etc/resolv.conf)
+            touch "$target" && mount --bind "$2" "$target"
+        fi
+        exec "$0" daemon --config "$1" -v' \
+        "$KITH" "$WORK/$_sn/config.toml" "/etc/netns/$(ns "$_sn")/resolv.conf" \
+        >>"$WORK/$_sn/daemon.log" 2>&1 &
     echo $! >"$WORK/$_sn/pid"
     retry "$_sn daemon socket" 30 kith_in "$_sn" status
 }
