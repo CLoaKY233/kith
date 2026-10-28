@@ -187,12 +187,19 @@ pub(crate) fn revert<S: System>(sys: &mut Sys<S>, plan: &Plan, errors: &mut Erro
     }
 }
 
+/// Whether systemd-resolved is running: its control socket exists. Other files in its
+/// directory, such as a leftover stub `resolv.conf`, say nothing.
 fn has_resolved<S: System>(sys: &mut Sys<S>) -> Result<bool, Error> {
     Ok(sys.system.has_program("resolvectl")
-        && !sys
+        && sys
             .system
             .list(Path::new("/run/systemd/resolve"))?
-            .is_empty())
+            .iter()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .is_some_and(|name| name == "io.systemd.Resolve")
+            }))
 }
 
 /// A real `resolvconf`. systemd ships one that only forwards to systemd-resolved, so where
@@ -295,7 +302,12 @@ fn revert_dns<S: System>(sys: &mut Sys<S>, dev: &Interface) -> Result<(), Error>
 /// read from kith's backup if kith rewrote it.
 pub(crate) fn system_resolvers<S: System>(sys: &mut Sys<S>) -> Result<Vec<IpAddr>, Error> {
     let current = sys.system.read(Path::new(RESOLV_CONF))?.unwrap_or_default();
-    let text = match sys.system.read(Path::new(RESOLVED_UPSTREAMS))? {
+    let resolved = if has_resolved(sys)? {
+        sys.system.read(Path::new(RESOLVED_UPSTREAMS))?
+    } else {
+        None
+    };
+    let text = match resolved {
         Some(text) => text,
         None if current.starts_with(RESOLV_MARKER) => sys
             .system

@@ -521,6 +521,11 @@ fn upstream_resolvers_skip_kith_and_survive_its_own_overrides() {
     world
         .files
         .insert("/etc/resolv.conf".into(), "nameserver 127.0.0.53\n".into());
+    world.programs.insert("resolvectl".to_owned());
+    world.files.insert(
+        "/run/systemd/resolve/io.systemd.Resolve".into(),
+        String::new(),
+    );
     world.files.insert(
         "/run/systemd/resolve/resolv.conf".into(),
         "nameserver 10.0.0.2\nnameserver 100.100.100.100\nnameserver 2001:db8::53\n".into(),
@@ -537,11 +542,19 @@ fn upstream_resolvers_skip_kith_and_survive_its_own_overrides() {
     world
         .programs
         .extend(["resolvectl".to_owned(), "resolvconf".to_owned()]);
+    world.files.insert(
+        "/run/systemd/resolve/stub-resolv.conf".into(),
+        "nameserver 127.0.0.53\n".into(),
+    );
     let (mut sys, before) = resolvers(Platform::Linux, world);
     sys.apply(&full_plan(false)).unwrap();
     assert!(
         sys.system().world.resolvconf.is_empty(),
         "systemd's resolvconf stand-in must not be used without resolved"
+    );
+    assert!(
+        sys.system().world.resolved.is_empty(),
+        "a leftover stub file does not mean resolved is running"
     );
     assert_eq!(
         sys.system_resolvers().unwrap(),
