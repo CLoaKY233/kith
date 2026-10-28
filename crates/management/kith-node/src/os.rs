@@ -117,6 +117,14 @@ impl OsPlanner {
         let nat = inputs.serve_exit.then(|| Nat {
             sources: mesh.into_iter().collect(),
         });
+        let exit_network = inputs.exit.map(|(network, _)| network);
+        let mut members: Vec<_> = maps.iter().filter(|(_, map)| map.is_member()).collect();
+        members.sort_by_key(|(id, _)| Some(**id) != exit_network);
+        let sources = members
+            .iter()
+            .filter_map(|(_, map)| map.local_device())
+            .flat_map(|device| [device.addresses.v4.into(), device.addresses.v6.into()])
+            .collect();
         Ok(Plan {
             interface: self.interface.clone(),
             routes: routes.into_iter().collect(),
@@ -124,6 +132,7 @@ impl OsPlanner {
             dns,
             forwarding: inputs.serve_exit || routes_local_subnets,
             nat,
+            sources,
         })
     }
 

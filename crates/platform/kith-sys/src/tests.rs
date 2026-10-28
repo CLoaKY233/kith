@@ -158,9 +158,21 @@ impl Fake {
     }
 
     fn macos(&mut self, cmd: &Cmd, args: &[&str], stdin: String) -> Option<Result<Output, Error>> {
+        if matches!(cmd.program(), "networksetup" | "scutil") {
+            return self.macos_dns(cmd, args);
+        }
         let w = &mut self.world;
         match (cmd.program(), args) {
             ("route", ["-n", "get", rest @ ..]) => {
+                if rest
+                    .last()
+                    .is_some_and(|dest| dest.starts_with("192.168.64."))
+                {
+                    return Some(ok(
+                        "   route to: 192.168.64.2\n  interface: bridge100\n",
+                        "",
+                    ));
+                }
                 return Some(if rest.contains(&"-inet6") {
                     ok("gateway: fe80::1%en0\n  interface: en0\n", "")
                 } else {
@@ -196,6 +208,23 @@ impl Fake {
                     return Some(fail(cmd, "pfctl: invalid token"));
                 }
             }
+            ("netstat", ["-rn", "-f", family]) => {
+                return Some(ok(
+                    w.route_table
+                        .get(&(*family == "inet6"))
+                        .map_or("", String::as_str),
+                    "",
+                ));
+            }
+            ("rmdir", [_]) => {}
+            _ => return None,
+        }
+        Some(ok("", ""))
+    }
+
+    fn macos_dns(&mut self, cmd: &Cmd, args: &[&str]) -> Option<Result<Output, Error>> {
+        let w = &mut self.world;
+        match (cmd.program(), args) {
             ("networksetup", ["-listallnetworkservices"]) => {
                 let mut names = String::new();
                 for (name, _) in &w.services {
@@ -243,15 +272,6 @@ impl Fake {
                     "",
                 ));
             }
-            ("netstat", ["-rn", "-f", family]) => {
-                return Some(ok(
-                    w.route_table
-                        .get(&(*family == "inet6"))
-                        .map_or("", String::as_str),
-                    "",
-                ));
-            }
-            ("rmdir", [_]) => {}
             _ => return None,
         }
         Some(ok("", ""))
@@ -342,6 +362,7 @@ fn full_plan(all_dns: bool) -> Plan {
         all: all_dns,
     });
     plan.forwarding = true;
+    plan.sources = vec!["100.70.0.2".parse().unwrap(), "fd7a::2".parse().unwrap()];
     plan.nat = Some(Nat {
         sources: vec!["100.64.0.0/10".parse().unwrap()],
     });
@@ -434,20 +455,20 @@ fn macos_golden() {
         &full_plan(true),
         &[
             "route -n delete -net 100.64.0.0/10 -interface kith0",
-            "route -n add -net 100.64.0.0/10 -interface kith0",
+            "route -n add -net 100.64.0.0/10 -interface kith0 -ifa 100.70.0.2",
             "route -n delete -inet6 fd7a::/48 -interface kith0",
-            "route -n add -inet6 fd7a::/48 -interface kith0",
+            "route -n add -inet6 fd7a::/48 -interface kith0 -ifa fd7a::2",
             "route -n delete -net 0.0.0.0/1 -interface kith0",
             "route -n delete -net 128.0.0.0/1 -interface kith0",
             "route -n delete -inet6 ::/1 -interface kith0",
             "route -n delete -inet6 8000::/1 -interface kith0",
-            "route -n get default",
             "route -n delete -host 203.0.113.7",
+            "route -n get 203.0.113.7",
             "route -n add -host 203.0.113.7 192.168.1.1",
-            "route -n add -net 0.0.0.0/1 -interface kith0",
-            "route -n add -net 128.0.0.0/1 -interface kith0",
-            "route -n add -inet6 ::/1 -interface kith0",
-            "route -n add -inet6 8000::/1 -interface kith0",
+            "route -n add -net 0.0.0.0/1 -interface kith0 -ifa 100.70.0.2",
+            "route -n add -net 128.0.0.0/1 -interface kith0 -ifa 100.70.0.2",
+            "route -n add -inet6 ::/1 -interface kith0 -ifa fd7a::2",
+            "route -n add -inet6 8000::/1 -interface kith0 -ifa fd7a::2",
             "scutil --dns",
             "networksetup -listallnetworkservices",
             "networksetup -getdnsservers Wi-Fi",
@@ -593,6 +614,34 @@ fn routes_another_vpn_holds_in_kiths_ranges_are_reported() {
     assert_eq!(macos, ["100.67.254.51/32 via utun37"]);
 }
 
+/// An exit node on a directly connected network, such as a VM bridge, is pinned to that
+/// interface; pinning it to the default gateway cut the tunnel to it.
+#[test]
+fn an_exit_on_a_local_bridge_keeps_its_own_route() {
+    let mut plan = Plan::new(Interface::new("utun9").unwrap());
+    plan.exit_node = Some(ExitNode {
+        peer_endpoints: vec![
+            "192.168.64.2".parse().unwrap(),
+            "203.0.113.7".parse().unwrap(),
+        ],
+    });
+    let mut sys = Sys::new(
+        Fake {
+            world: base_world(),
+            ..Fake::default()
+        },
+        Platform::MacOs,
+        "/var/lib/kith/sys",
+    );
+    sys.apply(&plan).unwrap();
+    let routes = &sys.system().world.routes;
+    assert_eq!(
+        routes["mac 192.168.64.2"],
+        "-host 192.168.64.2 -interface bridge100"
+    );
+    assert_eq!(routes["mac 203.0.113.7"], "-host 203.0.113.7 192.168.1.1");
+}
+
 #[test]
 fn rejects_unsafe_arguments() {
     for bad in [
@@ -667,14 +716,16 @@ fn plan() -> impl Strategy<Value = Plan> {
         proptest::option::of(dns),
         any::<bool>(),
         proptest::option::of(proptest::collection::vec(prefix(), 0..3)),
+        proptest::collection::vec(any::<[u8; 4]>().prop_map(IpAddr::from), 0..3),
     )
-        .prop_map(|(name, routes, exit, dns, forwarding, nat)| Plan {
+        .prop_map(|(name, routes, exit, dns, forwarding, nat, sources)| Plan {
             interface: Interface::new(&name).unwrap(),
             routes,
             exit_node: exit.map(|peer_endpoints| ExitNode { peer_endpoints }),
             dns,
             forwarding,
             nat: nat.map(|sources| Nat { sources }),
+            sources,
         })
 }
 

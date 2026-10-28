@@ -44,6 +44,43 @@ fn host(verb: &str, addr: IpAddr) -> Cmd {
     cmd.arg("-host").arg(addr)
 }
 
+/// `-ifa <source>` for a route to `dest`: the source inside it, else the first of its family.
+fn source_for(sources: &[IpAddr], dest: &IpPrefix) -> Vec<String> {
+    let v6 = matches!(dest, IpPrefix::V6(_));
+    sources
+        .iter()
+        .find(|addr| dest.contains(**addr))
+        .or_else(|| sources.iter().find(|addr| addr.is_ipv6() == v6))
+        .map(|addr| vec!["-ifa".to_owned(), addr.to_string()])
+        .unwrap_or_default()
+}
+
+/// How `peer` is reached now, as `route add` arguments: its gateway, or the interface of a
+/// directly connected network such as a VM bridge or the local LAN.
+fn current_route<S: System>(sys: &mut Sys<S>, peer: IpAddr) -> Result<Vec<String>, Error> {
+    let cmd = Cmd::new("route").args(["-n", "get"]);
+    let cmd = if peer.is_ipv6() {
+        cmd.arg("-inet6")
+    } else {
+        cmd
+    }
+    .arg(peer);
+    let line = cmd.to_string();
+    let out = sys.exec(&cmd)?.stdout;
+    let gateway = field(&out, "gateway").filter(|gw| gw.parse::<IpAddr>().is_ok());
+    match (gateway, field(&out, "interface")) {
+        (Some(gw), _) => Ok(vec![gw.to_owned()]),
+        (None, Some(dev)) => Ok(vec![
+            "-interface".to_owned(),
+            Interface::new(dev)?.as_str().to_owned(),
+        ]),
+        (None, None) => Err(Error::Parse {
+            command: line,
+            output: out,
+        }),
+    }
+}
+
 /// The `(gateway, interface)` of the default route.
 fn default_route<S: System>(sys: &mut Sys<S>, v6: bool) -> Result<(String, String), Error> {
     let cmd = Cmd::new("route").args(["-n", "get"]);
@@ -65,7 +102,7 @@ pub(crate) fn apply<S: System>(sys: &mut Sys<S>, plan: &Plan) -> Result<(), Erro
     for prefix in &plan.routes {
         let v6 = matches!(prefix, IpPrefix::V6(_));
         sys.run(net("delete", v6, prefix, dev).tolerate(NOT_IN_TABLE))?;
-        sys.run(net("add", v6, prefix, dev))?;
+        sys.run(net("add", v6, prefix, dev).args(source_for(&plan.sources, prefix)))?;
     }
     if let Some(exit) = &plan.exit_node {
         // Remove our halves first so `route get default` sees the real gateway.
@@ -79,12 +116,16 @@ pub(crate) fn apply<S: System>(sys: &mut Sys<S>, plan: &Plan) -> Result<(), Erro
         hosts.dedup();
         sys.system.write(&state, &lines(&hosts))?;
         for &peer in &exit.peer_endpoints {
-            let (gateway, _) = default_route(sys, peer.is_ipv6())?;
             sys.run(host("delete", peer).tolerate(NOT_IN_TABLE))?;
-            sys.run(host("add", peer).arg(gateway))?;
+            let via = current_route(sys, peer)?;
+            sys.run(host("add", peer).args(via))?;
         }
         for (v6, half) in HALVES {
-            sys.run(net("add", v6, half, dev))?;
+            let prefix: IpPrefix = half.parse().map_err(|_| Error::Parse {
+                command: "exit route".to_owned(),
+                output: half.to_owned(),
+            })?;
+            sys.run(net("add", v6, half, dev).args(source_for(&plan.sources, &prefix)))?;
         }
     }
     if let Some(dns) = &plan.dns {

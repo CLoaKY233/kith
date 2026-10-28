@@ -19,6 +19,9 @@ pub struct Plan {
     pub forwarding: bool,
     /// Masquerade mesh traffic leaving through the default interface.
     pub nat: Option<Nat>,
+    /// This device's own mesh addresses, which kith's routes send from; the exit network's
+    /// come first. Without them macOS may pick the shared DNS address the peers refuse.
+    pub sources: Vec<IpAddr>,
 }
 
 impl Plan {
@@ -31,6 +34,7 @@ impl Plan {
             dns: None,
             forwarding: false,
             nat: None,
+            sources: Vec::new(),
         }
     }
 }

@@ -237,3 +237,22 @@ async fn reply_from_another_port_is_ignored() {
     let response = ask_udp(server, &query(9, "example.org")).await;
     assert_eq!(last_address(&response), [7, 7, 7, 7]);
 }
+
+/// macOS's mDNSResponder can hold `*:53`; kith must still serve its own address on port 53.
+#[tokio::test]
+async fn serves_its_own_address_beside_a_wildcard_holder() {
+    let holder = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
+    holder.set_reuse_address(true).unwrap();
+    holder
+        .bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)).into())
+        .unwrap();
+    let port = holder.local_addr().unwrap().as_socket().unwrap().port();
+
+    let listen = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let server = DnsServer::bind_with_timeout(listen, Arc::new(state()), TIMEOUT)
+        .await
+        .unwrap();
+    tokio::spawn(server.run());
+    let response = ask_udp(listen, &query(7, "nas.home")).await;
+    assert_eq!(last_address(&response), [100, 64, 0, 7]);
+}

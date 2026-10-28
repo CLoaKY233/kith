@@ -55,7 +55,7 @@ mod tests {
                 let port = self.port.get();
                 let started = start_node(
                     move |mut config| {
-                        config.daemon.state_dir = dir;
+                        config.daemon.state_dir.clone_from(&dir);
                         config.network.listen_port = port;
                         config
                     },
@@ -113,7 +113,7 @@ mod tests {
                 config.server.enabled = true;
                 config.server.exit = exit;
                 config.server.relay = relay;
-                config.server.public_hostname = hostname;
+                config.server.public_hostname.clone_from(&hostname);
                 config
             },
             |options| options,
@@ -135,24 +135,35 @@ mod tests {
         });
     }
 
+    /// Starts a node; an auto-picked port can be taken by a parallel test between kith's
+    /// check and its bind, so that one case is retried.
     async fn start_node(
-        config: impl FnOnce(Config) -> Config,
-        options_fn: impl FnOnce(NodeOptions) -> NodeOptions,
+        config: impl Fn(Config) -> Config,
+        options_fn: impl Fn(NodeOptions) -> NodeOptions,
         in_memory: bool,
     ) -> TestResult<NodeHandle> {
         init_logs();
-        let mut base = Config::default();
-        base.network.listen_port = 0;
-        base.dns.enabled = true;
-        let mut options = NodeOptions::new(config(base), NoopSystem)
-            .tun(TunMode::Memory)
-            .listen_ip(LOCALHOST)
-            .dns_listen(SocketAddr::new(LOCALHOST, 0))
-            .without_ipc();
-        if in_memory {
-            options = options.in_memory_state();
+        let mut attempt = 0;
+        loop {
+            let mut base = Config::default();
+            base.network.listen_port = 0;
+            base.dns.enabled = true;
+            let config = config(base);
+            let auto_port = config.network.listen_port == 0;
+            let mut options = NodeOptions::new(config, NoopSystem)
+                .tun(TunMode::Memory)
+                .listen_ip(LOCALHOST)
+                .dns_listen(SocketAddr::new(LOCALHOST, 0))
+                .without_ipc();
+            if in_memory {
+                options = options.in_memory_state();
+            }
+            attempt += 1;
+            match Node::start(options_fn(options)).await {
+                Err(error) if auto_port && attempt < 5 && error.to_string().contains("in use") => {}
+                started => return Ok(started?),
+            }
         }
-        Ok(Node::start(options_fn(options)).await?)
     }
 
     async fn peer_info(node: &NodeHandle, network: NetworkId, name: &str) -> TestResult<PeerInfo> {

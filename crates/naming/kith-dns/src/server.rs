@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use kith_naming::{Outcome, answer, answer_stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, TcpSocket, TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 
 use crate::forward::{ClientTransport, DEFAULT_UPSTREAM_TIMEOUT, Forwarder, server_failure};
@@ -34,6 +34,34 @@ struct Shared {
     forwarder: Forwarder,
 }
 
+/// Binds with `SO_REUSEADDR`: macOS's mDNSResponder may hold `*:53`, and BSD sockets only
+/// let us take one specific address beside a wildcard holder when we set it.
+fn bind_udp(listen: SocketAddr) -> io::Result<UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(listen),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&listen.into())?;
+    UdpSocket::from_std(socket.into())
+}
+
+fn bind_tcp(listen: SocketAddr) -> io::Result<TcpListener> {
+    let socket = if listen.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(listen)?;
+    socket.listen(LISTEN_BACKLOG)
+}
+
+/// Pending TCP connections per listener.
+const LISTEN_BACKLOG: u32 = 128;
+
 impl DnsServer {
     /// Binds UDP and TCP on `listen` (TCP takes the UDP port when `listen` has port 0).
     pub async fn bind(listen: SocketAddr, state: Arc<DnsState>) -> io::Result<Self> {
@@ -46,8 +74,8 @@ impl DnsServer {
         state: Arc<DnsState>,
         upstream_timeout: Duration,
     ) -> io::Result<Self> {
-        let udp = UdpSocket::bind(listen).await?;
-        let tcp = TcpListener::bind(udp.local_addr()?).await?;
+        let udp = bind_udp(listen)?;
+        let tcp = bind_tcp(udp.local_addr()?)?;
         let forwarder = Forwarder::new(upstream_timeout).await?;
         Ok(Self {
             udp: Arc::new(udp),

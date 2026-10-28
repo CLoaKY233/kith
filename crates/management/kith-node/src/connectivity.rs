@@ -725,6 +725,7 @@ fn interface_endpoints(
     snapshot
         .into_iter()
         .flat_map(NetworkSnapshot::addresses)
+        .filter(|interface| !is_tunnel(&interface.interface))
         .map(|interface| interface.address)
         .filter(|address| match address {
             IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_unspecified() && !v4.is_link_local(),
@@ -734,6 +735,14 @@ fn interface_endpoints(
         })
         .map(|address| SocketAddr::new(address, port))
         .collect()
+}
+
+/// Tunnel interfaces, kith's own and other VPNs': their addresses only work through the
+/// tunnel, so offering them as endpoints sends kith's own traffic through a tunnel.
+fn is_tunnel(name: &str) -> bool {
+    ["utun", "tun", "wg", "tailscale", "zt"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 async fn forward_relayed(mut incoming: kith_relay::Incoming, commands: mpsc::Sender<Command>) {
@@ -777,4 +786,37 @@ fn spawn_port_mapper(local_port: u16, commands: mpsc::Sender<Command>) -> JoinHa
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use kith_netmon::{InterfaceAddress, NetworkSnapshot};
+
+    use super::interface_endpoints;
+
+    #[test]
+    fn tunnel_addresses_are_never_offered_as_endpoints() {
+        let address = |interface: &str, ip: &str| InterfaceAddress {
+            interface: interface.to_owned(),
+            address: ip.parse().unwrap(),
+            prefix_length: 24,
+        };
+        let snapshot = NetworkSnapshot::new(
+            vec![
+                address("en0", "192.168.1.20"),
+                address("docker0", "172.17.0.1"),
+                address("utun41", "100.88.250.27"),
+                address("tun0", "100.70.0.2"),
+                address("tailscale0", "100.101.1.1"),
+                address("wg0", "10.8.0.2"),
+            ],
+            None,
+        );
+        let found = interface_endpoints(Some(&snapshot), "0.0.0.0".parse().unwrap(), 41641);
+        let expected: Vec<std::net::SocketAddr> = vec![
+            "172.17.0.1:41641".parse().unwrap(),
+            "192.168.1.20:41641".parse().unwrap(),
+        ];
+        assert_eq!(found, expected);
+    }
 }

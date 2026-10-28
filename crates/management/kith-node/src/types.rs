@@ -261,3 +261,18 @@ pub(crate) enum ConnectivityEvent {
     /// The router's port mapping appeared, moved or vanished.
     PortMapped(Option<SocketAddr>),
 }
+
+/// Shows an error with every cause after it, as `outer: inner: root`.
+pub(crate) struct Chain<'a>(pub(crate) &'a (dyn std::error::Error + 'static));
+
+impl core::fmt::Display for Chain<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)?;
+        let mut source = self.0.source();
+        while let Some(cause) = source {
+            write!(f, ": {cause}")?;
+            source = cause.source();
+        }
+        Ok(())
+    }
+}

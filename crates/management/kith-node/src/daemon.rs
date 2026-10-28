@@ -30,10 +30,12 @@ use crate::os::{DynSystem, OsPlanner, PlanInputs};
 use crate::server::{Listeners, ServerMode, stun_reply};
 use crate::state::StateDir;
 use crate::stealth::StealthOptions;
-use crate::types::{Action, ChannelEvent, Command, ConnectivityEvent, NodeError};
+use crate::types::{Action, Chain, ChannelEvent, Command, ConnectivityEvent, NodeError};
 
 /// Most nodes one gossip message may carry; the control channel caps it at 256.
 const MAX_GOSSIP_NODES: usize = 256;
+/// How often changed peer endpoints are written to disk at most.
+const ENDPOINT_SAVE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(30);
 /// Warnings kept for `kith status`.
 const MAX_WARNINGS: usize = 20;
 const COMMAND_QUEUE: usize = 256;
@@ -271,10 +273,7 @@ pub(crate) struct Daemon {
     events: broadcast::Sender<Event>,
     endpoints: BTreeMap<NodeId, Vec<SocketAddr>>,
     public_hostname: Option<String>,
-    /// Recent warnings with when they happened, for `kith status` and `kith doctor`.
-    warnings: VecDeque<(Instant, String)>,
-    /// Where the DNS server forwards names outside the mesh.
-    dns_forwarding: Vec<SocketAddr>,
+    notes: Notes,
     paths: BTreeMap<NodeId, Endpoint>,
     gossiped: BTreeMap<NetworkId, Vec<(NodeId, Vec<SocketAddr>)>>,
     exit: Option<(NetworkId, NodeId)>,
@@ -358,7 +357,9 @@ fn load_networks(state: &StateDir, local: NodeId) -> Result<NetworkSet, NodeErro
     for (id, ops) in state.load_networks()? {
         match NetworkRuntime::from_ops(ops, local) {
             Ok(runtime) => networks.insert(runtime)?,
-            Err(error) => tracing::warn!(network = %id, %error, "skipping stored network"),
+            Err(error) => {
+                tracing::warn!(network = %id, error = %Chain(&error), "skipping stored network");
+            }
         }
     }
     Ok(networks)
@@ -511,8 +512,7 @@ impl Daemon {
             events,
             endpoints,
             public_hostname: config.server.public_hostname.clone(),
-            warnings: VecDeque::new(),
-            dns_forwarding: Vec::new(),
+            notes: Notes::default(),
             paths: BTreeMap::new(),
             gossiped: BTreeMap::new(),
             exit: None,
@@ -530,6 +530,7 @@ impl Daemon {
         mut commands: mpsc::Receiver<Command>,
     ) -> Result<(), NodeError> {
         loop {
+            self.save_endpoints_if_due(false);
             let deadline = self.connectivity.poll_timeout();
             tokio::select! {
                 command = commands.recv() => match command {
@@ -584,11 +585,13 @@ impl Daemon {
 
     fn report(&mut self, result: Result<(), NodeError>) {
         if let Err(error) = result {
-            tracing::warn!(%error, "node event failed");
-            if self.warnings.len() >= MAX_WARNINGS {
-                self.warnings.pop_front();
+            tracing::warn!(error = %Chain(&error), "node event failed");
+            if self.notes.warnings.len() >= MAX_WARNINGS {
+                self.notes.warnings.pop_front();
             }
-            self.warnings.push_back((Instant::now(), error.to_string()));
+            self.notes
+                .warnings
+                .push_back((Instant::now(), Chain(&error).to_string()));
             let _receivers = self.events.send(Event::Warning {
                 message: error.to_string(),
             });
@@ -891,7 +894,9 @@ impl Daemon {
         };
         match self.advertise_roles(exit, relay).await {
             Ok(notes) => notes.iter().for_each(|note| tracing::info!("{note}")),
-            Err(error) => tracing::warn!(%error, "could not advertise server roles"),
+            Err(error) => {
+                tracing::warn!(error = %Chain(&error), "could not advertise server roles");
+            }
         }
     }
 
@@ -1071,6 +1076,7 @@ impl Daemon {
             }),
             listen_port: self.channel.local_addr().port(),
             dns_upstreams: self
+                .notes
                 .dns_forwarding
                 .iter()
                 .map(ToString::to_string)
@@ -1083,6 +1089,7 @@ impl Daemon {
                 .map(ToString::to_string)
                 .collect(),
             warnings: self
+                .notes
                 .warnings
                 .iter()
                 .map(|(at, message)| Warning {
@@ -1194,7 +1201,7 @@ impl Daemon {
                     known.truncate(MAX_BOOTSTRAP);
                 }
                 if changed {
-                    self.state.save_endpoints(&self.endpoints)?;
+                    self.notes.endpoints_dirty = true;
                     self.gossip()?;
                     self.update_targets()?;
                 }
@@ -1349,13 +1356,15 @@ impl Daemon {
             );
         }
         tracing::debug!(?upstreams, "DNS upstreams");
-        self.dns_forwarding.clone_from(&upstreams);
+        self.notes.dns_forwarding.clone_from(&upstreams);
         match DnsService::start(listen, upstreams).await {
             Ok(dns) => {
                 tracing::debug!(%listen, "DNS listening");
                 self.dns = Some(dns);
             }
-            Err(error) => tracing::warn!(%listen, %error, "DNS server did not start"),
+            Err(error) => {
+                tracing::warn!(%listen, error = %Chain(&error), "DNS server did not start");
+            }
         }
     }
 
@@ -1497,7 +1506,31 @@ impl Daemon {
 
     /// Reverts the OS plan.
     pub(crate) fn shutdown(&mut self) -> Result<(), NodeError> {
+        self.save_endpoints_if_due(true);
         self.os.revert()
+    }
+
+    /// Writes peer endpoints at most every [`ENDPOINT_SAVE_INTERVAL`], or now with `force`.
+    /// Each write syncs to disk, and behind some NATs endpoints change many times a second.
+    fn save_endpoints_if_due(&mut self, force: bool) {
+        if !self.notes.endpoints_dirty {
+            return;
+        }
+        let now = Instant::now();
+        let recent = self
+            .notes
+            .endpoints_saved
+            .is_some_and(|at| now.saturating_duration_since(at) < ENDPOINT_SAVE_INTERVAL);
+        if recent && !force {
+            return;
+        }
+        match self.state.save_endpoints(&self.endpoints) {
+            Ok(()) => {
+                self.notes.endpoints_dirty = false;
+                self.notes.endpoints_saved = Some(now);
+            }
+            Err(error) => tracing::warn!(error = %Chain(&error), "could not save peer endpoints"),
+        }
     }
 }
 
@@ -1576,6 +1609,18 @@ async fn bind_sockets(
             });
         }
     }
+}
+
+/// Bookkeeping for diagnostics and for writing peer endpoints sparingly.
+#[derive(Debug, Default)]
+struct Notes {
+    /// Recent warnings with when they happened, for `kith status` and `kith doctor`.
+    warnings: VecDeque<(Instant, String)>,
+    /// Where the DNS server forwards names outside the mesh.
+    dns_forwarding: Vec<SocketAddr>,
+    /// Peer endpoints changed since they were last written.
+    endpoints_dirty: bool,
+    endpoints_saved: Option<Instant>,
 }
 
 /// Nonzero drop counters by name.

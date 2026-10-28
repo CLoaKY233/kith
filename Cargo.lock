@@ -928,6 +928,7 @@ dependencies = [
  "getrandom 0.4.3",
  "kith-naming",
  "kith-transport-udp",
+ "socket2",
  "tokio",
  "tracing",
 ]
