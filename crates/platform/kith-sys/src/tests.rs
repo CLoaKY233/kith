@@ -835,3 +835,28 @@ proptest! {
         prop_assert_eq!(&sys.system().world, &world);
     }
 }
+
+/// Writing a file that is a symlink, as `/etc/resolv.conf` often is, updates what it points
+/// to and keeps the link; replacing the link broke DNS once kith restored the file.
+#[cfg(unix)]
+#[test]
+fn writes_go_through_symlinks_and_keep_them() {
+    let dir = std::env::temp_dir().join(format!("kith-sys-link-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("run")).unwrap();
+    let target = dir.join("run/stub-resolv.conf");
+    let link = dir.join("resolv.conf");
+    std::fs::write(&target, "nameserver 127.0.0.53\n").unwrap();
+    std::os::unix::fs::symlink("run/stub-resolv.conf", &link).unwrap();
+
+    crate::OsSystem
+        .write(&link, "nameserver 100.64.0.1\n")
+        .unwrap();
+    let still_link = std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink();
+    let written = std::fs::read_to_string(&target).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(still_link, "the link must stay a link");
+    assert_eq!(written, "nameserver 100.64.0.1\n");
+}

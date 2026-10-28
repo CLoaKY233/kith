@@ -167,6 +167,7 @@ impl System for OsSystem {
     }
 
     fn write(&mut self, path: &Path, contents: &str) -> Result<(), Error> {
+        let path = &link_target(path);
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(io_err(dir))?;
         }
@@ -205,6 +206,25 @@ impl System for OsSystem {
             .any(|dir| dir.join(name).is_file())
     }
 }
+
+/// Where writing `path` should land: through any symlinks, so a link such as a
+/// `resolv.conf` managed by systemd or resolvconf stays a link.
+fn link_target(path: &Path) -> PathBuf {
+    let mut current = path.to_owned();
+    for _ in 0..MAX_LINK_DEPTH {
+        let Ok(link) = fs::read_link(&current) else {
+            break;
+        };
+        current = match current.parent() {
+            Some(dir) if link.is_relative() => dir.join(link),
+            _ => link,
+        };
+    }
+    current
+}
+
+/// Symlinks followed at most when writing, as the kernel's own limit for paths.
+const MAX_LINK_DEPTH: usize = 40;
 
 /// A system that performs nothing: every command succeeds, and the queries kith makes get
 /// the answers of a plain host (sysctls off, a default route via `eth0` or `en0`).
