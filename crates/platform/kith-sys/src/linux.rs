@@ -195,6 +195,13 @@ fn has_resolved<S: System>(sys: &mut Sys<S>) -> Result<bool, Error> {
             .is_empty())
 }
 
+/// A real `resolvconf`. systemd ships one that only forwards to systemd-resolved, so where
+/// `resolvectl` exists but resolved is not running, `resolvconf` would configure nothing.
+fn has_resolvconf<S: System>(sys: &mut Sys<S>) -> Result<bool, Error> {
+    Ok(sys.system.has_program("resolvconf")
+        && (!sys.system.has_program("resolvectl") || has_resolved(sys)?))
+}
+
 fn apply_dns<S: System>(sys: &mut Sys<S>, dev: &Interface, dns: &Dns) -> Result<(), Error> {
     if has_resolved(sys)? {
         sys.run(Cmd::new("resolvectl").arg("dns").arg(dev).arg(dns.resolver))?;
@@ -225,7 +232,7 @@ fn apply_dns<S: System>(sys: &mut Sys<S>, dev: &Interface, dns: &Dns) -> Result<
                 .join(" ")
         )])
     };
-    if sys.system.has_program("resolvconf") {
+    if has_resolvconf(sys)? {
         let conf = format!("nameserver {}\n{search}", dns.resolver);
         return sys.run(Cmd::new("resolvconf").arg("-a").arg(dev).stdin(conf));
     }
@@ -263,7 +270,7 @@ fn revert_dns<S: System>(sys: &mut Sys<S>, dev: &Interface) -> Result<(), Error>
         let cmd = Cmd::new("resolvectl").arg("revert").arg(dev);
         errors.keep(sys.run(cmd.tolerate("Unknown interface").tolerate("No such device")));
     }
-    if sys.system.has_program("resolvconf") {
+    if has_resolvconf(sys)? {
         errors.keep(sys.run(Cmd::new("resolvconf").arg("-d").arg(dev)));
     }
     let backup_path = sys.state("resolv.conf");

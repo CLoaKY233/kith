@@ -513,8 +513,15 @@ fn upstream_resolvers_skip_kith_and_survive_its_own_overrides() {
     world
         .files
         .insert("/etc/resolv.conf".into(), "nameserver 192.0.2.1\n".into());
+    world
+        .programs
+        .extend(["resolvectl".to_owned(), "resolvconf".to_owned()]);
     let (mut sys, before) = resolvers(Platform::Linux, world);
     sys.apply(&full_plan(false)).unwrap();
+    assert!(
+        sys.system().world.resolvconf.is_empty(),
+        "systemd's resolvconf stand-in must not be used without resolved"
+    );
     assert_eq!(
         sys.system_resolvers().unwrap(),
         before,
