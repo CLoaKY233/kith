@@ -12,6 +12,8 @@ ignore = [
 
 [licenses]
 version = 2
+# kith's own crates are not published; their license is in LICENSE.md.
+private = { ignore = true }
 confidence-threshold = 0.93
 unused-allowed-license = "allow"
 allow = [

@@ -3,7 +3,8 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=kith
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
-PKG_LICENSE:=MIT OR Apache-2.0
+PKG_LICENSE:=PolyForm-Noncommercial-1.0.0
+PKG_LICENSE_FILES:=LICENSE.md
 PKG_MAINTAINER:=kith developers
 
 KITH_BIN_DIR?=$(TOPDIR)/dl/kith-$(PKG_VERSION)
