@@ -14,19 +14,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  miri:
+  core-crates:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    outputs:
+      crates: ${{ steps.list.outputs.crates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - id: list
+        run: echo "crates=$(cargo xtask core-crates | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  # One job per crate: crypto-heavy crates are slow under miri and must not starve the rest.
+  miri:
+    needs: core-crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.core-crates.outputs.crates) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - run: rustup toolchain install nightly --profile minimal --component miri,rust-src
-      - name: miri on core crates
-        run: |
-          set -euo pipefail
-          packages=""
-          for name in $(cargo xtask core-crates); do packages="$packages -p $name"; done
-          cargo +nightly miri test $packages
+      - run: cargo +nightly miri test -p ${{ matrix.crate }}
         env: { MIRIFLAGS: "-Zmiri-strict-provenance -Zmiri-disable-isolation", PROPTEST_CASES: "8" }
 
   mips:
