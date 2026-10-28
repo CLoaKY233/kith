@@ -406,12 +406,25 @@ mod tests {
             return Err(format!("gamma's path reason is {reason:?}").into());
         }
 
+        // A device reaches its own address without the packet leaving it, as macOS needs.
+        deliver(&a, &a, &udp_packet(alpha, alpha, b"to myself")?)
+            .await
+            .map_err(|e| format!("alpha to itself: {e}"))?;
+
         let dns = c.dns_addr().ok_or("no DNS server")?;
         for (name, expected) in [("alpha", alpha), ("beta", beta), ("gamma", gamma)] {
             let resolved = resolve(dns, &format!("{name}.home.kith.internal")).await?;
             if resolved != expected {
                 return Err(format!("{name} resolved to {resolved}, expected {expected}").into());
             }
+        }
+        let own = resolve(
+            a.dns_addr().ok_or("no DNS server")?,
+            "alpha.home.kith.internal",
+        )
+        .await?;
+        if own != alpha {
+            return Err(format!("alpha resolved its own name to {own}").into());
         }
         shutdown([a, b, c]).await
     }

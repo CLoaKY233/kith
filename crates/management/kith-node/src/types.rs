@@ -276,3 +276,86 @@ impl core::fmt::Display for Chain<'_> {
         Ok(())
     }
 }
+
+/// Decides when changed state is worth writing: at once the first time, then at most every
+/// `every`, and always when forced, such as at shutdown.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WriteThrottle {
+    every: Duration,
+    dirty: bool,
+    written: Option<tokio::time::Instant>,
+}
+
+impl WriteThrottle {
+    pub(crate) const fn new(every: Duration) -> Self {
+        Self {
+            every,
+            dirty: false,
+            written: None,
+        }
+    }
+
+    /// Notes that the state changed.
+    pub(crate) const fn mark(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Whether to write now.
+    pub(crate) fn due(&self, now: tokio::time::Instant, force: bool) -> bool {
+        self.dirty
+            && (force
+                || self
+                    .written
+                    .is_none_or(|at| now.saturating_duration_since(at) >= self.every))
+    }
+
+    /// Notes a successful write.
+    pub(crate) const fn written(&mut self, now: tokio::time::Instant) {
+        self.dirty = false;
+        self.written = Some(now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::{Chain, WriteThrottle};
+
+    #[test]
+    fn writes_are_throttled_but_never_lost() {
+        let every = Duration::from_secs(30);
+        let start = tokio::time::Instant::now();
+        let mut throttle = WriteThrottle::new(every);
+        assert!(
+            !throttle.due(start, true),
+            "nothing changed, nothing to write"
+        );
+
+        throttle.mark();
+        assert!(
+            throttle.due(start, false),
+            "the first change is written at once"
+        );
+        throttle.written(start);
+
+        throttle.mark();
+        let soon = start + Duration::from_secs(1);
+        assert!(
+            !throttle.due(soon, false),
+            "changes within the interval wait"
+        );
+        assert!(
+            throttle.due(soon, true),
+            "shutdown writes whatever is pending"
+        );
+        assert!(throttle.due(start + every, false), "the interval elapsed");
+    }
+
+    #[test]
+    fn chains_show_every_cause() {
+        let io = std::io::Error::new(std::io::ErrorKind::AddrInUse, "Address already in use");
+        let error = crate::NodeError::from(io);
+        assert_eq!(Chain(&error).to_string(), "i/o: Address already in use");
+    }
+}

@@ -30,7 +30,9 @@ use crate::os::{DynSystem, OsPlanner, PlanInputs};
 use crate::server::{Listeners, ServerMode, stun_reply};
 use crate::state::StateDir;
 use crate::stealth::StealthOptions;
-use crate::types::{Action, Chain, ChannelEvent, Command, ConnectivityEvent, NodeError};
+use crate::types::{
+    Action, Chain, ChannelEvent, Command, ConnectivityEvent, NodeError, WriteThrottle,
+};
 
 /// Most nodes one gossip message may carry; the control channel caps it at 256.
 const MAX_GOSSIP_NODES: usize = 256;
@@ -1004,13 +1006,26 @@ impl Daemon {
         Ok(Response::WireGuardConfig { conf_text })
     }
 
+    /// Our endpoints, minus any inside a mesh range: those exist only through the tunnel,
+    /// however they were learned (an interface, STUN or a peer's view of us).
+    fn underlay_endpoints(&self) -> Vec<SocketAddr> {
+        let ranges: Vec<IpPrefix> = member_maps(self.networks.maps())
+            .flat_map(|map| {
+                [
+                    IpPrefix::V4(map.ipv4_range()),
+                    IpPrefix::V6(map.ipv6_range()),
+                ]
+            })
+            .collect();
+        outside(&ranges, self.connectivity.local_endpoints())
+    }
+
     /// Where joiners reach us: `public_hostname` first, then public, then private addresses.
     fn bootstrap(&self) -> Vec<Bootstrap> {
         let control = self.channel.local_addr();
         let port = control.port();
         let mut sockets: Vec<SocketAddr> = if control.ip().is_unspecified() {
-            self.connectivity
-                .local_endpoints()
+            self.underlay_endpoints()
                 .into_iter()
                 .map(|addr| SocketAddr::new(addr.ip(), port))
                 .collect()
@@ -1201,7 +1216,7 @@ impl Daemon {
                     known.truncate(MAX_BOOTSTRAP);
                 }
                 if changed {
-                    self.notes.endpoints_dirty = true;
+                    self.notes.endpoint_writes.mark();
                     self.gossip()?;
                     self.update_targets()?;
                 }
@@ -1450,7 +1465,7 @@ impl Daemon {
     /// directly can still find each other.
     fn gossip(&mut self) -> Result<(), NodeError> {
         let local = self.identity.node_id();
-        let own = self.connectivity.local_endpoints();
+        let own = self.underlay_endpoints();
         for runtime in self.networks.iter() {
             let map = runtime.netmap();
             if !map.is_member() {
@@ -1513,22 +1528,12 @@ impl Daemon {
     /// Writes peer endpoints at most every [`ENDPOINT_SAVE_INTERVAL`], or now with `force`.
     /// Each write syncs to disk, and behind some NATs endpoints change many times a second.
     fn save_endpoints_if_due(&mut self, force: bool) {
-        if !self.notes.endpoints_dirty {
-            return;
-        }
         let now = Instant::now();
-        let recent = self
-            .notes
-            .endpoints_saved
-            .is_some_and(|at| now.saturating_duration_since(at) < ENDPOINT_SAVE_INTERVAL);
-        if recent && !force {
+        if !self.notes.endpoint_writes.due(now, force) {
             return;
         }
         match self.state.save_endpoints(&self.endpoints) {
-            Ok(()) => {
-                self.notes.endpoints_dirty = false;
-                self.notes.endpoints_saved = Some(now);
-            }
+            Ok(()) => self.notes.endpoint_writes.written(now),
             Err(error) => tracing::warn!(error = %Chain(&error), "could not save peer endpoints"),
         }
     }
@@ -1612,15 +1617,32 @@ async fn bind_sockets(
 }
 
 /// Bookkeeping for diagnostics and for writing peer endpoints sparingly.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Notes {
     /// Recent warnings with when they happened, for `kith status` and `kith doctor`.
     warnings: VecDeque<(Instant, String)>,
     /// Where the DNS server forwards names outside the mesh.
     dns_forwarding: Vec<SocketAddr>,
-    /// Peer endpoints changed since they were last written.
-    endpoints_dirty: bool,
-    endpoints_saved: Option<Instant>,
+    /// When to write changed peer endpoints.
+    endpoint_writes: WriteThrottle,
+}
+
+impl Default for Notes {
+    fn default() -> Self {
+        Self {
+            warnings: VecDeque::new(),
+            dns_forwarding: Vec::new(),
+            endpoint_writes: WriteThrottle::new(ENDPOINT_SAVE_INTERVAL),
+        }
+    }
+}
+
+/// The endpoints that lie outside every one of `ranges`.
+fn outside(ranges: &[IpPrefix], endpoints: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    endpoints
+        .into_iter()
+        .filter(|addr| !ranges.iter().any(|range| range.contains(addr.ip())))
+        .collect()
 }
 
 /// Nonzero drop counters by name.
@@ -1717,5 +1739,33 @@ async fn sleep_until(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => core::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::net::SocketAddr;
+
+    use kith_types::IpPrefix;
+
+    use super::outside;
+
+    #[test]
+    fn mesh_addresses_are_never_shared_as_endpoints() {
+        let ranges: Vec<IpPrefix> = vec![
+            "100.64.0.0/10".parse().unwrap(),
+            "fd7a:115c:a1e0::/48".parse().unwrap(),
+        ];
+        let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
+        let learned = vec![
+            addr("192.168.1.20:41641"),
+            addr("100.108.151.234:41641"),
+            addr("[fd7a:115c:a1e0:a2ff::1]:41641"),
+            addr("203.0.113.7:61000"),
+        ];
+        assert_eq!(
+            outside(&ranges, learned),
+            [addr("192.168.1.20:41641"), addr("203.0.113.7:61000")]
+        );
     }
 }

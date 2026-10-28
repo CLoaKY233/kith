@@ -135,13 +135,17 @@ fn typo_reports_key_and_line() {
 
 #[test]
 fn validation_reports_every_error() {
-    let text = "[network]\nmtu = 100\n[server]\nenabled = true\ntls_cert = \"/c.pem\"\n\
-                [dns]\nenabled = false\n[exit]\nuse_exit = { wireguard = \"missing\" }\n";
-    let Err(ConfigError::Invalid(errors)) = Config::from_toml_str(text) else {
+    let long_socket = format!("/run/{}/kith.sock", "d".repeat(100));
+    let text = format!(
+        "[daemon]\nsocket_path = \"{long_socket}\"\n[network]\nmtu = 100\n[server]\nenabled = true\n\
+         tls_cert = \"/c.pem\"\n[dns]\nenabled = false\n[exit]\nuse_exit = {{ wireguard = \"missing\" }}\n"
+    );
+    let Err(ConfigError::Invalid(errors)) = Config::from_toml_str(&text) else {
         panic!()
     };
     let fields: BTreeSet<_> = errors.0.iter().map(|e| e.field.as_str()).collect();
     let expected = [
+        "daemon.socket_path",
         "network.mtu",
         "server",
         "server.tls_cert",
@@ -149,6 +153,12 @@ fn validation_reports_every_error() {
         "exit.use_exit.wireguard",
     ];
     assert_eq!(fields, expected.into_iter().collect(), "{errors}");
+
+    let relay_only = "[server]\nenabled = true\nrelay = true\n";
+    assert!(
+        Config::from_toml_str(relay_only).is_ok(),
+        "a relay needs no stealth listener"
+    );
 }
 
 fn hostname() -> impl Strategy<Value = String> {
