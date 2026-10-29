@@ -900,6 +900,7 @@ dependencies = [
  "kith-crypto",
  "kith-filter",
  "kith-packet",
+ "kith-pmtu",
  "kith-policy",
  "kith-router",
  "kith-transport-udp",
@@ -917,6 +918,7 @@ name = "kith-disco"
 version = "0.0.0"
 dependencies = [
  "kith-crypto",
+ "kith-pmtu",
  "kith-types",
  "kith-wire",
  "proptest",
@@ -1054,6 +1056,13 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "thiserror",
+]
+
+[[package]]
+name = "kith-pmtu"
+version = "0.0.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

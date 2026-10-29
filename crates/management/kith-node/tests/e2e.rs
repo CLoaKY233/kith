@@ -1135,4 +1135,142 @@ mod tests {
             .map_err(|e| format!("a removed phone still got through: {e}"))?;
         shutdown([p, a, s]).await
     }
+
+    /// A `len`-byte IPv4 UDP packet, with don't-fragment set or not.
+    fn big_udp(
+        source: Ipv4Addr,
+        destination: Ipv4Addr,
+        len: usize,
+        dont_fragment: bool,
+    ) -> TestResult<Vec<u8>> {
+        let mut packet = udp_packet(source, destination, &vec![9; len - 28])?;
+        packet[6] = if dont_fragment { 0x40 } else { 0 };
+        packet[10..12].fill(0);
+        let mut sum: u32 = packet[..20]
+            .chunks(2)
+            .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+            .sum();
+        while sum > 0xffff {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        packet[10..12].copy_from_slice(&(!u16::try_from(sum)?).to_be_bytes());
+        Ok(packet)
+    }
+
+    /// The MTU an ICMP "fragmentation needed" in `packet` reports, if it is one.
+    fn reported_mtu(packet: &[u8]) -> Option<u16> {
+        (packet.first()? >> 4 == 4
+            && *packet.get(9)? == 1
+            && *packet.get(20)? == 3
+            && *packet.get(21)? == 4)
+            .then(|| Some(u16::from_be_bytes([*packet.get(26)?, *packet.get(27)?])))
+            .flatten()
+    }
+
+    /// Waits up to `within` for `node`'s TUN to emit a packet `pick` accepts, sending
+    /// `nudge` from `from` every half second meanwhile so data keeps flowing.
+    async fn wait_packet<T>(
+        node: &NodeHandle,
+        (from, nudge): (&NodeHandle, &[u8]),
+        within: Duration,
+        pick: impl Fn(&[u8]) -> Option<T>,
+    ) -> TestResult<T> {
+        let deadline = tokio::time::Instant::now() + within;
+        while tokio::time::Instant::now() < deadline {
+            from.send_packet(nudge.to_vec()).await?;
+            if let Ok(packet) = timeout(Duration::from_millis(500), node.recv_packet()).await
+                && let Some(found) = pick(&packet?)
+            {
+                return Ok(found);
+            }
+        }
+        Err("the expected packet never came".into())
+    }
+
+    /// How long finding a path's size may take: a lost size costs two 5s probes, and the
+    /// search takes a few steps after that.
+    const SIZE_SEARCH_BUDGET: Duration = Duration::from_secs(90);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_path_too_small_for_the_tunnel_is_measured_and_senders_are_told() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        a.limit_udp_size(Some(1248)).await?;
+        b.limit_udp_size(Some(1248)).await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "beta").await?;
+        let alpha = peer(&b, network, "alpha").await?;
+        let beta = peer(&a, network, "beta").await?;
+        deliver(&a, &b, &udp_packet(alpha, beta, b"before")?).await?;
+
+        let nudge = udp_packet(alpha, beta, b"keep the session busy")?;
+        let refused = big_udp(alpha, beta, 1250, true)?;
+        let mtu = wait_packet(&a, (&a, &refused), SIZE_SEARCH_BUDGET, |packet| {
+            reported_mtu(packet)
+        })
+        .await?;
+        if !(1208..=1216).contains(&mtu) {
+            return Err(format!("the sender was told {mtu}, but the path carries 1216").into());
+        }
+        let info = peer_info(&a, network, "beta").await?;
+        if info.path_mtu != Some(mtu) {
+            return Err(format!("peers does not show the path size: {info:?}").into());
+        }
+        let split = big_udp(alpha, beta, 1250, false)?;
+        let pieces = wait_packet(&b, (&a, &split), Duration::from_secs(10), |packet| {
+            (packet.len() <= usize::from(mtu) && packet[6] & 0x20 != 0).then_some(())
+        })
+        .await;
+        pieces.map_err(|e| format!("a fragmentable packet did not arrive split: {e}"))?;
+        drop(nudge);
+        shutdown([a, b]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_phone_behind_a_small_path_is_measured_by_its_gateway() -> TestResult {
+        let s = start_server(true, false, Some("localhost")).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server: Ipv4Addr = peer(&a, network, "server").await?;
+        let (phone, everything) = checked_configs(export(&s, network, "Phone", &[]).await?)?;
+        let p = phone_from(&everything).await?;
+        p.limit_udp_size(Some(1248)).await?;
+
+        let deadline = tokio::time::Instant::now() + SIZE_SEARCH_BUDGET;
+        let measured = loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err("the gateway never measured the phone's path".into());
+            }
+            p.send_packet(udp_packet(phone, server, b"keepalive")?)
+                .await?;
+            if let Ok(packet) = timeout(Duration::from_millis(300), p.recv_packet()).await {
+                let mut packet = packet?;
+                if packet.get(9) == Some(&1) && packet.get(20) == Some(&8) {
+                    let (source, destination) = (packet[12..16].to_vec(), packet[16..20].to_vec());
+                    packet[12..16].copy_from_slice(&destination);
+                    packet[16..20].copy_from_slice(&source);
+                    packet[20] = 0;
+                    let sum = u32::from(u16::from_be_bytes([packet[22], packet[23]])) + 0x0800;
+                    let sum = (sum & 0xffff) + (sum >> 16);
+                    packet[22..24].copy_from_slice(&u16::try_from(sum)?.to_be_bytes());
+                    p.send_packet(packet).await?;
+                }
+            }
+            if let Some(mtu) = peer_info(&s, network, "phone").await?.path_mtu {
+                break mtu;
+            }
+        };
+        if !(1208..=1216).contains(&measured) {
+            return Err(
+                format!("the gateway measured {measured}, but the path carries 1216").into(),
+            );
+        }
+        let refused = big_udp(server, phone, 1250, true)?;
+        let told = wait_packet(&s, (&s, &refused), Duration::from_secs(10), reported_mtu).await?;
+        if told != measured {
+            return Err(format!("the sender was told {told}, not {measured}").into());
+        }
+        shutdown([p, a, s]).await
+    }
 }

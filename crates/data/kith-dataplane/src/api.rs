@@ -184,6 +184,9 @@ pub struct ExternalPeerStats {
     pub rx_bytes: u64,
     /// Bytes of WireGuard datagrams produced for it.
     pub tx_bytes: u64,
+    /// For a mesh member, the largest packet its path carries, when smaller than the
+    /// tunnel MTU.
+    pub path_mtu: Option<u16>,
 }
 
 /// One peer's session and traffic.
@@ -288,6 +291,8 @@ pub(crate) enum Command {
     SetPathMtu(NodeId, Option<u16>, Reply),
     #[cfg(feature = "test-support")]
     BlockDirectUdp(bool, Reply),
+    #[cfg(feature = "test-support")]
+    LimitUdpSize(Option<usize>, Reply),
     SetFilter(NetworkId, CompiledFilter),
     SendRaw(SocketAddr, Vec<u8>),
     AcceptRelayed(NodeId, Vec<u8>),
@@ -367,6 +372,14 @@ impl DataplaneHandle {
     #[cfg(feature = "test-support")]
     pub async fn block_direct_udp(&self, blocked: bool) -> Result<(), DataplaneError> {
         self.request(|reply| Command::BlockDirectUdp(blocked, reply))
+            .await
+    }
+
+    /// Drops every direct UDP datagram it receives that is bigger than `limit`, as a path
+    /// with a small MTU would; `None` stops.
+    #[cfg(feature = "test-support")]
+    pub async fn limit_udp_size(&self, limit: Option<usize>) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::LimitUdpSize(limit, reply))
             .await
     }
 

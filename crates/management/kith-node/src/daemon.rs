@@ -218,6 +218,12 @@ impl NodeHandle {
         tun.lock().await.receive().await.ok_or(NodeError::Stopped)
     }
 
+    /// Drops received direct UDP datagrams bigger than `limit`, as a small path would.
+    #[cfg(feature = "test-support")]
+    pub async fn limit_udp_size(&self, limit: Option<usize>) -> Result<(), NodeError> {
+        Ok(self.dataplane.limit_udp_size(limit).await?)
+    }
+
     /// Drops all direct UDP in and out while `blocked`, leaving relays as the only path.
     #[cfg(feature = "test-support")]
     pub async fn block_direct_udp(&self, blocked: bool) -> Result<(), NodeError> {
@@ -1337,6 +1343,7 @@ impl Daemon {
                     online,
                     display_name: peer.name.clone(),
                     gateway: None,
+                    path_mtu: self.connectivity.path_mtu(node).filter(|_| online),
                 }
             })
             .collect();
@@ -1348,38 +1355,39 @@ impl Daemon {
                 .map(|peer| peer.label.clone())
         };
         for (id, client) in map.clients() {
-            let (online, seen_ago, endpoint, rx_bytes, tx_bytes) = if client.gateway == local {
-                let stat = stats
-                    .external
-                    .iter()
-                    .find(|stat| stat.public_key == client.key);
-                let heard_ago = stat.and_then(|stat| stat.last_received).map(age);
-                let online = is_online(heard_ago, CLIENT_SILENCE);
-                (
-                    online,
-                    heard_ago.or_else(|| self.last_seen.get(id).map(|s| secs_ago(*s))),
-                    stat.and_then(|stat| stat.endpoint)
-                        .filter(|_| online)
-                        .map(|e| e.to_string()),
-                    stat.map_or(0, |stat| stat.rx_bytes),
-                    stat.map_or(0, |stat| stat.tx_bytes),
-                )
-            } else {
-                let gateway_online = infos
-                    .iter()
-                    .any(|info| info.node == client.gateway && info.online);
-                let said = self
-                    .presence
-                    .said
-                    .get(&(network, *id))
-                    .filter(|(from, _)| *from == client.gateway)
-                    .map(|(_, presence)| *presence);
-                let online = gateway_online && said.is_some_and(|presence| presence.online);
-                let seen_ago = said
-                    .filter(|presence| presence.last_seen > 0)
-                    .map(|presence| secs_ago(presence.last_seen));
-                (online, seen_ago, None, 0, 0)
-            };
+            let (online, seen_ago, endpoint, (rx_bytes, tx_bytes), path_mtu) =
+                if client.gateway == local {
+                    let stat = stats
+                        .external
+                        .iter()
+                        .find(|stat| stat.public_key == client.key);
+                    let heard_ago = stat.and_then(|stat| stat.last_received).map(age);
+                    let online = is_online(heard_ago, CLIENT_SILENCE);
+                    (
+                        online,
+                        heard_ago.or_else(|| self.last_seen.get(id).map(|s| secs_ago(*s))),
+                        stat.and_then(|stat| stat.endpoint)
+                            .filter(|_| online)
+                            .map(|e| e.to_string()),
+                        stat.map_or((0, 0), |stat| (stat.rx_bytes, stat.tx_bytes)),
+                        stat.and_then(|stat| stat.path_mtu).filter(|_| online),
+                    )
+                } else {
+                    let gateway_online = infos
+                        .iter()
+                        .any(|info| info.node == client.gateway && info.online);
+                    let said = self
+                        .presence
+                        .said
+                        .get(&(network, *id))
+                        .filter(|(from, _)| *from == client.gateway)
+                        .map(|(_, presence)| *presence);
+                    let online = gateway_online && said.is_some_and(|presence| presence.online);
+                    let seen_ago = said
+                        .filter(|presence| presence.last_seen > 0)
+                        .map(|presence| secs_ago(presence.last_seen));
+                    (online, seen_ago, None, (0, 0), None)
+                };
             infos.push(PeerInfo {
                 node: *id,
                 name: client.peer.label.clone(),
@@ -1393,6 +1401,7 @@ impl Daemon {
                 online,
                 display_name: client.peer.name.clone(),
                 gateway: label_of(&client.gateway),
+                path_mtu,
             });
         }
         infos

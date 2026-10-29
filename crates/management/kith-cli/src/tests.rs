@@ -286,6 +286,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             online: true,
             display_name: "NAS".into(),
             gateway: None,
+            path_mtu: None,
         },
         PeerInfo {
             node: phone,
@@ -300,6 +301,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             online: false,
             display_name: "Phone \"old\"".into(),
             gateway: None,
+            path_mtu: None,
         },
         PeerInfo {
             node: NodeId::from_bytes([0xdd; 32]),
@@ -314,6 +316,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             online: true,
             display_name: "Pixel".into(),
             gateway: Some("nas".into()),
+            path_mtu: Some(1216),
         },
     ]
 }
@@ -373,14 +376,14 @@ async fn status_renders_what_the_daemon_reports() {
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
                 r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
                 r#""endpoint":"198.51.100.7:41641","last_seen_secs":4,"#,
-                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null}},"#,
+                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null,"path_mtu":null}},"#,
                 r#"{{"node":"{phone}","name":"phone","address":"100.64.0.3","#,
                 r#""path":null,"path_reason":null,"#,
                 r#""endpoint":null,"last_seen_secs":null,"#,
-                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null}},"#,
+                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null,"path_mtu":null}},"#,
                 r#"{{"node":"{pixel}","name":"pixel","address":"100.64.0.4","path":null,"#,
                 r#""path_reason":null,"endpoint":"203.0.113.9:51820","last_seen_secs":12,"#,
-                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas"}}]}}]}}"#,
+                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas","path_mtu":1216}}]}}]}}"#,
                 "\n",
             ),
             me = NodeId::from_bytes([0x12; 32]),
@@ -400,6 +403,8 @@ async fn status_renders_what_the_daemon_reports() {
          fix: make sure kith is running on it and it has internet; it falls back to the relay \
          when direct UDP is blocked; if it is gone for good, `kith remove home phone`\n\
          ok    home/pixel: through nas\n\
+         info  home/pixel: its path carries only 1216-byte packets; kith keeps TCP smaller, \
+         splits IPv4 and tells other senders to shrink\n\
          ok    exit node home/nas is reachable\n\
          warn  100.100.100.100/32 via utun37 overlaps kith's addresses; kith peers there are unreachable\n      \
          fix: quit the other VPN (often Tailscale) while using kith\n\

@@ -351,6 +351,9 @@ pub struct PeerInfo {
     /// For a device on plain WireGuard, such as a phone, the unique name of the kith
     /// device it connects through.
     pub gateway: Option<String>,
+    /// The largest packet the path to it carries, when smaller than the tunnel MTU. Bigger
+    /// TCP is kept smaller, IPv4 split, and senders of other traffic told to shrink.
+    pub path_mtu: Option<u16>,
 }
 
 /// How traffic reaches a peer.

@@ -22,6 +22,7 @@ use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 
 use kith_crypto::{Context, Hasher, RandomError};
+use kith_pmtu::SizeSearch;
 use kith_types::NodeId;
 
 use crate::message::{
@@ -66,16 +67,8 @@ pub const WIREGUARD_DATA_OVERHEAD: u16 = 32;
 /// The largest probe sent: a full Ethernet frame's UDP payload over IPv4. Bigger tunnel
 /// MTUs are trusted rather than probed, since no internet path is larger.
 pub const MAX_PROBE_PAYLOAD: u16 = 1472;
-/// How close the size search gets to the real limit before it stops.
-pub const SIZE_PRECISION: u16 = 8;
-/// How many probes of one size must be lost before the path is taken not to carry it,
-/// so a single random loss does not shrink the path.
-pub const SIZE_PROBE_ATTEMPTS: u32 = 2;
-/// How often a path found smaller than the tunnel MTU is checked again, since paths change.
-pub const SIZE_RECHECK_INTERVAL: Duration = Duration::from_secs(600);
-
 const _: () = assert!(
-    TRUST_DURATION.as_millis() < PING_TIMEOUT.saturating_mul(SIZE_PROBE_ATTEMPTS).as_millis(),
+    TRUST_DURATION.as_millis() < PING_TIMEOUT.saturating_mul(kith_pmtu::ATTEMPTS).as_millis(),
     "a silent path must lose trust before its size probes can all be lost"
 );
 
@@ -189,21 +182,12 @@ struct SentPing {
     probe: Option<u16>,
 }
 
-/// The search for the largest UDP payload the current direct path carries.
+/// The size search on the current direct path.
 #[derive(Debug, Clone, Default)]
-struct SizeSearch {
+struct PathSize {
     /// The path searched; a new path starts over.
     path: Option<SocketAddr>,
-    /// The largest size that got an answer.
-    good: u16,
-    /// The smallest size lost [`SIZE_PROBE_ATTEMPTS`] times.
-    bad: Option<u16>,
-    /// How often the size being tried has been lost so far.
-    lost: u32,
-    /// Whether a probe is out.
-    waiting: bool,
-    /// When the search last finished below the target, to check again later.
-    finished_at: Option<Duration>,
+    search: SizeSearch,
     /// What was last reported.
     reported: Option<u16>,
 }
@@ -231,7 +215,7 @@ pub struct PeerPaths {
     /// The largest UDP payload worth proving the path carries: the tunnel MTU plus
     /// WireGuard's overhead, at most [`MAX_PROBE_PAYLOAD`]. Zero turns probing off.
     size_target: u16,
-    size: SizeSearch,
+    size: PathSize,
     /// The latest time passed in; time never goes backwards from here.
     now: Duration,
 }
@@ -275,7 +259,7 @@ impl PeerPaths {
             last_call_me_maybe: None,
             events: VecDeque::new(),
             size_target: 0,
-            size: SizeSearch::default(),
+            size: PathSize::default(),
             now: Duration::ZERO,
         };
         paths.report_path();
@@ -318,7 +302,8 @@ impl PeerPaths {
             .min(MAX_PROBE_PAYLOAD);
         if target != self.size_target {
             self.size_target = target;
-            self.size = SizeSearch::default();
+            self.size.path = None;
+            self.size.search = SizeSearch::new(target);
             self.report_size();
         }
     }
@@ -326,11 +311,11 @@ impl PeerPaths {
     /// The largest tunnel packet the current path is known to carry, if smaller than the
     /// tunnel MTU: `None` until a size has been lost, and always on the relay.
     pub fn path_mtu(&self) -> Option<u16> {
-        let search = &self.size;
-        if search.path.is_none() || search.path != self.best_direct || search.bad.is_none() {
+        if self.size.path.is_none() || self.size.path != self.best_direct {
             return None;
         }
-        Some(search.good.saturating_sub(WIREGUARD_DATA_OVERHEAD))
+        let limit = self.size.search.limit()?;
+        Some(limit.saturating_sub(WIREGUARD_DATA_OVERHEAD))
     }
 
     /// Records that data was sent to or received from the peer, which keeps probing alive for
@@ -694,66 +679,35 @@ impl PeerPaths {
         }
     }
 
-    /// The UDP payload size to probe next on the current direct path, if any: the target
-    /// until it is lost, then halfway between what got through and what did not, until
-    /// they are [`SIZE_PRECISION`] apart. A search that ended below the target starts
-    /// over after [`SIZE_RECHECK_INTERVAL`].
-    fn size_to_probe(&mut self) -> Option<(SocketAddr, u16)> {
+    /// The current direct path, with the search started over if it is new, when probing
+    /// is on and data is flowing.
+    fn probed_path(&mut self) -> Option<SocketAddr> {
         let path = self.best_direct?;
         if self.size_target == 0 || !self.is_active_at(self.now) {
             return None;
         }
         if self.size.path != Some(path) {
-            self.size = SizeSearch {
-                path: Some(path),
-                reported: self.size.reported,
-                ..SizeSearch::default()
-            };
+            self.size.path = Some(path);
+            self.size.search = SizeSearch::new(self.size_target);
         }
-        let search = &mut self.size;
-        if search.waiting || search.good >= self.size_target {
-            return None;
-        }
-        let Some(bad) = search.bad else {
-            return Some((path, self.size_target));
-        };
-        if bad.saturating_sub(search.good) <= SIZE_PRECISION {
-            let finished = *search.finished_at.get_or_insert(self.now);
-            if self.now.saturating_sub(finished) < SIZE_RECHECK_INTERVAL {
-                return None;
-            }
-            search.bad = None;
-            search.finished_at = None;
-            return Some((path, self.size_target));
-        }
-        Some((path, search.good.midpoint(bad)))
+        Some(path)
     }
 
-    /// When [`Self::size_to_probe`] next has something to send.
+    /// When a size probe is next due on the current direct path.
     fn size_due(&self) -> Option<Duration> {
         let path = self.best_direct?;
         if self.size_target == 0 || !self.is_active_at(self.now) {
             return None;
         }
-        let search = &self.size;
-        if search.path != Some(path) {
+        if self.size.path != Some(path) {
             return Some(self.now);
         }
-        if search.waiting || search.good >= self.size_target {
-            return None;
-        }
-        match search.bad {
-            Some(bad) if bad.saturating_sub(search.good) <= SIZE_PRECISION => Some(
-                search
-                    .finished_at
-                    .map_or(self.now, |at| at.saturating_add(SIZE_RECHECK_INTERVAL)),
-            ),
-            _ => Some(self.now),
-        }
+        self.size.search.next_due(self.now)
     }
 
     fn next_size_probe(&mut self) -> Option<Transmit> {
-        let (to, size) = self.size_to_probe()?;
+        let to = self.probed_path()?;
+        let size = self.size.search.next_probe(self.now)?;
         let padding = usize::from(size).checked_sub(MIN_PACKET_LEN + PING_LEN)?;
         let tx_id = self.next_tx_id();
         self.in_flight.insert(
@@ -764,7 +718,6 @@ impl PeerPaths {
                 probe: Some(size),
             },
         );
-        self.size.waiting = true;
         Some(Transmit {
             to: PathTarget::Direct(to),
             message: Message::Ping(Ping {
@@ -776,30 +729,20 @@ impl PeerPaths {
     }
 
     fn size_answered(&mut self, from: SocketAddr, size: u16) {
-        if self.size.path != Some(from) {
-            return;
+        if self.size.path == Some(from) {
+            self.size.search.answered(size);
+            self.report_size();
         }
-        self.size.waiting = false;
-        self.size.lost = 0;
-        self.size.good = self.size.good.max(size);
-        self.report_size();
     }
 
     /// A probe of `size` got no answer. Losing a path altogether is not mistaken for a
     /// small one: trust lapses after [`TRUST_DURATION`], before a second probe of the same
     /// size can be lost, and a new path starts the search over.
     fn size_lost(&mut self, to: SocketAddr, size: u16) {
-        if self.size.path != Some(to) {
-            return;
+        if self.size.path == Some(to) {
+            self.size.search.lost(size);
+            self.report_size();
         }
-        let search = &mut self.size;
-        search.waiting = false;
-        search.lost = search.lost.saturating_add(1);
-        if search.lost >= SIZE_PROBE_ATTEMPTS {
-            search.lost = 0;
-            search.bad = Some(search.bad.map_or(size, |bad| bad.min(size)));
-        }
-        self.report_size();
     }
 
     fn push_event(&mut self, event: Event) {
@@ -1365,7 +1308,7 @@ mod tests {
             let mtu = paths.path_mtu().unwrap_or(u16::MAX);
             let real = carries - super::WIREGUARD_DATA_OVERHEAD;
             assert!(
-                mtu <= real && real - mtu <= super::SIZE_PRECISION,
+                mtu <= real && real - mtu <= kith_pmtu::PRECISION,
                 "carries {carries}: {mtu}"
             );
             assert_eq!(mtus(&seen).last(), Some(&Some(mtu)), "carries {carries}");
@@ -1416,7 +1359,7 @@ mod tests {
         let mut paths = trusted_paths(1280);
         drop(run_path(&mut paths, (1248, 0), 0, 120));
         assert!(paths.path_mtu().is_some());
-        let later = super::SIZE_RECHECK_INTERVAL.as_secs() + 120;
+        let later = kith_pmtu::RECHECK_INTERVAL.as_secs() + 120;
         let mut grown = paths.clone();
         for tick in 0..later * 10 {
             let now = ms(120_000 + tick * 100);

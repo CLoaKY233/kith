@@ -137,6 +137,7 @@ Smaller concerns are modules.
 | Crate | Purpose |
 |---|---|
 | `kith-stun` `[core]` | Minimal STUN binding codec |
+| `kith-pmtu` `[core]` | Finding the largest packet a path carries by probing, for disco paths and for phones behind a gateway |
 | `kith-disco` `[core]` | Disco messages, endpoint candidates, path probing, best-path selection |
 | `kith-transport` `[core]` | `Transport` / `Link` traits, ladder scheduler (happy-eyeballs racing, per-network-fingerprint cache) |
 | `kith-obfs` `[core]` | AmneziaWG-style packet transform (junk, padding, header remap), parameterized from the ledger |

@@ -616,6 +616,11 @@ impl Connectivity {
         })
     }
 
+    /// The largest packet the path to `peer` carries, when smaller than the tunnel MTU.
+    pub(crate) fn path_mtu(&self, peer: &NodeId) -> Option<u16> {
+        self.peers.get(peer)?.paths.path_mtu()
+    }
+
     /// The path traffic to `peer` takes now, as the dataplane sees it.
     pub(crate) fn path_kind(&self, peer: &NodeId) -> Option<PathKind> {
         self.peers

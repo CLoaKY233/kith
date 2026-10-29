@@ -259,7 +259,10 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
             Some(gateway) => json_str(out, gateway)?,
             None => out.write_all(b"null")?,
         }
-        out.write_all(b"}")?;
+        match peer.path_mtu {
+            Some(mtu) => write!(out, ",\"path_mtu\":{mtu}}}")?,
+            None => out.write_all(b",\"path_mtu\":null}")?,
+        }
     }
     out.write_all(b"]")
 }

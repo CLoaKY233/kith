@@ -64,6 +64,17 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
         }
         for peer in peers {
             found.push(check_peer(network, peer, peers));
+            if let Some(mtu) = peer.path_mtu.filter(|_| peer.online) {
+                found.push(finding(
+                    Level::Info,
+                    format!(
+                        "{}/{}: its path carries only {mtu}-byte packets; kith keeps TCP smaller, \
+                         splits IPv4 and tells other senders to shrink",
+                        network.name, peer.name
+                    ),
+                    None,
+                ));
+            }
         }
     }
     if let Some(exit) = &status.exit_node {

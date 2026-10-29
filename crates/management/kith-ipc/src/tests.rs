@@ -30,7 +30,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 8, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 9, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -40,7 +40,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 8, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 9, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -56,11 +56,13 @@ fn golden_bytes() {
         online: true,
         display_name: "D".to_owned(),
         gateway: Some("e".to_owned()),
+        path_mtu: Some(1216),
     }]));
-    let mut expected = vec![61, b'k', b't', 0x70, 8, 0, 6, 1];
+    let mut expected = vec![64, b'k', b't', 0x70, 9, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
-        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1, b'e',
+        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,
+        b'e', 1, 0xc0, 0x09,
     ]);
     assert_eq!(encode(&peers).unwrap(), expected);
 }
@@ -206,13 +208,18 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                 any::<u64>(),
                 any::<u64>(),
             ),
-            (any::<bool>(), text(), proptest::option::of(text())),
+            (
+                any::<bool>(),
+                text(),
+                proptest::option::of(text()),
+                any::<Option<u16>>(),
+            ),
         )
             .prop_map(
                 |(
                     (node, name, address, path),
                     (last_seen_secs, endpoint, rx_bytes, tx_bytes),
-                    (online, display_name, gateway),
+                    (online, display_name, gateway, path_mtu),
                 )| {
                     PeerInfo {
                         node,
@@ -227,6 +234,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                         online,
                         display_name,
                         gateway,
+                        path_mtu,
                     }
                 },
             ),

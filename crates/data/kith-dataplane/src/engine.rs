@@ -29,6 +29,7 @@ use crate::tun_device::TunDevice;
 use kith_packet::{
     IPV6_MIN_MTU, Oversize, clamp_mss, fragment_v4, needs_mss_clamp, oversize, too_big_reply,
 };
+use kith_pmtu::SizeSearch;
 
 /// Handshakes per second answered before cookies are demanded.
 const HANDSHAKES_PER_SECOND: u32 = 1000;
@@ -55,6 +56,8 @@ pub(crate) struct Engine<T> {
     addresses: BTreeMap<NetworkId, Vec<(IpAddr, u8)>>,
     /// Set only by tests, to simulate a network that drops direct UDP.
     udp_blocked: bool,
+    /// Set only by tests, to simulate a path that drops big datagrams.
+    udp_limit: Option<usize>,
 }
 
 impl<T> core::fmt::Debug for Engine<T> {
@@ -98,6 +101,8 @@ struct State {
     fragment: Vec<u8>,
     /// Fragments arriving from peers and members, put back together for the firewall.
     reassembly: Reassembly,
+    /// The tunnel MTU, which members' paths are probed for.
+    tunnel_mtu: u16,
     /// The IP packet size TCP segments are kept to: what fits a path no larger than the
     /// tunnel MTU itself, once WireGuard's own bytes are added.
     clamp_to: u16,
@@ -138,6 +143,12 @@ struct Member {
     network: NetworkId,
     resolver: IpAddr,
     filter: Filter,
+    /// How big a packet the path to it carries. It runs no kith, so it is asked with
+    /// padded ICMP echoes through the tunnel, which every phone answers.
+    size: SizeSearch,
+    /// The echo out now: its sequence number, size and when it left.
+    probe: Option<(u16, u16, Duration)>,
+    next_sequence: u16,
 }
 
 impl Member {
@@ -146,8 +157,18 @@ impl Member {
             network: spec.network,
             resolver: spec.resolver,
             filter: Filter::new(spec.policy),
+            size: SizeSearch::default(),
+            probe: None,
+            next_sequence: 0,
         }
     }
+}
+
+/// Where a packet goes on: a mesh peer, or a peer of an external interface.
+#[derive(Clone, Copy)]
+enum Hop {
+    Mesh(NodeId),
+    External(u64, PeerId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -210,6 +231,7 @@ impl<T: TunDevice> Engine<T> {
                 forward: Vec::with_capacity(MAX_PACKET_CAPACITY),
                 fragment: Vec::new(),
                 reassembly: Reassembly::default(),
+                tunnel_mtu: tun.mtu(),
                 clamp_to,
             },
             io: Io {
@@ -222,6 +244,7 @@ impl<T: TunDevice> Engine<T> {
             clock: Clock::new(),
             addresses: BTreeMap::new(),
             udp_blocked: false,
+            udp_limit: None,
         };
         Ok((engine, handle, event_receiver))
     }
@@ -263,6 +286,13 @@ impl<T: TunDevice> Engine<T> {
         if let Command::BlockDirectUdp(blocked, reply) = command {
             debug!(blocked, "direct UDP blocked for testing");
             self.udp_blocked = blocked;
+            reply.send(Ok(())).ok();
+            return;
+        }
+        #[cfg(feature = "test-support")]
+        if let Command::LimitUdpSize(limit, reply) = command {
+            debug!(?limit, "big UDP dropped for testing");
+            self.udp_limit = limit;
             reply.send(Ok(())).ok();
             return;
         }
@@ -326,6 +356,12 @@ impl<T: TunDevice> Engine<T> {
 
     async fn inbound(&mut self, now: Now) {
         for datagram in self.io.udp_in.datagrams() {
+            if self
+                .udp_limit
+                .is_some_and(|limit| datagram.payload.len() > limit)
+            {
+                continue;
+            }
             match classify(datagram.payload) {
                 Kind::WireGuard => {
                     if self.state.tun_out.is_full() {
@@ -362,6 +398,10 @@ impl<T: TunDevice> Engine<T> {
 impl State {
     fn command(&mut self, now: Now, clock: &Clock, command: Command) {
         match command {
+            #[cfg(feature = "test-support")]
+            Command::LimitUdpSize(_, reply) => {
+                reply.send(Ok(())).ok();
+            }
             #[cfg(feature = "test-support")]
             Command::BlockDirectUdp(_, reply) => {
                 reply.send(Ok(())).ok();
@@ -590,6 +630,7 @@ impl State {
                     last_received: peer.last_received().and_then(|at| clock.at(at)),
                     rx_bytes: peer.rx_bytes(),
                     tx_bytes: peer.tx_bytes(),
+                    path_mtu: entry.member.as_ref().and_then(|member| member.size.limit()),
                 });
             }
         }
@@ -680,7 +721,7 @@ impl State {
             .path_mtu
             .filter(|mtu| packet.len() > usize::from(*mtu))
         {
-            self.oversized(now, packet, mtu, node);
+            self.oversized(now, packet, mtu, Hop::Mesh(node));
             return;
         }
         let Some(peer) = self.device.peer_mut(entry.id) else {
@@ -701,10 +742,10 @@ impl State {
         touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
     }
 
-    /// Handles a packet bigger than the `mtu` the path to `node` carries: an IPv4 packet that
+    /// Handles a packet bigger than the `mtu` the path to `to` carries: an IPv4 packet that
     /// allows it goes on in fragments; for anything else the sender, here or behind us, is
     /// told the size with ICMP and the packet is dropped.
-    fn oversized(&mut self, now: Now, packet: &[u8], mtu: u16, node: NodeId) {
+    fn oversized(&mut self, now: Now, packet: &[u8], mtu: u16, to: Hop) {
         match oversize(packet) {
             Oversize::Fragment => {
                 let mut scratch = core::mem::take(&mut self.fragment);
@@ -715,7 +756,10 @@ impl State {
                 });
                 self.fragment = scratch;
                 for piece in pieces {
-                    self.seal_to_peer(now, &piece, node);
+                    match to {
+                        Hop::Mesh(node) => self.seal_to_peer(now, &piece, node),
+                        Hop::External(slot, id) => self.outbound_external(now, &piece, slot, id),
+                    }
                 }
             }
             Oversize::Reply => {
@@ -874,6 +918,19 @@ impl State {
         let Some(external) = self.externals.get_mut(&slot) else {
             return;
         };
+        let limit = external
+            .peers
+            .get(&id)
+            .and_then(|entry| entry.member.as_ref())
+            .and_then(|member| member.size.limit())
+            .filter(|mtu| packet.len() > usize::from(*mtu));
+        if let Some(mtu) = limit {
+            self.oversized(now, packet, mtu, Hop::External(slot, id));
+            return;
+        }
+        let Some(external) = self.externals.get_mut(&slot) else {
+            return;
+        };
         let (Some(entry), Some(peer)) = (external.peers.get_mut(&id), external.device.peer_mut(id))
         else {
             count(&mut self.out.drops.no_route);
@@ -939,6 +996,12 @@ impl State {
                                 .any(|prefix| prefix.contains(address))
                         }) {
                             count(&mut self.out.drops.source_not_allowed);
+                        } else if let Some(member) = entry.member.as_mut()
+                            && let Some((sequence, size, _)) = member.probe
+                            && echo_reply_sequence(packet) == Some(sequence)
+                        {
+                            member.size.answered(size);
+                            member.probe = None;
                         } else if let Some(member) = entry.member.as_mut() {
                             let fragment = is_fragment(packet);
                             let assembled = if fragment {
@@ -1283,7 +1346,53 @@ impl State {
         while let Some(event) = peer.poll_event() {
             debug!(interface = %external.name, ?event, "external WireGuard session event");
         }
-        if let Some(due) = peer.poll_timeout() {
+        let mut due = peer.poll_timeout();
+        let heard = peer
+            .last_received()
+            .is_some_and(|last| at.saturating_sub(last) < MEMBER_SILENCE);
+        if let Some(member) = entry.member.as_mut() {
+            if let Some((_, size, sent)) = member.probe
+                && at.saturating_sub(sent) >= PROBE_TIMEOUT
+            {
+                member.size.lost(size);
+                member.probe = None;
+            }
+            if member.size.target() != self.tunnel_mtu {
+                member.size = SizeSearch::new(self.tunnel_mtu);
+            }
+            let source = self
+                .local_in
+                .get(&member.network)
+                .and_then(|held| held.iter().find(|address| address.is_ipv4()).copied());
+            let destination = entry.allowed_ips.iter().find_map(|prefix| match prefix {
+                IpPrefix::V4(v4) if v4.prefix_len() == 32 => Some(IpAddr::V4(v4.addr())),
+                IpPrefix::V4(_) | IpPrefix::V6(_) => None,
+            });
+            if heard
+                && member.probe.is_none()
+                && let (Some(source), Some(destination)) = (source, destination)
+                && let Some(size) = member.size.next_probe(at)
+            {
+                let sequence = member.next_sequence;
+                member.next_sequence = sequence.wrapping_add(1);
+                let echo = echo_request(source, destination, sequence, size);
+                if let Some(out) = self.scratch.get_mut(..required_output_len(echo.len()))
+                    && let Ok(Encapsulated::Transport(len)) = peer.encapsulate(now, &echo, out)
+                {
+                    member.probe = Some((sequence, size, at));
+                    self.out
+                        .send_external(entry.endpoint, self.scratch.get(..len));
+                } else {
+                    member.size.lost(size);
+                }
+            }
+            let probe_due = member
+                .probe
+                .map(|(_, _, sent)| sent.saturating_add(PROBE_TIMEOUT))
+                .or_else(|| heard.then(|| member.size.next_due(at)).flatten());
+            due = [due, probe_due].into_iter().flatten().min();
+        }
+        if let Some(due) = due {
             self.timers.schedule(
                 Key::External(slot, id),
                 due.max(at.saturating_add(MIN_TIMER_DELAY)),
@@ -1363,6 +1472,71 @@ fn exit_role(
     } else {
         ExitRole::None
     }
+}
+
+/// The ICMP identifier of a gateway's size probes to its plain WireGuard members.
+const PROBE_ID: u16 = 0x6b70;
+/// How long an echo probe may take to come back.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent
+/// and still be probed.
+const MEMBER_SILENCE: Duration = Duration::from_secs(60);
+
+/// An ICMP echo request of `size` bytes from `source` to `destination`: a size probe.
+fn echo_request(source: IpAddr, destination: IpAddr, sequence: u16, size: u16) -> Vec<u8> {
+    let mut packet = vec![0_u8; usize::from(size.max(28))];
+    let (IpAddr::V4(source), IpAddr::V4(destination)) = (source, destination) else {
+        return packet;
+    };
+    let total = u16::try_from(packet.len()).unwrap_or(u16::MAX);
+    let header: [u8; 20] = {
+        let mut header = [
+            0x45, 0, 0, 0, 0, 0, 0x40, 0, 64, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        if let Some(field) = header.get_mut(2..4) {
+            field.copy_from_slice(&total.to_be_bytes());
+        }
+        if let Some(field) = header.get_mut(12..16) {
+            field.copy_from_slice(&source.octets());
+        }
+        if let Some(field) = header.get_mut(16..20) {
+            field.copy_from_slice(&destination.octets());
+        }
+        header
+    };
+    if let Some(field) = packet.get_mut(..20) {
+        field.copy_from_slice(&header);
+    }
+    if let Some(icmp) = packet.get_mut(20..28) {
+        icmp.copy_from_slice(&[8, 0, 0, 0, 0, 0, 0, 0]);
+        if let Some(field) = icmp.get_mut(4..6) {
+            field.copy_from_slice(&PROBE_ID.to_be_bytes());
+        }
+        if let Some(field) = icmp.get_mut(6..8) {
+            field.copy_from_slice(&sequence.to_be_bytes());
+        }
+    }
+    if let Ok(mut ip) = kith_packet::Ipv4Packet::new_checked(&mut packet[..]) {
+        ip.fill_checksum();
+    }
+    if let Some(icmp) = packet.get_mut(20..)
+        && let Ok(mut icmp) = kith_packet::IcmpPacket::new_checked(icmp)
+    {
+        icmp.fill_checksum_v4();
+    }
+    packet
+}
+
+/// The sequence number of `packet` if it answers one of our size probes.
+fn echo_reply_sequence(packet: &[u8]) -> Option<u16> {
+    let ip = kith_packet::Ipv4Packet::new_checked(packet).ok()?;
+    let icmp = ip.payload();
+    let kind = *icmp.first()?;
+    let id = u16::from_be_bytes(icmp.get(4..6)?.try_into().ok()?);
+    if ip.protocol() != 1 || kind != 0 || id != PROBE_ID {
+        return None;
+    }
+    Some(u16::from_be_bytes(icmp.get(6..8)?.try_into().ok()?))
 }
 
 /// A packet's parts: the fragments it arrived in, or itself.
