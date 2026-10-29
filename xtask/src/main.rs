@@ -3,7 +3,8 @@
 //! - `ci`: every check CI runs, in the same order.
 //! - `no-std`: build every sans-IO core crate for a bare-metal target.
 //! - `core-crates`: print the sans-IO core crates (those marked `#![no_std]`).
-//! - `size`: build `kith` with the `embedded` profile and enforce the size budget.
+//! - `size`: build `kith` with the `embedded` profile and enforce the size budget: 5 MB
+//!   for router and device targets, 6 MB for x86-64.
 
 #![forbid(unsafe_code)]
 
@@ -14,8 +15,23 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-/// Default binary size budget: 5 MB.
-const DEFAULT_MAX_BYTES: u64 = 5_000_000;
+/// Binary size budget for routers and small devices: 5 MB.
+const DEVICE_MAX_BYTES: u64 = 5_000_000;
+/// Budget for x86-64, whose code is about a megabyte larger and which runs on PCs and
+/// servers rather than routers: 6 MB.
+const X86_64_MAX_BYTES: u64 = 6_000_000;
+
+/// The size budget for `target`, or the host when `None`.
+fn default_max_bytes(target: Option<&str>) -> u64 {
+    let x86_64 = target.map_or(cfg!(target_arch = "x86_64"), |triple| {
+        triple.starts_with("x86_64")
+    });
+    if x86_64 {
+        X86_64_MAX_BYTES
+    } else {
+        DEVICE_MAX_BYTES
+    }
+}
 
 /// Bare-metal target used to prove the core crates never touch `std`.
 const NO_STD_TARGET: &str = "thumbv7em-none-eabihf";
@@ -213,7 +229,7 @@ fn no_std() -> Result<(), Error> {
 
 fn size(args: &[String]) -> Result<(), Error> {
     let mut target: Option<&str> = None;
-    let mut max_bytes = DEFAULT_MAX_BYTES;
+    let mut max_bytes: Option<u64> = None;
     let mut zigbuild = false;
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
@@ -226,9 +242,11 @@ fn size(args: &[String]) -> Result<(), Error> {
                 if flag == "--target" {
                     target = Some(value);
                 } else {
-                    max_bytes = value
-                        .parse()
-                        .map_err(|_| Error::Usage(format!("invalid byte count `{value}`")))?;
+                    max_bytes = Some(
+                        value
+                            .parse()
+                            .map_err(|_| Error::Usage(format!("invalid byte count `{value}`")))?,
+                    );
                 }
             }
             other => return Err(Error::Usage(format!("unknown flag `{other}`"))),
@@ -243,6 +261,7 @@ fn size(args: &[String]) -> Result<(), Error> {
         "embedded",
         "--locked",
     ];
+    let max_bytes = max_bytes.unwrap_or_else(|| default_max_bytes(target));
     if let Some(triple) = target {
         build.extend(["--target", triple]);
     }
