@@ -310,7 +310,7 @@ fn start_dataplane(
 ) -> Result<Dataplanes, NodeError> {
     let spawn = |dataplane: Dataplane| {
         tokio::spawn(async move {
-            if let Err(error) = dataplane.run().await {
+            if let Err(error) = Box::pin(dataplane.run()).await {
                 tracing::warn!(%error, "dataplane stopped");
             }
         })
