@@ -86,12 +86,19 @@ mod tests {
         }
     }
 
-    /// A port free for both UDP (WireGuard) and TCP (control channel).
+    /// A port free for both UDP (WireGuard) and TCP (control channel), below every OS's
+    /// range for ports picked on their own (Linux from 32768, macOS from 49152), so a node
+    /// that restarts on it never finds another test's port-0 socket there.
     fn free_port() -> TestResult<u16> {
-        for _ in 0..50 {
-            let udp = std::net::UdpSocket::bind(SocketAddr::new(LOCALHOST, 0))?;
-            let port = udp.local_addr()?.port();
-            if std::net::TcpListener::bind(SocketAddr::new(LOCALHOST, port)).is_ok() {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let start = 20_000 + (std::process::id() % 500) * 20;
+        const _: () = assert!(20_000 + 499 * 20 + 2_000 < 32_768);
+        for _ in 0..200 {
+            let step = NEXT.fetch_add(1, Ordering::Relaxed) % 2_000;
+            let port = u16::try_from(start + step)?;
+            let udp = std::net::UdpSocket::bind(SocketAddr::new(LOCALHOST, port));
+            let tcp = std::net::TcpListener::bind(SocketAddr::new(LOCALHOST, port));
+            if udp.is_ok() && tcp.is_ok() {
                 return Ok(port);
             }
         }
