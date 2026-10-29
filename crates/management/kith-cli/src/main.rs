@@ -10,6 +10,7 @@ mod doctor;
 mod duration;
 mod exec;
 mod render;
+mod service;
 #[cfg(test)]
 mod tests;
 
@@ -26,6 +27,9 @@ fn main() -> ExitCode {
             config, verbose, ..
         } => exec::load_config(config.as_deref())
             .and_then(|config| daemon::start(config, *verbose).map_err(CliError)),
+        Cmd::Up => exec::socket_path(&opts)
+            .and_then(|socket| service::up(&socket, &mut std::io::stdout().lock())),
+        Cmd::Down => service::down(&mut std::io::stdout().lock()),
         Cmd::Status { .. }
         | Cmd::Create { .. }
         | Cmd::Invite { .. }

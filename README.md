@@ -16,8 +16,9 @@ kith is a WireGuard mesh VPN written in Rust. Devices join by invite link and ke
 ## Quick start
 
 ```sh
-# Run the daemon (usually under your service manager)
-sudo kith daemon
+# Turn kith on (now and at every boot) or off; asks for your password once
+kith up
+kith down
 
 # Create a network and invite a second device
 kith create home

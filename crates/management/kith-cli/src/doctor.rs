@@ -248,7 +248,7 @@ pub(crate) fn offline(socket: &Path, error: &io::Error, port: u16) -> Vec<Findin
         found.push(finding(
             Level::Fail,
             format!("no permission to use {}", socket.display()),
-            Some("run with sudo, or join the kith group"),
+            Some("run with sudo, or join the operator group (admin on macOS, kith on Linux)"),
         ));
         return found;
     }

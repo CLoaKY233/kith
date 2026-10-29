@@ -10,7 +10,8 @@
 //! [`Sys::revert`] are idempotent, and `revert` restores from state files kept in
 //! the state directory, so it also cleans up after a crashed run.
 //!
-//! The only `unsafe` is the `geteuid` call behind [`effective_uid`].
+//! The only `unsafe` is libc: `geteuid` behind [`effective_uid`], and the user and
+//! group lookups in [`group_id`] and [`user_in_group`].
 
 mod command;
 mod conflicts;
@@ -19,6 +20,7 @@ mod linux;
 mod macos;
 mod plan;
 mod sys;
+mod users;
 mod validate;
 
 #[cfg(test)]
@@ -29,6 +31,7 @@ pub use conflicts::RouteConflict;
 pub use error::Error;
 pub use plan::{Dns, ExitNode, Nat, Plan};
 pub use sys::{Platform, Sys};
+pub use users::{group_id, user_in_group};
 pub use validate::{Domain, Interface};
 
 /// Firewall mark the tunnel's own UDP socket must carry on Linux in exit-node mode.

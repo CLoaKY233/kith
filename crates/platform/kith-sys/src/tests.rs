@@ -924,3 +924,15 @@ fn an_exit_masquerades_the_mesh_out_of_the_default_route() {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn group_lookups_find_root_and_reject_unknown_names() {
+    assert_eq!(crate::group_id("kith-no-such-group"), None);
+    assert_eq!(crate::group_id("nonexistent\0name"), None);
+    assert!(crate::user_in_group(0, 0), "root's primary group is 0");
+    assert!(
+        !crate::user_in_group(u32::MAX - 7, 0),
+        "an unknown user is in no group"
+    );
+}

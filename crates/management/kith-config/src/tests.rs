@@ -64,6 +64,7 @@ fn example_validates_and_documents_every_setting() {
                 state_dir: _,
                 socket_path: _,
                 log_level: _,
+                operator_group: _,
             },
         network:
             NetworkConfig {
@@ -253,7 +254,7 @@ prop_compose! {
             ServerConfig { public_hostname: hostname, ws_path, ..ServerConfig::default() }
         };
         Config {
-            daemon: DaemonConfig { state_dir, socket_path, log_level },
+            daemon: DaemonConfig { state_dir, socket_path, log_level, operator_group: "wheel".to_owned() },
             network: NetworkConfig { listen_port, tun_name: tun, mtu, transports },
             stealth: StealthConfig { obfuscation, quic_sni, websocket_urls, cdn_front, amnezia },
             server,

@@ -448,9 +448,15 @@ fn start_ipc(
     events: broadcast::Sender<Event>,
 ) -> Result<JoinHandle<()>, NodeError> {
     let server = kith_ipc::IpcServer::bind(&config.daemon.socket_path)?;
-    let uid = kith_sys::effective_uid().unwrap_or(0);
+    let operators = ipc::Operators {
+        daemon_uid: kith_sys::effective_uid().unwrap_or(0),
+        group: kith_sys::group_id(&config.daemon.operator_group),
+    };
+    if let Some(gid) = operators.group {
+        server.share_with_group(gid)?;
+    }
     Ok(tokio::spawn(async move {
-        if let Err(error) = ipc::serve(server, commands, events, uid).await {
+        if let Err(error) = ipc::serve(server, commands, events, operators).await {
             tracing::warn!(%error, "ipc server stopped");
         }
     }))

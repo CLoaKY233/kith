@@ -841,6 +841,7 @@ dependencies = [
  "kith-config",
  "kith-ipc",
  "kith-node",
+ "kith-sys",
  "kith-types",
  "qrcode",
  "tokio",

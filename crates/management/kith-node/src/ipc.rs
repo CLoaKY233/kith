@@ -24,7 +24,7 @@ pub(crate) async fn serve(
     server: IpcServer,
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
-    daemon_uid: u32,
+    operators: Operators,
 ) -> Result<(), NodeError> {
     loop {
         let connection = tokio::select! {
@@ -40,7 +40,7 @@ pub(crate) async fn serve(
         let commands = commands.clone();
         let events = events.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(connection, commands, events, daemon_uid).await {
+            if let Err(error) = serve_connection(connection, commands, events, operators).await {
                 debug!(%error, "ipc connection ended");
             }
         });
@@ -51,7 +51,7 @@ async fn serve_connection(
     mut connection: Connection,
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
-    daemon_uid: u32,
+    operators: Operators,
 ) -> Result<(), NodeError> {
     while let Some(request) = connection.next_request().await? {
         if matches!(request, Request::Watch) {
@@ -59,20 +59,21 @@ async fn serve_connection(
             connection.respond(Response::Watching).await?;
             return watch(connection, watcher).await;
         }
-        let response =
-            if !is_read_only(&request) && !may_change_state(connection.peer(), daemon_uid) {
-                Response::Error {
-                    code: ErrorCode::PermissionDenied,
-                    message: "only root or the daemon's user may change state".to_owned(),
-                }
-            } else if let Some(response) = answer_locally(&request) {
-                response
-            } else {
-                match translate(request) {
-                    Ok(action) => dispatch(&commands, action).await,
-                    Err(error) => error_response(&error),
-                }
-            };
+        let response = if !is_read_only(&request) && !operators.may_change_state(connection.peer())
+        {
+            Response::Error {
+                code: ErrorCode::PermissionDenied,
+                message: "only root, the daemon's user or the operator group may change state"
+                    .to_owned(),
+            }
+        } else if let Some(response) = answer_locally(&request) {
+            response
+        } else {
+            match translate(request) {
+                Ok(action) => dispatch(&commands, action).await,
+                Err(error) => error_response(&error),
+            }
+        };
         connection.respond(response).await?;
     }
     Ok(())
@@ -315,9 +316,26 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
     )
 }
 
-/// Whether a client may change state: root or the daemon's own uid.
-pub(crate) fn may_change_state(peer: Option<PeerCred>, daemon_uid: u32) -> bool {
-    peer.is_some_and(|peer| peer.uid == 0 || peer.uid == daemon_uid)
+/// Who may change state over IPC.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Operators {
+    /// The daemon's own user.
+    pub(crate) daemon_uid: u32,
+    /// The operator group, if it exists.
+    pub(crate) group: Option<u32>,
+}
+
+impl Operators {
+    /// Whether a client may change state: root, the daemon's user, or an operator.
+    pub(crate) fn may_change_state(self, peer: Option<PeerCred>) -> bool {
+        peer.is_some_and(|peer| {
+            peer.uid == 0
+                || peer.uid == self.daemon_uid
+                || self
+                    .group
+                    .is_some_and(|gid| kith_sys::user_in_group(peer.uid, gid))
+        })
+    }
 }
 
 /// Sends an action to the loop and waits for its response.
@@ -370,4 +388,48 @@ pub(crate) fn error_response(error: &NodeError) -> Response {
         source = cause.source();
     }
     Response::Error { code, message }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn peer(uid: u32) -> PeerCred {
+        PeerCred {
+            uid,
+            gid: uid,
+            pid: None,
+        }
+    }
+
+    #[test]
+    fn root_the_daemon_user_and_operators_may_change_state() {
+        let me = kith_sys::effective_uid().unwrap_or(0);
+        let open = Operators {
+            daemon_uid: 0,
+            group: None,
+        };
+        assert!(open.may_change_state(Some(peer(0))));
+        assert!(
+            !open.may_change_state(Some(peer(me.max(1)))),
+            "no group, no operators"
+        );
+        assert!(!open.may_change_state(None), "unknown peers are refused");
+
+        let as_user = Operators {
+            daemon_uid: 4242,
+            group: None,
+        };
+        assert!(as_user.may_change_state(Some(peer(4242))));
+
+        let root_group = Operators {
+            daemon_uid: 0,
+            group: Some(0),
+        };
+        assert!(root_group.may_change_state(Some(peer(0))));
+        assert!(
+            !root_group.may_change_state(Some(peer(u32::MAX - 7))),
+            "an unknown user is no operator"
+        );
+    }
 }

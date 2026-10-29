@@ -106,6 +106,9 @@ pub struct DaemonConfig {
     pub socket_path: PathBuf,
     /// Log verbosity.
     pub log_level: LogLevel,
+    /// Members of this local group may use kith without root: `admin` on macOS, whose
+    /// members may already use sudo, and `kith` elsewhere. Ignored if it does not exist.
+    pub operator_group: String,
 }
 
 impl Default for DaemonConfig {
@@ -126,6 +129,12 @@ impl Default for DaemonConfig {
             state_dir,
             socket_path: PathBuf::from(socket_path),
             log_level: LogLevel::default(),
+            operator_group: if cfg!(target_os = "macos") {
+                "admin"
+            } else {
+                "kith"
+            }
+            .to_owned(),
         }
     }
 }

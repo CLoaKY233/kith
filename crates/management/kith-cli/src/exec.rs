@@ -211,7 +211,7 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             relay: *relay,
         },
         Cmd::Wg(wg) => wg_request(wg, names)?,
-        Cmd::Watch | Cmd::Doctor | Cmd::Config(_) | Cmd::Daemon { .. } => {
+        Cmd::Up | Cmd::Down | Cmd::Watch | Cmd::Doctor | Cmd::Config(_) | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));
         }
     })
@@ -268,7 +268,7 @@ pub(crate) fn load_config(path: Option<&Path>) -> Result<Config, CliError> {
     })
 }
 
-fn socket_path(opts: &Opts) -> Result<PathBuf, CliError> {
+pub(crate) fn socket_path(opts: &Opts) -> Result<PathBuf, CliError> {
     match &opts.socket {
         Some(path) => Ok(path.clone()),
         None => Ok(Config::load_or_default(&Config::default_path())?
@@ -284,7 +284,7 @@ async fn connect(path: &Path) -> Result<IpcClient, CliError> {
     )]
     IpcClient::connect(path).await.map_err(|error| match error {
         IpcError::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied => CliError(format!(
-            "no permission to use {}; run as root or join the kith group",
+            "no permission to use {}; run with sudo, or join the operator group (admin on macOS, kith on Linux)",
             path.display()
         )),
         IpcError::Io(io) => CliError(format!(
@@ -317,7 +317,9 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
             out.write_all(load_config(path.as_deref())?.to_toml_string()?.as_bytes())?;
             return Ok(());
         }
-        Cmd::Daemon { .. } => return Err(CliError("run `kith daemon` directly".to_owned())),
+        Cmd::Daemon { .. } | Cmd::Up | Cmd::Down => {
+            return Err(CliError("not handled here".to_owned()));
+        }
         Cmd::Status { .. }
         | Cmd::Create { .. }
         | Cmd::Invite { .. }
@@ -358,6 +360,8 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Wg(_)
         | Cmd::Config(_)
         | Cmd::Doctor
+        | Cmd::Up
+        | Cmd::Down
         | Cmd::Daemon { .. } => {}
     }
 

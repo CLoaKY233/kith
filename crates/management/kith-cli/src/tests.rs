@@ -601,3 +601,10 @@ fn a_phone_is_warned_when_its_server_has_only_a_nearby_address() {
         assert!(!only_nearby(anywhere), "{anywhere}");
     }
 }
+
+#[test]
+fn up_and_down_take_no_arguments() {
+    assert_eq!(parse(&["up"]), Ok(Cmd::Up));
+    assert_eq!(parse(&["down"]), Ok(Cmd::Down));
+    assert!(parse(&["up", "home"]).is_err());
+}

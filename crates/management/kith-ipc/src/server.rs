@@ -67,6 +67,18 @@ impl IpcServer {
         Ok(Self { path, listener })
     }
 
+    /// Gives group `gid` access to the socket, so its members need no root.
+    #[cfg(unix)]
+    pub fn share_with_group(&self, gid: u32) -> io::Result<()> {
+        std::os::unix::fs::chown(&self.path, None, Some(gid))
+    }
+
+    /// Does nothing: a named pipe has no group.
+    #[cfg(windows)]
+    pub fn share_with_group(&self, _gid: u32) -> io::Result<()> {
+        Ok(())
+    }
+
     /// Creates the first instance of the named pipe `path`.
     #[cfg(windows)]
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {

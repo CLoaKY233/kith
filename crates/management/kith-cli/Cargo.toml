@@ -18,6 +18,7 @@ bpaf.workspace = true
 kith-config.workspace = true
 kith-ipc.workspace = true
 kith-node.workspace = true
+kith-sys.workspace = true
 kith-types.workspace = true
 qrcode.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time", "net"] }

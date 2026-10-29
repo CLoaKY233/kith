@@ -22,6 +22,12 @@ pub(crate) struct Opts {
 /// A subcommand.
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 pub(crate) enum Cmd {
+    /// Turn kith on, now and at every boot
+    #[bpaf(command)]
+    Up,
+    /// Turn kith off, and keep it off after a restart
+    #[bpaf(command)]
+    Down,
     /// Show networks, this device and peers
     #[bpaf(command)]
     Status {

@@ -12,6 +12,8 @@
 #socket_path = "/run/kith/kith.sock"
 # error | warn | info | debug | trace
 log_level = "info"
+# Members of this group may use kith without sudo: admin (macOS), kith (elsewhere).
+#operator_group = "kith"
 
 [network]
 # WireGuard UDP port. 0 picks a random port at each start.
