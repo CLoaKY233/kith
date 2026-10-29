@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Publishes the kith server's memory, disk and kith numbers to CloudWatch every run.
+
+Seven custom metrics in namespace `kith`, within CloudWatch's ten free ones. Drop
+counters are cumulative in kith, so the change since the last run is sent.
+"""
+import json
+import os
+import shutil
+import subprocess
+
+STATE = "/var/lib/kith-metrics/last-drops.json"
+
+
+def kith_status():
+    try:
+        out = subprocess.run(["kith", "status", "--json"], capture_output=True, text=True, timeout=10)
+        return json.loads(out.stdout) if out.returncode == 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def memory_used_percent():
+    info = {}
+    with open("/proc/meminfo") as meminfo:
+        for line in meminfo:
+            key, value = line.split(":", 1)
+            info[key] = int(value.split()[0])
+    return 100.0 * (1 - info["MemAvailable"] / info["MemTotal"])
+
+
+def since_last(drops):
+    try:
+        with open(STATE) as saved:
+            last = json.load(saved)
+    except (OSError, ValueError):
+        last = {}
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE, "w") as saved:
+        json.dump(drops, saved)
+    return {name: max(0, count - last.get(name, count)) for name, count in drops.items()}
+
+
+def main():
+    disk = shutil.disk_usage("/")
+    status = kith_status()
+    metrics = [
+        ("MemoryUsedPercent", memory_used_percent(), "Percent"),
+        ("DiskUsedPercent", 100.0 * disk.used / disk.total, "Percent"),
+        ("KithUp", 1 if status else 0, "Count"),
+    ]
+    if status:
+        networks = status.get("networks", [])
+        new = since_last(status.get("drops", {}))
+        metrics += [
+            ("PeersOnline", sum(n["peers_online"] for n in networks), "Count"),
+            ("PeersTotal", sum(n["peers_total"] for n in networks), "Count"),
+            ("PacketsRefused", new.get("policy", 0), "Count"),
+            ("PacketsTooBig", new.get("too_big", 0), "Count"),
+        ]
+    data = [{"MetricName": name, "Value": value, "Unit": unit} for name, value, unit in metrics]
+    subprocess.run(
+        ["aws", "cloudwatch", "put-metric-data", "--region", "ap-south-1", "--namespace", "kith",
+         "--metric-data", json.dumps(data)],
+        check=True, timeout=30,
+    )
+
+
+if __name__ == "__main__":
+    main()

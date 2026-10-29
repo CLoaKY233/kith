@@ -1,0 +1,6 @@
+[Unit]
+Description=Publish kith server metrics to CloudWatch
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kith-metrics
