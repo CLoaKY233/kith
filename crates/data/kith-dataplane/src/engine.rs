@@ -985,6 +985,10 @@ impl State {
             if entry.endpoint != Some(source) {
                 debug!(interface = %external.name, %source, "external peer endpoint learned");
                 entry.endpoint = Some(source);
+                if let Some(member) = entry.member.as_mut() {
+                    member.size = SizeSearch::default();
+                    member.probe = None;
+                }
             }
             match output.result {
                 Decapsulated::Packet(len) => {
@@ -1363,7 +1367,7 @@ impl State {
                 member.probe = None;
             }
             if member.size.target() != self.tunnel_mtu {
-                member.size = SizeSearch::new(self.tunnel_mtu);
+                member.size = SizeSearch::new(kith_pmtu::TUNNEL_FLOOR, self.tunnel_mtu);
             }
             let resolver = member.resolver;
             let source = self.local_in.get(&member.network).and_then(|held| {

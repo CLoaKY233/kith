@@ -64,6 +64,10 @@ pub const MAX_PENDING_EVENTS: usize = 16;
 /// 16-byte tag. A path that carries a UDP payload of `n` bytes carries tunnel packets of
 /// `n - 32`.
 pub const WIREGUARD_DATA_OVERHEAD: u16 = 32;
+/// The smallest UDP payload a probe tries: what carries a tunnel packet of
+/// [`kith_pmtu::TUNNEL_FLOOR`], which every working path is taken to carry.
+const SIZE_FLOOR: u16 = kith_pmtu::TUNNEL_FLOOR + WIREGUARD_DATA_OVERHEAD;
+
 /// The largest probe sent: a full Ethernet frame's UDP payload over IPv4. Bigger tunnel
 /// MTUs are trusted rather than probed, since no internet path is larger.
 pub const MAX_PROBE_PAYLOAD: u16 = 1472;
@@ -303,7 +307,7 @@ impl PeerPaths {
         if target != self.size_target {
             self.size_target = target;
             self.size.path = None;
-            self.size.search = SizeSearch::new(target);
+            self.size.search = SizeSearch::new(SIZE_FLOOR, target);
             self.report_size();
         }
     }
@@ -688,7 +692,7 @@ impl PeerPaths {
         }
         if self.size.path != Some(path) {
             self.size.path = Some(path);
-            self.size.search = SizeSearch::new(self.size_target);
+            self.size.search = SizeSearch::new(SIZE_FLOOR, self.size_target);
         }
         Some(path)
     }
@@ -1302,7 +1306,7 @@ mod tests {
 
     #[test]
     fn a_small_path_is_measured_to_within_the_precision() {
-        for carries in [1248_u16, 1300, 1232, 600] {
+        for carries in [1248_u16, 1300, 1240] {
             let mut paths = trusted_paths(1280);
             let seen = run_path(&mut paths, (carries, 0), 0, 120);
             let mtu = paths.path_mtu().unwrap_or(u16::MAX);
@@ -1312,6 +1316,16 @@ mod tests {
                 "carries {carries}: {mtu}"
             );
             assert_eq!(mtus(&seen).last(), Some(&Some(mtu)), "carries {carries}");
+        }
+    }
+
+    #[test]
+    fn a_path_that_seems_smaller_than_any_real_path_is_given_no_limit() {
+        for carries in [1000_u16, 600, 0] {
+            let mut paths = trusted_paths(1280);
+            let seen = run_path(&mut paths, (carries, 0), 0, 120);
+            assert_eq!(paths.path_mtu(), None, "carries {carries}");
+            assert!(mtus(&seen).iter().all(Option::is_none), "carries {carries}");
         }
     }
 

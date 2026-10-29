@@ -8,6 +8,11 @@
 //! unanswered, so one random loss does not shrink a path. Every [`RECHECK_INTERVAL`] the
 //! search runs again, whether it ended at the target or below it, since paths change.
 //!
+//! The search never goes below a floor the caller gives, which every working path is
+//! assumed to carry, as RFC 8899's base PLPMTU is: every internet path carries 1280-byte
+//! packets, the IPv6 minimum. Losses below it are loss, not size, so they never shrink
+//! the limit; a path that loses even the floor reports no limit at all.
+//!
 //! Sans-IO: the caller sends the probes, says what was answered or lost, and passes the
 //! time in. Sizes are in whatever unit the caller probes in.
 
@@ -15,6 +20,10 @@
 #![forbid(unsafe_code)]
 
 use core::time::Duration;
+
+/// The largest tunnel packet every working internet path carries: the 1280 bytes IPv6
+/// guarantees, less WireGuard's 80 over IPv6. No search for a tunnel path goes below it.
+pub const TUNNEL_FLOOR: u16 = 1200;
 
 /// How close the search gets to the real limit before it stops.
 pub const PRECISION: u16 = 8;
@@ -26,9 +35,12 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(600);
 /// The search for the largest size one path carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SizeSearch {
+    floor: u16,
     target: u16,
-    /// The largest size answered.
+    /// The largest size answered, or the floor before any was.
     good: u16,
+    /// Whether any probe was answered, so `good` is known rather than assumed.
+    answered: bool,
     /// The smallest size lost [`ATTEMPTS`] times.
     bad: Option<u16>,
     /// How often the size being tried has been lost so far.
@@ -40,11 +52,13 @@ pub struct SizeSearch {
 }
 
 impl SizeSearch {
-    /// A search for whether the path carries `target`, and if not, the largest it does.
-    /// A target of zero never probes.
-    pub fn new(target: u16) -> Self {
+    /// A search for whether the path carries `target`, and if not, the largest it does,
+    /// never below `floor`. A target of zero, or one no bigger than the floor, never probes.
+    pub fn new(floor: u16, target: u16) -> Self {
         Self {
-            target,
+            floor,
+            target: if target > floor { target } else { 0 },
+            good: floor,
             ..Self::default()
         }
     }
@@ -61,7 +75,9 @@ impl SizeSearch {
     /// answer probes, not that its path carries nothing.
     pub fn limit(&self) -> Option<u16> {
         self.bad
-            .filter(|bad| self.good > 0 && bad.saturating_sub(self.good) <= PRECISION)
+            .filter(|bad| {
+                self.answered && *bad > self.floor && bad.saturating_sub(self.good) <= PRECISION
+            })
             .map(|_| self.good)
     }
 
@@ -83,9 +99,9 @@ impl SizeSearch {
     /// within [`PRECISION`].
     fn finished(&self) -> bool {
         self.good >= self.target
-            || self
-                .bad
-                .is_some_and(|bad| bad.saturating_sub(self.good) <= PRECISION)
+            || self.bad.is_some_and(|bad| {
+                bad <= self.floor || (self.answered && bad.saturating_sub(self.good) <= PRECISION)
+            })
     }
 
     /// The size to probe now, if any; the probe counts as out until it is
@@ -102,11 +118,13 @@ impl SizeSearch {
             self.finished_at = None;
             self.bad = None;
             if self.good >= self.target {
-                self.good = 0;
+                self.good = self.floor;
+                self.answered = false;
             }
         }
         let size = match self.bad {
             None => self.target,
+            Some(bad) if bad.saturating_sub(self.good) <= PRECISION => self.floor,
             Some(bad) => self.good.midpoint(bad),
         };
         self.waiting = true;
@@ -117,6 +135,7 @@ impl SizeSearch {
     pub fn answered(&mut self, size: u16) {
         self.waiting = false;
         self.lost = 0;
+        self.answered = true;
         self.good = self.good.max(size);
     }
 
@@ -132,7 +151,7 @@ impl SizeSearch {
         self.lost = self.lost.saturating_add(1);
         if self.lost >= ATTEMPTS {
             self.lost = 0;
-            self.bad = Some(self.bad.map_or(size, |bad| bad.min(size)));
+            self.bad = Some(self.bad.map_or(size, |bad| bad.min(size)).max(self.floor));
         }
     }
 }
@@ -166,11 +185,11 @@ mod tests {
 
     proptest! {
         #[test]
-        fn the_limit_is_within_precision_of_the_truth(carries in 100_u16..1600, target in 1200_u16..1500) {
-            let mut search = SizeSearch::new(target);
+        fn the_limit_is_within_precision_of_the_truth(carries in 100_u16..1600, target in 1240_u16..1500) {
+            let mut search = SizeSearch::new(1232, target);
             let limit = run(&mut search, carries, 0, Duration::ZERO);
-            if carries >= target {
-                prop_assert_eq!(limit, None);
+            if carries >= target || carries < 1232 {
+                prop_assert_eq!(limit, None, "a full path, or one below the floor, has no limit");
             } else {
                 let limit = limit.unwrap_or(u16::MAX);
                 prop_assert!(limit <= carries && carries - limit <= PRECISION, "{} for {}", limit, carries);
@@ -180,7 +199,7 @@ mod tests {
 
     #[test]
     fn a_probe_that_could_not_be_sent_counts_for_nothing() {
-        let mut search = SizeSearch::new(1312);
+        let mut search = SizeSearch::new(1232, 1312);
         for _ in 0..10 {
             assert_eq!(search.next_probe(Duration::ZERO), Some(1312));
             search.not_sent();
@@ -194,20 +213,34 @@ mod tests {
     }
 
     #[test]
+    fn loss_below_the_floor_never_shrinks_the_limit() {
+        let mut search = SizeSearch::new(1232, 1312);
+        assert_eq!(
+            run(&mut search, 155, 0, Duration::ZERO),
+            None,
+            "loss is not a 155-byte path"
+        );
+        assert!(
+            search.next_probe(Duration::from_secs(250)).is_none(),
+            "and it does not keep probing"
+        );
+    }
+
+    #[test]
     fn an_end_that_never_answers_has_no_limit() {
-        let mut search = SizeSearch::new(1312);
+        let mut search = SizeSearch::new(1232, 1312);
         assert_eq!(run(&mut search, 0, 0, Duration::ZERO), None);
     }
 
     #[test]
     fn one_lost_probe_is_not_a_limit() {
-        let mut search = SizeSearch::new(1312);
+        let mut search = SizeSearch::new(1232, 1312);
         assert_eq!(run(&mut search, 1500, 2, Duration::ZERO), None);
     }
 
     #[test]
     fn a_smaller_path_is_checked_again_and_found_to_have_grown() {
-        let mut search = SizeSearch::new(1312);
+        let mut search = SizeSearch::new(1232, 1312);
         assert!(run(&mut search, 1248, 0, Duration::ZERO).is_some());
         assert_eq!(search.next_probe(Duration::from_secs(300)), None, "not yet");
         assert_eq!(
@@ -223,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_full_path_that_shrinks_later_is_found_at_the_next_check() {
-        let mut search = SizeSearch::new(1312);
+        let mut search = SizeSearch::new(1232, 1312);
         assert_eq!(run(&mut search, 1500, 0, Duration::ZERO), None);
         let limit = run(
             &mut search,
@@ -239,8 +272,8 @@ mod tests {
 
     #[test]
     fn nothing_is_probed_for_a_zero_target_or_while_a_probe_is_out() {
-        assert_eq!(SizeSearch::new(0).next_probe(Duration::ZERO), None);
-        let mut search = SizeSearch::new(1312);
+        assert_eq!(SizeSearch::new(1232, 0).next_probe(Duration::ZERO), None);
+        let mut search = SizeSearch::new(1232, 1312);
         assert_eq!(search.next_probe(Duration::ZERO), Some(1312));
         assert_eq!(search.next_probe(Duration::ZERO), None);
         assert_eq!(search.next_due(Duration::ZERO), None);
