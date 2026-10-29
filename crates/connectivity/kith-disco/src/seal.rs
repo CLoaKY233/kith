@@ -187,6 +187,7 @@ mod tests {
         Message::Ping(Ping {
             tx_id: [7; 12],
             sender: NodeId::from_bytes([9; 32]),
+            padding: 0,
         })
     }
 

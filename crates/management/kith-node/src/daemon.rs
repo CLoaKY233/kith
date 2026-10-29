@@ -482,6 +482,7 @@ impl Daemon {
             dataplanes.tun_name.clone(),
             commands.clone(),
             StealthOptions::from_config(config),
+            config.network.mtu,
         )?;
         let (dns_upstreams, dns) = start_dns(config, options.dns_listen).await?;
         let interface = Interface::new(dataplanes.tun_name.as_deref().unwrap_or(MEMORY_INTERFACE))?;
@@ -1920,6 +1921,7 @@ impl Daemon {
                 Output::AcceptRelayed { peer, datagram } => {
                     self.dataplane.accept_relayed(peer, datagram).await?;
                 }
+                Output::PathMtu { peer, mtu } => self.dataplane.set_path_mtu(peer, mtu).await?,
                 Output::PathChanged { peer, endpoint } => {
                     tracing::debug!(%peer, ?endpoint, "peer path changed");
                     paths_changed |= self.paths.insert(peer, endpoint) != Some(endpoint);
@@ -2302,6 +2304,7 @@ fn drop_reasons(drops: &DropCounters) -> BTreeMap<String, u64> {
         ("overflow", drops.overflow),
         ("foreign_source", drops.foreign_source),
         ("after_exit", drops.after_exit),
+        ("too_big", drops.too_big),
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)

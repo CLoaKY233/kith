@@ -232,6 +232,9 @@ pub struct DropCounters {
     /// Internet replies from a former exit node arriving just after it stopped being the
     /// exit; their connections had already moved or ended.
     pub after_exit: u64,
+    /// Packets bigger than the path to their peer carries. IPv4 that allowed it was split
+    /// instead and is not counted; the sender of the rest was told the size that fits.
+    pub too_big: u64,
 }
 
 /// Why a dataplane operation failed.
@@ -282,6 +285,7 @@ pub(crate) enum Command {
         reply: Reply,
     },
     SetExit(Option<(NetworkId, NodeId)>, Reply),
+    SetPathMtu(NodeId, Option<u16>, Reply),
     #[cfg(feature = "test-support")]
     BlockDirectUdp(bool, Reply),
     SetFilter(NetworkId, CompiledFilter),
@@ -385,6 +389,14 @@ impl DataplaneHandle {
             reply,
         })
         .await
+    }
+
+    /// Sets the largest packet the path to `peer` carries, as measured, or `None` when
+    /// nothing smaller than the tunnel MTU is known. Bigger packets for it are split if
+    /// IPv4 allows, else answered with ICMP "packet too big".
+    pub async fn set_path_mtu(&self, peer: NodeId, mtu: Option<u16>) -> Result<(), DataplaneError> {
+        self.request(|reply| Command::SetPathMtu(peer, mtu, reply))
+            .await
     }
 
     /// Sends traffic with no specific route to `peer` in `network`, or with `None` stops.

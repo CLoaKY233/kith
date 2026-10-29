@@ -26,6 +26,7 @@ mod ipv4;
 mod ipv6;
 mod mss;
 mod tcp;
+mod too_big;
 
 #[cfg(test)]
 mod tests;
@@ -38,6 +39,7 @@ pub use ipv4::Ipv4Packet;
 pub use ipv6::Ipv6Packet;
 pub use mss::{clamp_mss, needs_mss_clamp};
 pub use tcp::{TcpFlags, TcpPacket};
+pub use too_big::{IPV6_MIN_MTU, Oversize, fragment_v4, oversize, too_big_reply};
 
 /// IANA protocol numbers used by this crate (the IPv4 `protocol` field and
 /// the IPv6 `next_header` field share one registry).

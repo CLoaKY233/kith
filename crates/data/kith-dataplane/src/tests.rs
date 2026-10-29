@@ -556,6 +556,65 @@ async fn tcp_through_the_tunnel_is_kept_to_what_any_path_carries() {
     );
 }
 
+/// A `len`-byte IPv4 UDP packet from `source` to `destination`, with `flags` in the flags
+/// and fragment offset field.
+fn sized_udp(source: &Node, destination: &Node, len: usize, flags: u16) -> Vec<u8> {
+    let mut packet = udp_between(
+        source.addresses.v4,
+        destination.addresses.v4,
+        &vec![7; len - 28],
+    );
+    packet[6..8].copy_from_slice(&flags.to_be_bytes());
+    kith_packet::Ipv4Packet::new_checked(&mut packet[..])
+        .unwrap()
+        .fill_checksum();
+    packet
+}
+
+#[tokio::test]
+async fn a_packet_too_big_for_the_path_is_split_or_its_sender_told() {
+    let mut a = spawn_node(16);
+    let mut b = spawn_node(17);
+    let everyone = Policy::default_allow_all();
+    connect(&a, &b, Endpoint::Direct(b.udp), &everyone).await;
+    connect(&b, &a, Endpoint::Direct(a.udp), &everyone).await;
+    a.handle
+        .set_addresses(NETWORK, vec![(a.addresses.v4.into(), 16)])
+        .await
+        .unwrap();
+    a.handle.set_path_mtu(b.id, Some(1000)).await.unwrap();
+
+    let refused = sized_udp(&a, &b, 1200, 0x4000);
+    a.tun.inject(refused.clone()).unwrap();
+    let reply = next_packet(&mut a).await;
+    let ip = kith_packet::Ipv4Packet::new_checked(&reply[..]).unwrap();
+    let icmp = kith_packet::IcmpPacket::new_checked(ip.payload()).unwrap();
+    assert_eq!(
+        (icmp.message_type(), icmp.code()),
+        (3, 4),
+        "the sender is told"
+    );
+    assert_eq!(u16::from_be_bytes([ip.payload()[6], ip.payload()[7]]), 1000);
+    assert_eq!(ip.dst(), a.addresses.v4);
+    assert_eq!(a.handle.stats().await.unwrap().drops.too_big, 1);
+
+    let split = sized_udp(&a, &b, 1200, 0);
+    a.tun.inject(split.clone()).unwrap();
+    let first = next_packet(&mut b).await;
+    let second = next_packet(&mut b).await;
+    assert!(first.len() <= 1000 && second.len() <= 1000);
+    let joined: Vec<u8> = [&first[20..], &second[20..]].concat();
+    assert_eq!(joined, split[20..], "the fragments carry the whole packet");
+
+    a.handle.set_path_mtu(b.id, None).await.unwrap();
+    a.tun.inject(refused.clone()).unwrap();
+    assert_eq!(
+        next_packet(&mut b).await,
+        refused,
+        "without a limit it goes whole"
+    );
+}
+
 fn _dataplane_task_is_send(dataplane: Dataplane) -> impl Send {
     dataplane.run()
 }

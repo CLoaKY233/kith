@@ -23,12 +23,20 @@ use crate::api::{
     ExternalMember, ExternalPeerStats, PeerSpec, PeerStats, Stats, channels,
 };
 use crate::packet;
+use crate::reassembly::{Complete, Reassembly, is_fragment};
 use crate::timers::Timers;
 use crate::tun_device::TunDevice;
-use kith_packet::{clamp_mss, needs_mss_clamp};
+use kith_packet::{
+    IPV6_MIN_MTU, Oversize, clamp_mss, fragment_v4, needs_mss_clamp, oversize, too_big_reply,
+};
 
 /// Handshakes per second answered before cookies are demanded.
 const HANDSHAKES_PER_SECOND: u32 = 1000;
+
+/// The largest ICMP "packet too big" reply: one IPv6 minimum MTU.
+const TOO_BIG_REPLY_MAX: usize = 1280;
+
+const _: () = assert!(IPV6_MIN_MTU == 1280);
 
 /// What WireGuard adds to each packet over IPv6, the larger of the two families: IPv6
 /// and UDP headers and WireGuard's own 32 bytes. TCP through the tunnel is kept to the
@@ -86,6 +94,10 @@ struct State {
     scratch: Vec<u8>,
     /// A packet a mesh member sent, or one whose MSS is lowered, copied out while routed.
     forward: Vec<u8>,
+    /// Where fragments of a packet too big for its path are built.
+    fragment: Vec<u8>,
+    /// Fragments arriving from peers and members, put back together for the firewall.
+    reassembly: Reassembly,
     /// The IP packet size TCP segments are kept to: what fits a path no larger than the
     /// tunnel MTU itself, once WireGuard's own bytes are added.
     clamp_to: u16,
@@ -97,6 +109,8 @@ struct PeerEntry {
     allowed_ips: Vec<IpPrefix>,
     endpoint: Option<Endpoint>,
     keepalive: Option<u16>,
+    /// The largest packet the current path carries, when smaller than the tunnel MTU.
+    path_mtu: Option<u16>,
     touched: bool,
 }
 
@@ -194,6 +208,8 @@ impl<T: TunDevice> Engine<T> {
                 },
                 scratch: vec![0; required_output_len(MAX_PACKET_CAPACITY).max(MAX_SLOT_LEN)],
                 forward: Vec::with_capacity(MAX_PACKET_CAPACITY),
+                fragment: Vec::new(),
+                reassembly: Reassembly::default(),
                 clamp_to,
             },
             io: Io {
@@ -353,6 +369,12 @@ impl State {
             Command::SetPeers(peers, reply) => {
                 reply.send(self.set_peers(peers)).ok();
             }
+            Command::SetPathMtu(node, mtu, reply) => {
+                if let Some(entry) = self.peers.get_mut(&node) {
+                    entry.path_mtu = mtu;
+                }
+                reply.send(Ok(())).ok();
+            }
             Command::SetRoutes {
                 network,
                 mesh,
@@ -464,6 +486,7 @@ impl State {
                     allowed_ips: spec.allowed_ips,
                     endpoint: spec.endpoint,
                     keepalive: spec.persistent_keepalive,
+                    path_mtu: None,
                     touched: true,
                 },
             );
@@ -646,12 +669,20 @@ impl State {
         self.seal_to_peer(now, packet, route.peer);
     }
 
-    /// Encrypts `packet` for mesh peer `node` and sends it.
+    /// Encrypts `packet` for mesh peer `node` and sends it, or, when it is bigger than the
+    /// path to `node` carries, splits it or tells its sender, as a router would.
     fn seal_to_peer(&mut self, now: Now, packet: &[u8], node: NodeId) {
         let Some(entry) = self.peers.get_mut(&node) else {
             count(&mut self.out.drops.no_route);
             return;
         };
+        if let Some(mtu) = entry
+            .path_mtu
+            .filter(|mtu| packet.len() > usize::from(*mtu))
+        {
+            self.oversized(now, packet, mtu, node);
+            return;
+        }
         let Some(peer) = self.device.peer_mut(entry.id) else {
             count(&mut self.out.drops.no_route);
             return;
@@ -670,6 +701,36 @@ impl State {
         touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
     }
 
+    /// Handles a packet bigger than the `mtu` the path to `node` carries: an IPv4 packet that
+    /// allows it goes on in fragments; for anything else the sender, here or behind us, is
+    /// told the size with ICMP and the packet is dropped.
+    fn oversized(&mut self, now: Now, packet: &[u8], mtu: u16, node: NodeId) {
+        match oversize(packet) {
+            Oversize::Fragment => {
+                let mut scratch = core::mem::take(&mut self.fragment);
+                scratch.resize(usize::from(mtu), 0);
+                let mut pieces = Vec::new();
+                fragment_v4(packet, mtu, &mut scratch, |piece| {
+                    pieces.push(piece.to_vec());
+                });
+                self.fragment = scratch;
+                for piece in pieces {
+                    self.seal_to_peer(now, &piece, node);
+                }
+            }
+            Oversize::Reply => {
+                count(&mut self.out.drops.too_big);
+                let mut reply = [0_u8; TOO_BIG_REPLY_MAX];
+                if let Some(len) = too_big_reply(packet, mtu, &mut reply)
+                    && let Some(reply) = reply.get(..len)
+                {
+                    self.outbound_packet(now, reply);
+                }
+            }
+            Oversize::Drop => count(&mut self.out.drops.too_big),
+        }
+    }
+
     /// Whether `packet` may reach external peer `id`: always for an imported exit, and
     /// for a mesh member only if its network's policy lets it in.
     fn guard_member(&mut self, now: Now, packet: &[u8], slot: u64, id: PeerId) -> bool {
@@ -685,15 +746,19 @@ impl State {
     /// address in its own network (never in another one), to another member behind this
     /// one, across the mesh, or to the OS for the internet. Its replies may come back
     /// because its own filter tracks the flow.
-    fn route_from_member(&mut self, now: Now, packet: &[u8], network: NetworkId, resolver: IpAddr) {
-        let Some(destination) = packet::destination(packet) else {
+    fn route_from_member(
+        &mut self,
+        now: Now,
+        (whole, parts): (&[u8], Option<&[Vec<u8>]>),
+        network: NetworkId,
+        resolver: IpAddr,
+    ) {
+        let Some(destination) = packet::destination(whole) else {
             count(&mut self.out.drops.malformed);
             return;
         };
         if destination == resolver {
-            if self.tun_out.push(packet).is_err() {
-                count(&mut self.out.drops.overflow);
-            }
+            self.push_each(whole, parts);
             return;
         }
         let ours = self
@@ -706,30 +771,76 @@ impl State {
         }
         if ours {
             let admitted = if let Some(filter) = self.filters.get_mut(&network) {
-                filter.inbound(packet, now.monotonic) == Verdict::Accept
+                filter.inbound(whole, now.monotonic) == Verdict::Accept
             } else {
                 count(&mut self.out.drops.policy);
                 false
             };
-            if admitted && self.tun_out.push(packet).is_err() {
-                count(&mut self.out.drops.overflow);
+            if admitted {
+                self.push_each(whole, parts);
             }
             return;
         }
         let route = self.router.route(destination);
         let mesh_rank = route.map(|route| (route.prefix.prefix_len(), false));
-        if let Some((slot, id)) =
-            self.external_route(packet::source(packet), destination, mesh_rank)
+        if let Some((slot, id)) = self.external_route(packet::source(whole), destination, mesh_rank)
         {
-            if self.guard_member(now, packet, slot, id) {
-                self.outbound_external(now, packet, slot, id);
+            if self.guard_member(now, whole, slot, id) {
+                for part in each(whole, parts) {
+                    self.outbound_external(now, part, slot, id);
+                }
             }
             return;
         }
-        if let Some(route) = route {
-            self.seal_to_peer(now, packet, route.peer);
-        } else if self.tun_out.push(packet).is_err() {
-            count(&mut self.out.drops.overflow);
+        match route {
+            Some(route) => {
+                for part in each(whole, parts) {
+                    self.seal_to_peer(now, part, route.peer);
+                }
+            }
+            None => self.push_each(whole, parts),
+        }
+    }
+
+    /// Writes a packet, or the fragments it arrived in, to the TUN.
+    fn push_each(&mut self, whole: &[u8], parts: Option<&[Vec<u8>]>) {
+        for part in each(whole, parts) {
+            if self.tun_out.push(part).is_err() {
+                count(&mut self.out.drops.overflow);
+            }
+        }
+    }
+
+    /// Delivers a datagram that arrived from mesh peer `node` in fragments: judged whole,
+    /// sent on as the fragments.
+    fn deliver_reassembled(&mut self, now: Now, node: NodeId, role: ExitRole, done: &Complete) {
+        let Some(entry) = self.peers.get(&node) else {
+            return;
+        };
+        let member = packet::destination(&done.whole)
+            .and_then(|destination| member_route(&self.externals, destination));
+        match member {
+            Some((slot, id)) => {
+                if owns_source(entry, role, &mut self.out.drops, &done.whole)
+                    && self.guard_member(now, &done.whole, slot, id)
+                {
+                    for part in &done.parts {
+                        self.outbound_external(now, part, slot, id);
+                    }
+                }
+            }
+            None => {
+                if admits(
+                    entry,
+                    role,
+                    &mut self.filters,
+                    &mut self.out.drops,
+                    &done.whole,
+                    now.monotonic,
+                ) {
+                    self.push_each(&done.whole, Some(&done.parts));
+                }
+            }
         }
     }
 
@@ -829,8 +940,19 @@ impl State {
                         }) {
                             count(&mut self.out.drops.source_not_allowed);
                         } else if let Some(member) = entry.member.as_mut() {
-                            member.filter.outbound(packet, now.monotonic);
-                            member_packet = Some((member.network, member.resolver, len));
+                            let fragment = is_fragment(packet);
+                            let assembled = if fragment {
+                                self.reassembly.add(packet, now.monotonic)
+                            } else {
+                                None
+                            };
+                            if !fragment || assembled.is_some() {
+                                let judged =
+                                    assembled.as_ref().map_or(packet, |done| &done.whole[..]);
+                                member.filter.outbound(judged, now.monotonic);
+                                member_packet =
+                                    Some((member.network, member.resolver, len, assembled));
+                            }
                         } else if self.tun_out.push(packet).is_err() {
                             count(&mut self.out.drops.overflow);
                         }
@@ -851,13 +973,17 @@ impl State {
             count(&mut self.out.drops.invalid);
             return;
         }
-        let Some((network, resolver, len)) = member_packet else {
+        let Some((network, resolver, len, assembled)) = member_packet else {
             return;
         };
+        if let Some(done) = assembled {
+            self.route_from_member(now, (&done.whole, Some(&done.parts)), network, resolver);
+            return;
+        }
         let mut packet = core::mem::take(&mut self.forward);
         packet.clear();
         packet.extend_from_slice(self.scratch.get(..len).unwrap_or_default());
-        self.route_from_member(now, &packet, network, resolver);
+        self.route_from_member(now, (&packet, None), network, resolver);
         self.forward = packet;
     }
 
@@ -1030,23 +1156,24 @@ impl State {
                 entry.endpoint = endpoint;
             }
         }
-        let role = if self.router.exit_peer() == Some((entry.network, node)) {
-            ExitRole::Current
-        } else if self.former_exit.is_some_and(|(network, peer, until)| {
-            (network, peer) == (entry.network, node)
-                && now.monotonic.saturating_sub(until) < AFTER_EXIT_GRACE
-        }) {
-            ExitRole::Former
-        } else {
-            ExitRole::None
-        };
+        let role = exit_role(
+            self.router.exit_peer(),
+            self.former_exit,
+            (entry.network, node),
+            now,
+        );
         let mut for_member = None;
+        let mut reassembled = None;
         match output.result {
             Decapsulated::Packet(len) => {
                 if let Some(packet) = self.scratch.get_mut(..len) {
                     clamp_mss(packet, self.clamp_to);
                 }
-                if let Some(packet) = self.scratch.get(..len) {
+                if let Some(packet) = self.scratch.get(..len)
+                    && is_fragment(packet)
+                {
+                    reassembled = self.reassembly.add(packet, now.monotonic);
+                } else if let Some(packet) = self.scratch.get(..len) {
                     let member = packet::destination(packet)
                         .and_then(|destination| member_route(&self.externals, destination));
                     match member {
@@ -1075,6 +1202,9 @@ impl State {
             Decapsulated::Nothing => {}
         }
         touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
+        if let Some(done) = reassembled {
+            self.deliver_reassembled(now, node, role, &done);
+        }
         if let Some(((slot, id), len)) = for_member {
             let mut packet = core::mem::take(&mut self.forward);
             packet.clear();
@@ -1216,6 +1346,31 @@ enum ExitRole {
 
 /// How long internet replies from a former exit count as expected.
 const AFTER_EXIT_GRACE: Duration = Duration::from_secs(120);
+
+/// How `peer` relates to the exit, given the exit in use and the one before it.
+fn exit_role(
+    current: Option<(NetworkId, NodeId)>,
+    former: Option<(NetworkId, NodeId, Duration)>,
+    peer: (NetworkId, NodeId),
+    now: Now,
+) -> ExitRole {
+    if current == Some(peer) {
+        ExitRole::Current
+    } else if former.is_some_and(|(network, node, until)| {
+        (network, node) == peer && now.monotonic.saturating_sub(until) < AFTER_EXIT_GRACE
+    }) {
+        ExitRole::Former
+    } else {
+        ExitRole::None
+    }
+}
+
+/// A packet's parts: the fragments it arrived in, or itself.
+fn each<'a>(whole: &'a [u8], parts: Option<&'a [Vec<u8>]>) -> impl Iterator<Item = &'a [u8]> {
+    core::iter::once(whole)
+        .filter(move |_| parts.is_none())
+        .chain(parts.into_iter().flatten().map(Vec::as_slice))
+}
 
 /// The member behind this device that `destination` belongs to, if any.
 fn member_route(externals: &BTreeMap<u64, External>, destination: IpAddr) -> Option<(u64, PeerId)> {

@@ -535,3 +535,148 @@ proptest! {
         let _ = crate::clamp_mss(&mut bytes, mtu);
     }
 }
+
+/// An IPv4 UDP packet of `len` bytes from 100.64.0.2 to 93.184.216.34, with `flags` in the
+/// flags and fragment offset field.
+fn udp_v4(len: usize, flags: u16) -> std::vec::Vec<u8> {
+    let mut packet = std::vec![0_u8; len];
+    packet[0] = 0x45;
+    packet[2..4].copy_from_slice(&u16::try_from(len).unwrap().to_be_bytes());
+    packet[4..6].copy_from_slice(&0x1234_u16.to_be_bytes());
+    packet[6..8].copy_from_slice(&flags.to_be_bytes());
+    packet[8] = 64;
+    packet[9] = ip_protocol::UDP;
+    packet[12..16].copy_from_slice(&[100, 64, 0, 2]);
+    packet[16..20].copy_from_slice(&[93, 184, 216, 34]);
+    for (index, byte) in packet[20..].iter_mut().enumerate() {
+        *byte = u8::try_from(index % 251).unwrap();
+    }
+    Ipv4Packet::new_checked(&mut packet[..])
+        .unwrap()
+        .fill_checksum();
+    packet
+}
+
+fn udp_v6(len: usize, next: u8, first: u8) -> std::vec::Vec<u8> {
+    let mut packet = std::vec![0_u8; len];
+    packet[0] = 0x60;
+    packet[4..6].copy_from_slice(&u16::try_from(len - 40).unwrap().to_be_bytes());
+    packet[6] = next;
+    packet[7] = 64;
+    packet[8..24].copy_from_slice(&Ipv6Addr::new(0xfd7a, 0, 0, 0, 0, 0, 0, 2).octets());
+    packet[24..40].copy_from_slice(&Ipv6Addr::new(0x2a03, 0x2880, 0, 0, 0, 0, 0, 1).octets());
+    packet[40] = first;
+    packet
+}
+
+#[test]
+fn an_oversized_packet_is_split_answered_or_dropped_as_a_router_would() {
+    use crate::Oversize::{Drop, Fragment, Reply};
+    let mut options = udp_v4(1400, 0);
+    options[0] = 0x46;
+    let mut icmp_error = udp_v4(1400, 0x4000);
+    icmp_error[9] = ip_protocol::ICMP;
+    icmp_error[20] = 3;
+    let mut icmp_echo = icmp_error.clone();
+    icmp_echo[20] = 8;
+    let mut multicast = udp_v4(1400, 0x4000);
+    multicast[12..16].copy_from_slice(&[224, 0, 0, 1]);
+    let cases: [(&str, std::vec::Vec<u8>, crate::Oversize); 9] = [
+        ("v4 that may be fragmented", udp_v4(1400, 0), Fragment),
+        ("v4 with don't-fragment", udp_v4(1400, 0x4000), Reply),
+        ("v4 with options", options, Reply),
+        ("an ICMP error", icmp_error, Drop),
+        ("an ICMP echo", icmp_echo, Reply),
+        ("a multicast source", multicast, Drop),
+        ("v6 UDP", udp_v6(1400, ip_protocol::UDP, 0), Reply),
+        (
+            "an ICMPv6 error",
+            udp_v6(1400, ip_protocol::ICMPV6, 2),
+            Drop,
+        ),
+        (
+            "an ICMPv6 echo",
+            udp_v6(1400, ip_protocol::ICMPV6, 128),
+            Reply,
+        ),
+    ];
+    for (what, packet, want) in cases {
+        assert_eq!(crate::oversize(&packet), want, "{what}");
+    }
+    assert_eq!(crate::oversize(&[0x45, 0]), Drop);
+}
+
+#[test]
+fn the_reply_tells_the_sender_the_size_and_quotes_its_packet() {
+    let original = udp_v4(1400, 0x4000);
+    let mut out = [0_u8; 1500];
+    let len = crate::too_big_reply(&original, 1216, &mut out).unwrap();
+    let reply = &out[..len];
+    assert!(len <= 576, "an IPv4 error stays within 576 bytes");
+    let ip = Ipv4Packet::new_checked(reply).unwrap();
+    assert!(ip.verify_checksum());
+    assert_eq!(
+        (ip.src(), ip.dst()),
+        (
+            Ipv4Addr::new(93, 184, 216, 34),
+            Ipv4Addr::new(100, 64, 0, 2)
+        )
+    );
+    let icmp = IcmpPacket::new_checked(ip.payload()).unwrap();
+    assert!(icmp.verify_checksum_v4());
+    assert_eq!((icmp.message_type(), icmp.code()), (3, 4));
+    assert_eq!(u16::from_be_bytes([ip.payload()[6], ip.payload()[7]]), 1216);
+    assert_eq!(&ip.payload()[8..], &original[..len - 28]);
+
+    let original = udp_v6(1400, ip_protocol::UDP, 0);
+    let len = crate::too_big_reply(&original, 1216, &mut out).unwrap();
+    let reply = &out[..len];
+    assert!(len <= 1280, "an ICMPv6 error stays within the minimum MTU");
+    let ip = Ipv6Packet::new_checked(reply).unwrap();
+    let icmp = IcmpPacket::new_checked(&reply[40..]).unwrap();
+    assert!(icmp.verify_checksum_v6(ip.src(), ip.dst()));
+    assert_eq!(icmp.message_type(), 2);
+    assert_eq!(
+        u32::from_be_bytes([reply[44], reply[45], reply[46], reply[47]]),
+        1280,
+        "IPv6 is never told less than its minimum"
+    );
+    assert_eq!(ip.dst(), Ipv6Addr::new(0xfd7a, 0, 0, 0, 0, 0, 0, 2));
+    assert!(crate::too_big_reply(&original, 1216, &mut [0; 100]).is_none());
+}
+
+proptest! {
+    #[test]
+    fn fragments_fit_and_put_back_together_give_the_original(
+        len in 21_usize..3000,
+        mtu in 68_u16..1500,
+        already_more in any::<bool>(),
+    ) {
+        let flags = if already_more { 0x2000 | 0x000a } else { 0 };
+        let packet = udp_v4(len, flags);
+        let mut scratch = [0_u8; 1500];
+        let mut joined = std::vec::Vec::new();
+        let mut last_more = false;
+        let mut expected_offset = 10 * usize::from(already_more);
+        let made = crate::fragment_v4(&packet, mtu, &mut scratch, |fragment| {
+            let ip = Ipv4Packet::new_checked(fragment).unwrap();
+            assert!(fragment.len() <= usize::from(mtu));
+            assert!(ip.verify_checksum());
+            assert_eq!(usize::from(ip.fragment_offset()), expected_offset);
+            expected_offset += ip.payload().len() / 8;
+            last_more = ip.more_fragments();
+            joined.extend_from_slice(ip.payload());
+        });
+        prop_assert!(made >= 1);
+        prop_assert_eq!(&joined[..], &packet[20..]);
+        prop_assert_eq!(last_more, already_more);
+    }
+
+    #[test]
+    fn oversize_handling_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..256), mtu in any::<u16>()) {
+        let _ = crate::oversize(&bytes);
+        let mut out = [0_u8; 1500];
+        let _ = crate::too_big_reply(&bytes, mtu, &mut out);
+        let _ = crate::fragment_v4(&bytes, mtu, &mut out, |_| {});
+    }
+}

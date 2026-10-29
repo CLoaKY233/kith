@@ -15,6 +15,7 @@ mod engine;
 #[cfg(any(test, feature = "test-support"))]
 mod memory_tun;
 mod packet;
+mod reassembly;
 mod timers;
 mod tun_device;
 

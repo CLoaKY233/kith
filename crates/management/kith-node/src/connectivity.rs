@@ -53,6 +53,13 @@ pub(crate) enum Output {
         /// The new endpoint.
         endpoint: Endpoint,
     },
+    /// The largest packet the path to a peer carries changed; `None` is no known limit.
+    PathMtu {
+        /// The peer.
+        peer: NodeId,
+        /// The new limit.
+        mtu: Option<u16>,
+    },
 }
 
 struct OsRandom;
@@ -118,6 +125,8 @@ pub(crate) struct Connectivity {
     mapped: Option<SocketAddr>,
     advertised: Vec<SocketAddr>,
     stealth: StealthOptions,
+    /// The tunnel MTU, which every path is probed for.
+    tunnel_mtu: u16,
     quic: Option<Arc<QuicEndpoint>>,
     links: QuicLinks,
     ladders: BTreeMap<NodeId, PeerLadder>,
@@ -136,6 +145,7 @@ impl Connectivity {
         tun_name: Option<String>,
         commands: mpsc::Sender<Command>,
         stealth: StealthOptions,
+        tunnel_mtu: u16,
     ) -> Result<Self, NodeError> {
         let tun_name = tun_name.unwrap_or_default();
         let local_port = bound.port();
@@ -181,6 +191,7 @@ impl Connectivity {
             mapped: None,
             advertised: Vec::new(),
             stealth,
+            tunnel_mtu,
             quic,
             links: QuicLinks::default(),
             ladders: BTreeMap::new(),
@@ -216,6 +227,7 @@ impl Connectivity {
                 }
             };
             paths.set_local_endpoints(&self.advertised);
+            paths.set_tunnel_mtu(self.tunnel_mtu);
             paths.set_relay_available(at, relay_available);
             paths.request_hole_punch(at);
             self.peers.insert(
@@ -682,6 +694,10 @@ impl Connectivity {
                     self.observed.insert(0, addr);
                     self.observed.truncate(MAX_OBSERVED);
                     observed_changed = true;
+                }
+                Event::PathMtuChanged(mtu) => {
+                    debug!(peer = %node, ?mtu, "path size changed");
+                    self.outputs.push(Output::PathMtu { peer: node, mtu });
                 }
                 Event::EndpointObserved(_) | _ => {}
             }

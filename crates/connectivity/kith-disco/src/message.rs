@@ -4,7 +4,7 @@
 //! be byte-stable forever: it is what gets sealed, so changing it is a protocol break.
 //!
 //! ```text
-//! Ping:        0x01 | tx_id (12) | sender NodeId (32)
+//! Ping:        0x01 | tx_id (12) | sender NodeId (32) | zero padding (any length)
 //! Pong:        0x02 | tx_id (12) | address
 //! CallMeMaybe: 0x03 | count (u8, at most 32) | address * count
 //! address:     0x04 | IPv4 (4) | port (u16 BE)   or   0x06 | IPv6 (16) | port (u16 BE)
@@ -26,8 +26,14 @@ pub const TX_ID_LEN: usize = 12;
 /// A transaction ID linking a [`Pong`] to its [`Ping`].
 pub type TxId = [u8; TX_ID_LEN];
 
-/// The largest possible encoded message: a full [`CallMeMaybe`] of IPv6 addresses.
-pub const MAX_PLAINTEXT_LEN: usize = 2 + MAX_CALL_ME_MAYBE_ENDPOINTS * ADDRESS_V6_LEN;
+/// The largest possible encoded message: a ping padded to probe a path's size. Larger than
+/// a full [`CallMeMaybe`] of IPv6 addresses.
+pub const MAX_PLAINTEXT_LEN: usize = 1500;
+
+/// The encoded length of a [`Ping`] without padding.
+pub const PING_LEN: usize = 1 + TX_ID_LEN + 32;
+
+const _: () = assert!(2 + MAX_CALL_ME_MAYBE_ENDPOINTS * ADDRESS_V6_LEN <= MAX_PLAINTEXT_LEN);
 
 const KIND_PING: u8 = 0x01;
 const KIND_PONG: u8 = 0x02;
@@ -43,6 +49,9 @@ pub struct Ping {
     pub tx_id: TxId,
     /// The node sending the ping.
     pub sender: NodeId,
+    /// Zero bytes after the message, to make it a given size: a probe of how big a packet
+    /// the path carries.
+    pub padding: u16,
 }
 
 /// The answer to a [`Ping`].
@@ -115,6 +124,7 @@ impl Message {
                 out.push(KIND_PING);
                 out.extend_from_slice(&ping.tx_id);
                 out.extend_from_slice(ping.sender.as_bytes());
+                out.resize(out.len().saturating_add(usize::from(ping.padding)), 0);
             }
             Self::Pong(pong) => {
                 out.push(KIND_PONG);
@@ -136,10 +146,20 @@ impl Message {
     pub fn parse(input: &[u8]) -> Result<Self, ParseError> {
         let mut reader = Reader(input);
         let message = match reader.byte()? {
-            KIND_PING => Self::Ping(Ping {
-                tx_id: reader.array()?,
-                sender: NodeId::from_bytes(reader.array()?),
-            }),
+            KIND_PING => {
+                let tx_id = reader.array()?;
+                let sender = NodeId::from_bytes(reader.array()?);
+                let rest = core::mem::take(&mut reader.0);
+                if rest.iter().any(|byte| *byte != 0) {
+                    return Err(ParseError::TrailingBytes);
+                }
+                let padding = u16::try_from(rest.len()).map_err(|_| ParseError::TrailingBytes)?;
+                Self::Ping(Ping {
+                    tx_id,
+                    sender,
+                    padding,
+                })
+            }
             KIND_PONG => Self::Pong(Pong {
                 tx_id: reader.array()?,
                 observed: reader.address()?,
@@ -233,7 +253,19 @@ mod tests {
         round_trip(&Message::Ping(Ping {
             tx_id: [1; 12],
             sender: NodeId::from_bytes([2; 32]),
+            padding: 0,
         }));
+        let padded = round_trip(&Message::Ping(Ping {
+            tx_id: [1; 12],
+            sender: NodeId::from_bytes([2; 32]),
+            padding: 1000,
+        }));
+        assert_eq!(padded.len(), super::PING_LEN + 1000);
+        let mut dirty = padded;
+        if let Some(last) = dirty.last_mut() {
+            *last = 1;
+        }
+        assert_eq!(Message::parse(&dirty), Err(ParseError::TrailingBytes));
         let v4: SocketAddr = "192.0.2.1:41641".parse().unwrap();
         let v6: SocketAddr = "[2001:db8::1]:41641".parse().unwrap();
         let pong = round_trip(&Message::Pong(Pong {
@@ -242,10 +274,7 @@ mod tests {
         }));
         assert_eq!(&pong[13..], &[4, 192, 0, 2, 1, 0xa2, 0xa9]);
         let full = CallMeMaybe::new(vec![v6; 32]).unwrap();
-        assert_eq!(
-            round_trip(&Message::CallMeMaybe(full)).len(),
-            MAX_PLAINTEXT_LEN
-        );
+        assert!(round_trip(&Message::CallMeMaybe(full)).len() <= MAX_PLAINTEXT_LEN);
     }
 
     #[test]
