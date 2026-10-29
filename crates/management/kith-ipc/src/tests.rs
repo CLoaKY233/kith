@@ -30,7 +30,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 5, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 6, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -40,7 +40,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 5, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 6, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -53,11 +53,13 @@ fn golden_bytes() {
         endpoint: Some("c".to_owned()),
         rx_bytes: 1,
         tx_bytes: 128,
+        online: true,
+        display_name: "D".to_owned(),
     }]));
-    let mut expected = vec![55, b'k', b't', 0x70, 5, 0, 6, 1];
+    let mut expected = vec![58, b'k', b't', 0x70, 6, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
-        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01,
+        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D',
     ]);
     assert_eq!(encode(&peers).unwrap(), expected);
 }
@@ -150,12 +152,13 @@ fn status() -> impl Strategy<Value = Status> {
     (
         proptest::option::of(node()),
         proptest::collection::vec(
-            (net(), text(), any::<u32>(), any::<u32>()).prop_map(
-                |(id, name, peers_online, peers_total)| NetworkSummary {
+            (net(), text(), any::<u32>(), any::<u32>(), any::<u32>()).prop_map(
+                |(id, name, peers_online, peers_total, relays)| NetworkSummary {
                     id,
                     name,
                     peers_online,
                     peers_total,
+                    relays,
                 },
             ),
             0..3,
@@ -191,11 +194,13 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                 any::<u64>(),
                 any::<u64>(),
             ),
+            (any::<bool>(), text()),
         )
             .prop_map(
                 |(
                     (node, name, address, path),
                     (last_handshake_secs, endpoint, rx_bytes, tx_bytes),
+                    (online, display_name),
                 )| {
                     PeerInfo {
                         node,
@@ -207,6 +212,8 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                         endpoint,
                         rx_bytes,
                         tx_bytes,
+                        online,
+                        display_name,
                     }
                 },
             ),
@@ -228,7 +235,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
         status.prop_map(Response::Status),
         net().prop_map(|network| Response::NetworkCreated { network }),
         text().prop_map(|invite_link| Response::Invite { invite_link }),
-        net().prop_map(|network| Response::Joined { network }),
+        (net(), text()).prop_map(|(network, device)| Response::Joined { network, device }),
         Just(Response::Left),
         peers.prop_map(Response::Peers),
         Just(Response::RecordSet),

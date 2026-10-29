@@ -399,3 +399,76 @@ proptest! {
         }
     }
 }
+
+fn device(name: &str, lamport: u64, op: u8) -> kith_ledger::Device {
+    kith_ledger::Device {
+        name: name.into(),
+        tags: Vec::new(),
+        admitted_by: OpId::from_bytes([op; 32]),
+        admitted_at_lamport: lamport,
+    }
+}
+
+#[test]
+fn device_names_become_dns_labels() {
+    use crate::names::normalize;
+    for (given, label) in [
+        ("Mac", "mac"),
+        ("phone \"old\"", "phone-old"),
+        ("  my--laptop  ", "my-laptop"),
+        ("-x-", "x"),
+        ("élan", "lan"),
+        ("!!!", "device"),
+        ("", "device"),
+    ] {
+        assert_eq!(normalize(given), label, "{given:?}");
+    }
+    let long = normalize(&"a".repeat(100));
+    assert_eq!(long.len(), 63);
+}
+
+#[test]
+fn clashing_names_stay_unique_stable_and_agree_everywhere() {
+    use crate::names::assign;
+    let first = NodeId::from_bytes([0x11; 32]);
+    let second = NodeId::from_bytes([0xab; 32]);
+    let third = NodeId::from_bytes([0xcd; 32]);
+
+    // The earliest-admitted device keeps the plain name; case does not tell names apart.
+    let mut devices = BTreeMap::new();
+    devices.insert(second, device("mac", 5, 2));
+    devices.insert(first, device("Mac", 3, 1));
+    let labels = assign(&devices);
+    assert_eq!(labels[&first], "mac");
+    assert_eq!(labels[&second], "mac-abab");
+
+    // A device actually named like a generated label pushes the suffix longer.
+    devices.insert(third, device("mac-abab", 4, 3));
+    let labels = assign(&devices);
+    assert_eq!(labels[&third], "mac-abab");
+    assert_eq!(labels[&second], "mac-ababa");
+
+    // Removing the holder of the plain name promotes the next device: a rejoin after
+    // `kith remove` gets its old name back.
+    devices.remove(&first);
+    devices.remove(&third);
+    assert_eq!(assign(&devices)[&second], "mac");
+
+    // Concurrent joins at the same clock are ordered by their op, the same on every node.
+    let mut concurrent = BTreeMap::new();
+    concurrent.insert(first, device("mac", 7, 9));
+    concurrent.insert(second, device("mac", 7, 8));
+    let labels = assign(&concurrent);
+    assert_eq!(
+        (labels[&second].as_str(), labels[&first].as_str()),
+        ("mac", "mac-1111")
+    );
+
+    // Long names leave room for the suffix and stay valid labels.
+    let mut long = BTreeMap::new();
+    long.insert(first, device(&"x".repeat(80), 1, 1));
+    long.insert(second, device(&"x".repeat(80), 2, 2));
+    let labels = assign(&long);
+    assert!(labels.values().all(|label| label.len() <= 63));
+    assert_ne!(labels[&first], labels[&second]);
+}

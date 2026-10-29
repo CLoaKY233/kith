@@ -118,8 +118,8 @@ fn suffix_of(map: &NetMap) -> Option<DomainName> {
 fn device_records(map: &NetMap, suffix: &DomainName) -> Vec<(DomainName, Record)> {
     let mut records = Vec::new();
     for peer in map.peers().values().chain(map.local_device()) {
-        let Some(name) = single_label(&peer.name).and_then(|label| suffix.child(label).ok()) else {
-            tracing::warn!(device = peer.name, "device name is not a DNS label");
+        let Ok(name) = suffix.child(&peer.label) else {
+            tracing::warn!(device = peer.label, "device name is not a DNS label");
             continue;
         };
         for address in [IpAddr::V4(peer.addresses.v4), IpAddr::V6(peer.addresses.v6)] {
@@ -136,14 +136,6 @@ fn device_records(map: &NetMap, suffix: &DomainName) -> Vec<(DomainName, Record)
 }
 
 const DEVICE_TTL: u32 = 60;
-
-fn single_label(name: &str) -> Option<&str> {
-    let valid = !name.is_empty()
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    valid.then_some(name)
-}
 
 fn custom_records(map: &NetMap, suffix: &DomainName) -> Vec<(DomainName, Record)> {
     let mut records = Vec::new();

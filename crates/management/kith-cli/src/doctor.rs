@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use kith_ipc::{PathKind, PeerInfo, Status};
+use kith_ipc::{NetworkSummary, PathKind, PeerInfo, Status};
 
 /// How bad a finding is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
             ));
         }
         for peer in peers {
-            found.push(check_peer(&network.name, peer));
+            found.push(check_peer(network, peer));
         }
     }
     if let Some(exit) = &status.exit_node {
@@ -64,7 +64,7 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
             .zip(peers)
             .flat_map(|(network, peers)| peers.iter().map(move |p| (network, p)))
             .any(|(network, peer)| {
-                *exit == format!("{}/{}", network.name, peer.name) && online(peer)
+                *exit == format!("{}/{}", network.name, peer.name) && peer.online
             });
         found.push(if reachable {
             finding(Level::Ok, format!("exit node {exit} is reachable"), None)
@@ -146,29 +146,47 @@ fn drop_finding(reason: &str, count: u64) -> Finding {
     finding(level, format!("{count} packets {what} ({reason})"), fix)
 }
 
-fn online(peer: &PeerInfo) -> bool {
-    peer.path.is_some() && peer.last_handshake_secs.is_some_and(|secs| secs < 180)
-}
-
-fn check_peer(network: &str, peer: &PeerInfo) -> Finding {
+fn check_peer(network: &NetworkSummary, peer: &PeerInfo) -> Finding {
     let reason = peer.path_reason.as_deref().unwrap_or("no path information");
-    let name = format!("{network}/{}", peer.name);
+    let name = format!("{}/{}", network.name, peer.name);
     match peer.path {
-        _ if !online(peer) => Finding {
-            level: Level::Warn,
-            what: format!("{name} is unreachable: {reason}"),
-            fix: Some(format!(
-                "make sure it is on; if it is gone for good, `kith remove {} {}`",
-                shell_word(network),
-                shell_word(&peer.name)
-            )),
-        },
+        _ if !peer.online => {
+            let seen = match peer.last_handshake_secs {
+                Some(secs) => format!("has not been seen for {}", ago(secs)),
+                None => "has never connected".to_owned(),
+            };
+            let cause = if network.relays > 0 {
+                "a relay is available, so a firewall is not what stops it"
+            } else {
+                "if it is behind a strict firewall, add a relay: `kith server --relay` on a public host"
+            };
+            Finding {
+                level: Level::Warn,
+                what: format!("{name} is offline: it {seen}"),
+                fix: Some(format!(
+                    "make sure kith runs on it ({cause}); if it is gone for good, `kith remove {} {}`",
+                    shell_word(&network.name),
+                    shell_word(&peer.name)
+                )),
+            }
+        }
         Some(PathKind::Direct) => finding(Level::Ok, format!("{name}: {reason}"), None),
-        _ => finding(
+        None => finding(Level::Info, format!("{name} is connecting: {reason}"), None),
+        Some(_) => finding(
             Level::Warn,
             format!("{name} works but is slower: {reason}"),
             Some("open UDP port 41641 on either side's firewall for a direct path"),
         ),
+    }
+}
+
+/// `secs` as a rough age: seconds, minutes, hours or days.
+fn ago(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{} min", secs / 60),
+        3600..86_400 => format!("{} h", secs / 3600),
+        _ => format!("{} days", secs / 86_400),
     }
 }
 

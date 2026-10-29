@@ -313,7 +313,7 @@ mod tests {
         joiner: &NodeHandle,
         network: NetworkId,
         device_name: &str,
-    ) -> TestResult {
+    ) -> TestResult<String> {
         join_with(
             joiner,
             invite(sponsor, network).await?,
@@ -328,17 +328,22 @@ mod tests {
         invite_link: String,
         network: NetworkId,
         device_name: &str,
-    ) -> TestResult {
+    ) -> TestResult<String> {
         let outcome = joiner
             .request(Request::Join {
                 invite_link,
                 device_name: device_name.into(),
             })
             .await;
-        if outcome != (Response::Joined { network }) {
-            return Err(format!("join failed: {outcome:?}").into());
+        if let Response::Joined {
+            network: id,
+            device,
+        } = &outcome
+            && *id == network
+        {
+            return Ok(device.clone());
         }
-        Ok(())
+        Err(format!("join failed: {outcome:?}").into())
     }
 
     /// Selects `exit` once the ledger granting it has reached `node`.
@@ -406,6 +411,9 @@ mod tests {
         if status.listen_port == 0 || status.networks.first().map(|n| n.peers_total) != Some(2) {
             return Err(format!("status is wrong: {status:?}").into());
         }
+        if online_counts_agree(&a, network).await? != 2 {
+            return Err("both peers should be online".into());
+        }
         let reason = peer_info(&a, network, "gamma").await?.path_reason;
         if !reason
             .as_deref()
@@ -434,6 +442,93 @@ mod tests {
         if own != alpha {
             return Err(format!("alpha resolved its own name to {own}").into());
         }
+        shutdown([a, b, c]).await
+    }
+
+    /// Status's online count and the peer list come from one rule, so they always agree.
+    async fn online_counts_agree(node: &NodeHandle, network: NetworkId) -> TestResult<u32> {
+        let Response::Status(status) = node.request(Request::Status).await else {
+            return Err("status failed".into());
+        };
+        let Response::Peers(peers) = node.request(Request::Peers { network }).await else {
+            return Err("peers failed".into());
+        };
+        let listed = peers.iter().filter(|p| p.online).count();
+        let counted = status
+            .networks
+            .iter()
+            .find(|n| n.id == network)
+            .map(|n| n.peers_online);
+        if counted != Some(u32::try_from(listed)?) {
+            return Err(format!("status says {counted:?} online, peers list {listed}").into());
+        }
+        if let Some(p) = peers
+            .iter()
+            .find(|p| !p.online && (p.path.is_some() || p.endpoint.is_some()))
+        {
+            return Err(format!("{} is offline but shows a path: {p:?}", p.name).into());
+        }
+        Ok(status
+            .networks
+            .iter()
+            .find(|n| n.id == network)
+            .map_or(0, |n| n.peers_online))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn devices_asking_for_one_name_each_get_their_own() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let c = start().await?;
+        let network = create(&a, "alpha").await?;
+        let first = join(&a, &b, network, "Work Mac").await?;
+        let second = join(&a, &c, network, "Work Mac").await?;
+        if first != "work-mac" || !second.starts_with("work-mac-") || second == first {
+            return Err(format!("labels are {first} and {second}").into());
+        }
+        let b_addr = peer(&a, network, &first).await?;
+        let c_addr = peer(&a, network, &second).await?;
+        for node in [&a, &b, &c] {
+            let dns = node.dns_addr().ok_or("no DNS server")?;
+            for (label, expected) in [(&first, b_addr), (&second, c_addr)] {
+                let got = resolve(dns, &format!("{label}.home.kith.internal")).await?;
+                if got != expected {
+                    return Err(format!("{label} resolved to {got}, expected {expected}").into());
+                }
+            }
+        }
+        let info = peer_info(&a, network, &second).await?;
+        if info.display_name != "Work Mac" {
+            return Err(format!("the asked-for name is lost: {info:?}").into());
+        }
+        if online_counts_agree(&a, network).await? != 2 {
+            return Err("both peers should be online".into());
+        }
+
+        let b_node = peer_info(&a, network, &first).await?.node;
+        if remove(&a, network, b_node).await != Response::DeviceRemoved {
+            return Err("removal failed".into());
+        }
+        let dns = a.dns_addr().ok_or("no DNS server")?;
+        let mut promoted = false;
+        for _ in 0..100 {
+            if peer_info(&a, network, &first)
+                .await
+                .is_ok_and(|p| p.node == info.node)
+                && resolve(dns, &format!("{first}.home.kith.internal"))
+                    .await
+                    .ok()
+                    == Some(c_addr)
+            {
+                promoted = true;
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if !promoted {
+            return Err("the remaining device did not take the plain name".into());
+        }
+        online_counts_agree(&a, network).await?;
         shutdown([a, b, c]).await
     }
 

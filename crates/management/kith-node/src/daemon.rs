@@ -5,7 +5,7 @@ use std::sync::Arc;
 use kith_config::Config;
 use kith_control::records::{Record, Relay};
 use kith_control::{NetMap, Networks};
-use kith_dataplane::{Dataplane, DataplaneHandle, DropCounters, Endpoint, PeerSpec};
+use kith_dataplane::{Dataplane, DataplaneHandle, DropCounters, Endpoint, PeerSpec, Stats};
 use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
@@ -38,6 +38,15 @@ use crate::types::{
 const MAX_GOSSIP_NODES: usize = 256;
 /// How often changed peer endpoints are written to disk at most.
 const ENDPOINT_SAVE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(30);
+/// How long after its last handshake a peer still counts as online without a control
+/// connection: WireGuard's own session lifetime (`REJECT_AFTER_TIME`).
+const PEER_SESSION_LIFETIME: core::time::Duration = core::time::Duration::from_secs(180);
+
+/// The one rule for whether a peer is online: its control channel is up, or its
+/// WireGuard session is still young enough that WireGuard would use it.
+fn is_online(connected: bool, handshake_age: Option<core::time::Duration>) -> bool {
+    connected || handshake_age.is_some_and(|age| age < PEER_SESSION_LIFETIME)
+}
 /// How often `public_hostname` is resolved again, to follow an address that changes.
 const PUBLIC_HOSTNAME_REFRESH: core::time::Duration = core::time::Duration::from_secs(300);
 /// Warnings kept for `kith status`.
@@ -791,7 +800,13 @@ impl Daemon {
         self.persist(network)?;
         self.refresh(Some(network)).await?;
         self.advertise_server().await;
-        Ok(Response::Joined { network })
+        let device = self
+            .networks
+            .maps()
+            .get(&network)
+            .and_then(NetMap::local_device)
+            .map_or_else(|| device_name.to_owned(), |device| device.label.clone());
+        Ok(Response::Joined { network, device })
     }
 
     async fn leave(&mut self, network: NetworkId) -> Result<Response, NodeError> {
@@ -1109,12 +1124,12 @@ impl Daemon {
                 id: *id,
                 name: map.name().to_owned(),
                 peers_online: count(
-                    stats
-                        .peers
+                    self.peer_infos(*id, map, &stats)
                         .iter()
-                        .filter(|peer| peer.network == *id && peer.last_handshake.is_some()),
+                        .filter(|peer| peer.online),
                 ),
                 peers_total: count(map.peers().iter()),
+                relays: count(map.relays().iter()),
             })
             .collect();
         let now = Instant::now();
@@ -1128,7 +1143,7 @@ impl Daemon {
                 .is_some_and(|server| server.relay_addr().is_some()),
             exit_node: self.exit.and_then(|(network, node)| {
                 let map = self.networks.maps().get(&network)?;
-                Some(format!("{}/{}", map.name(), map.peers().get(&node)?.name))
+                Some(format!("{}/{}", map.name(), map.peers().get(&node)?.label))
             }),
             listen_port: self.channel.local_addr().port(),
             dns_upstreams: self
@@ -1159,36 +1174,45 @@ impl Daemon {
     async fn peers(&self, network: NetworkId) -> Result<Response, NodeError> {
         let map = self.member_map(network)?;
         let stats = self.dataplane.stats().await?;
+        Ok(Response::Peers(self.peer_infos(network, map, &stats)))
+    }
+
+    /// Every peer of `network` as `kith status` shows it. Liveness is decided here, once:
+    /// a live control connection, or a WireGuard handshake within its session lifetime.
+    fn peer_infos(&self, network: NetworkId, map: &NetMap, stats: &Stats) -> Vec<PeerInfo> {
         let at = wall_instant();
-        let peers = map
-            .peers()
+        let connected = self.channel.connected();
+        map.peers()
             .iter()
             .map(|(node, peer)| {
                 let stat = stats
                     .peers
                     .iter()
                     .find(|stat| stat.network == network && stat.node == *node);
+                let handshake_age = stat
+                    .and_then(|stat| stat.last_handshake)
+                    .map(|when| at.saturating_duration_since(when));
+                let online = is_online(connected.contains(node), handshake_age);
                 PeerInfo {
                     node: *node,
-                    name: peer.name.clone(),
+                    name: peer.label.clone(),
                     address: peer.addresses.v4.to_string(),
-                    path: self.connectivity.path_kind(node),
-                    path_reason: self.connectivity.path_reason(node),
-                    last_handshake_secs: stat
-                        .and_then(|stat| stat.last_handshake)
-                        .map(|when| at.saturating_duration_since(when).as_secs()),
-                    endpoint: stat
-                        .and_then(|stat| stat.endpoint)
-                        .map(|endpoint| match endpoint {
+                    path: self.connectivity.path_kind(node).filter(|_| online),
+                    path_reason: self.connectivity.path_reason(node).filter(|_| online),
+                    last_handshake_secs: handshake_age.map(|age| age.as_secs()),
+                    endpoint: stat.and_then(|stat| stat.endpoint).filter(|_| online).map(
+                        |endpoint| match endpoint {
                             Endpoint::Direct(addr) => addr.to_string(),
                             Endpoint::Relay => String::from("relay"),
-                        }),
+                        },
+                    ),
                     rx_bytes: stat.map_or(0, |stat| stat.rx_bytes),
                     tx_bytes: stat.map_or(0, |stat| stat.tx_bytes),
+                    online,
+                    display_name: peer.name.clone(),
                 }
             })
-            .collect();
-        Ok(Response::Peers(peers))
+            .collect()
     }
 
     fn persist(&self, network: NetworkId) -> Result<(), NodeError> {
@@ -1965,5 +1989,19 @@ mod tests {
             resolve("does-not-exist.invalid", 41641).await,
             Vec::<SocketAddr>::new()
         );
+    }
+
+    #[test]
+    fn a_peer_is_online_while_connected_or_its_session_is_alive() {
+        use core::time::Duration;
+
+        use super::{PEER_SESSION_LIFETIME, is_online};
+        let just_under = Duration::from_millis(179_999);
+        assert!(is_online(true, None));
+        assert!(is_online(true, Some(Duration::from_secs(9999))));
+        assert!(is_online(false, Some(Duration::ZERO)));
+        assert!(is_online(false, Some(just_under)));
+        assert!(!is_online(false, Some(PEER_SESSION_LIFETIME)));
+        assert!(!is_online(false, None));
     }
 }

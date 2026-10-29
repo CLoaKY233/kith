@@ -63,7 +63,8 @@ impl From<ConfigError> for CliError {
 #[derive(Debug, Default)]
 pub(crate) struct Names {
     pub networks: Vec<(NetworkId, String)>,
-    pub peers: Vec<(NodeId, String)>,
+    /// Each peer's node, unique label and the name it asked for.
+    pub peers: Vec<(NodeId, String, String)>,
     pub hostname: String,
 }
 
@@ -84,18 +85,27 @@ impl Names {
         }
     }
 
-    fn node(&self, text: &str) -> Result<NodeId, CliError> {
+    pub(crate) fn node(&self, text: &str) -> Result<NodeId, CliError> {
         if let Ok(id) = text.parse() {
             return Ok(id);
         }
-        let mut matches = self.peers.iter().filter(|(_, name)| name == text);
-        match (matches.next(), matches.next()) {
-            (Some((id, _)), None) => Ok(*id),
-            (Some(_), Some(_)) => Err(CliError(format!(
-                "several peers are named `{text}`; use its id from `kith peers`"
-            ))),
-            (None, _) => Err(CliError(format!(
+        if let Some((id, _, _)) = self.peers.iter().find(|(_, label, _)| label == text) {
+            return Ok(*id);
+        }
+        let named: Vec<&str> = self
+            .peers
+            .iter()
+            .filter(|(_, _, asked)| asked == text)
+            .map(|(_, label, _)| label.as_str())
+            .collect();
+        match named.as_slice() {
+            [label] => self.node(label),
+            [] => Err(CliError(format!(
                 "no peer named `{text}`; see `kith peers`"
+            ))),
+            labels => Err(CliError(format!(
+                "several peers are named `{text}`; use one of: {}",
+                labels.join(", ")
             ))),
         }
     }
@@ -384,7 +394,7 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
         names.peers = fetch_peers(client, network)
             .await?
             .into_iter()
-            .map(|p| (p.node, p.name))
+            .map(|p| (p.node, p.name, p.display_name))
             .collect();
     }
     Ok(names)

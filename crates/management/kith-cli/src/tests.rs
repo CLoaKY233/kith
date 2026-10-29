@@ -13,7 +13,7 @@ const NODE: NodeId = NodeId::from_bytes([0xbb; 32]);
 fn names() -> Names {
     Names {
         networks: vec![(NET, "home".to_owned())],
-        peers: vec![(NODE, "nas".to_owned())],
+        peers: vec![(NODE, "nas".to_owned(), "NAS".to_owned())],
         hostname: "laptop".to_owned(),
     }
 }
@@ -238,6 +238,7 @@ fn fake_status() -> Status {
             name: "home".into(),
             peers_online: 1,
             peers_total: 2,
+            relays: 1,
         }],
         exit: false,
         relay: true,
@@ -267,17 +268,21 @@ fn fake_peers() -> Vec<PeerInfo> {
             endpoint: Some("198.51.100.7:41641".into()),
             rx_bytes: 1_234_567,
             tx_bytes: 512,
+            online: true,
+            display_name: "NAS".into(),
         },
         PeerInfo {
             node: phone,
-            name: "phone \"old\"".into(),
+            name: "phone".into(),
             address: "100.64.0.3".into(),
             path: None,
-            path_reason: Some("relay: no direct addresses known for this peer yet".into()),
+            path_reason: None,
             last_handshake_secs: None,
             endpoint: None,
             rx_bytes: 0,
             tx_bytes: 0,
+            online: false,
+            display_name: "Phone \"old\"".into(),
         },
     ]
 }
@@ -312,9 +317,9 @@ async fn status_renders_what_the_daemon_reports() {
          internet traffic goes through home/nas\n\
          \n\
          network home (aaaaaaaa)  1/2 online\n  \
-         NAME         ADDRESS     PATH     ENDPOINT            HANDSHAKE  RX       TX     NODE\n  \
-         nas          100.64.0.2  direct   198.51.100.7:41641  1m ago     1.1 MiB  512 B  bbbbbbbb\n  \
-         phone \"old\"  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n\
+         NAME   ADDRESS     PATH     ENDPOINT            HANDSHAKE  RX       TX     NODE\n  \
+         nas    100.64.0.2  direct   198.51.100.7:41641  1m ago     1.1 MiB  512 B  bbbbbbbb\n  \
+         phone  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n\
          \n\
          notes (run `kith doctor` for fixes):\n  \
          100.100.100.100/32 via utun37 overlaps kith's addresses (another VPN?)\n  \
@@ -330,15 +335,15 @@ async fn status_renders_what_the_daemon_reports() {
                 r#""route_conflicts":["100.100.100.100/32 via utun37"],"drops":{{"policy":2}},"#,
                 r#""warnings":[{{"secs_ago":30,"message":"control channel: connection refused"}}],"#,
                 r#""networks":[{{"id":"{net}","#,
-                r#""name":"home","peers_online":1,"peers_total":2,"peers":["#,
+                r#""name":"home","peers_online":1,"peers_total":2,"relays":1,"peers":["#,
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
                 r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
                 r#""endpoint":"198.51.100.7:41641","last_handshake_secs":75,"#,
-                r#""rx_bytes":1234567,"tx_bytes":512}},"#,
-                r#"{{"node":"{phone}","name":"phone \"old\"","address":"100.64.0.3","#,
-                r#""path":null,"path_reason":"relay: no direct addresses known for this peer yet","#,
+                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS"}},"#,
+                r#"{{"node":"{phone}","name":"phone","address":"100.64.0.3","#,
+                r#""path":null,"path_reason":null,"#,
                 r#""endpoint":null,"last_handshake_secs":null,"#,
-                r#""rx_bytes":0,"tx_bytes":0}}]}}]}}"#,
+                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\""}}]}}]}}"#,
                 "\n",
             ),
             me = NodeId::from_bytes([0x12; 32]),
@@ -351,8 +356,9 @@ async fn status_renders_what_the_daemon_reports() {
         run_against(&path, &["doctor"]).await,
         "ok    daemon is running on port 41641\n\
          ok    home/nas: direct to 198.51.100.7:41641 (12 ms)\n\
-         warn  home/phone \"old\" is unreachable: relay: no direct addresses known for this peer yet\n      \
-         fix: make sure it is on; if it is gone for good, `kith remove home 'phone \"old\"'`\n\
+         warn  home/phone is offline: it has never connected\n      \
+         fix: make sure kith runs on it (a relay is available, so a firewall is not what stops it); \
+         if it is gone for good, `kith remove home phone`\n\
          ok    exit node home/nas is reachable\n\
          warn  100.100.100.100/32 via utun37 overlaps kith's addresses; kith peers there are unreachable\n      \
          fix: quit the other VPN (often Tailscale) while using kith\n\
@@ -367,7 +373,7 @@ fn doctor_fails_on_a_lost_exit_and_explains_a_daemon_that_cannot_start() {
     use crate::doctor::{Level, diagnose, offline};
 
     let mut status = fake_status();
-    status.exit_node = Some("home/phone \"old\"".into());
+    status.exit_node = Some("home/phone".into());
     let lost = diagnose(&status, &[fake_peers()]);
     assert!(
         lost.iter()
@@ -390,5 +396,76 @@ fn doctor_fails_on_a_lost_exit_and_explains_a_daemon_that_cannot_start() {
             .fix
             .as_deref()
             .is_some_and(|fix| fix.contains("sudo"))
+    );
+}
+
+#[test]
+fn peers_are_found_by_label_or_by_a_name_only_one_of_them_asked_for() {
+    let a = NodeId::from_bytes([1; 32]);
+    let b = NodeId::from_bytes([2; 32]);
+    let c = NodeId::from_bytes([3; 32]);
+    let names = Names {
+        peers: vec![
+            (a, "mac".to_owned(), "Mac".to_owned()),
+            (b, "mac-0202".to_owned(), "Mac".to_owned()),
+            (c, "nas".to_owned(), "NAS Box".to_owned()),
+        ],
+        ..Names::default()
+    };
+    assert_eq!(names.node("mac").unwrap(), a);
+    assert_eq!(names.node("mac-0202").unwrap(), b);
+    assert_eq!(names.node("NAS Box").unwrap(), c);
+    assert_eq!(names.node(&b.to_string()).unwrap(), b);
+    let shared = names.node("Mac").unwrap_err().to_string();
+    assert!(shared.contains("mac, mac-0202"), "{shared}");
+    assert!(names.node("tv").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn liveness_alone_decides_offline_and_the_hint_knows_about_relays() {
+    use crate::doctor::{Level, diagnose};
+
+    let mut status = fake_status();
+    status.exit_node = None;
+    status.networks[0].relays = 0;
+    let mut peers = fake_peers();
+    peers[1].last_handshake_secs = Some(400);
+    peers[1].path = Some(PathKind::Relay);
+    let found = diagnose(&status, &[peers.clone()]);
+    let phone = found
+        .iter()
+        .find(|f| f.what.starts_with("home/phone"))
+        .unwrap();
+    assert_eq!(phone.level, Level::Warn);
+    assert_eq!(
+        phone.what,
+        "home/phone is offline: it has not been seen for 6 min"
+    );
+    assert!(
+        phone
+            .fix
+            .as_deref()
+            .is_some_and(|fix| fix.contains("add a relay")),
+        "{phone:?}"
+    );
+
+    let mut out = Vec::new();
+    crate::render::status(&mut out, &status, &[peers.clone()]).unwrap();
+    let table = String::from_utf8(out).unwrap();
+    let row = table
+        .lines()
+        .find(|l| l.trim_start().starts_with("phone"))
+        .unwrap();
+    assert!(row.contains("offline") && !row.contains("relay"), "{row}");
+
+    peers[1].online = true;
+    peers[1].path = None;
+    peers[1].path_reason = Some("waiting for a handshake".into());
+    let found = diagnose(&status, &[peers]);
+    assert!(
+        found.iter().any(|f| f.level == Level::Info
+            && f.what == "home/phone is connecting: waiting for a handshake"),
+        "{found:?}"
     );
 }

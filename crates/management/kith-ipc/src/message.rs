@@ -181,6 +181,9 @@ pub enum Response {
     Joined {
         /// The joined network.
         network: NetworkId,
+        /// This device's name in it, which differs from the one asked for when another
+        /// device already holds that name.
+        device: String,
     },
     /// Answers [`Request::Leave`].
     Left,
@@ -290,10 +293,12 @@ pub struct NetworkSummary {
     pub id: NetworkId,
     /// Display name.
     pub name: String,
-    /// Peers currently connected.
+    /// Peers online now, as [`PeerInfo::online`] decides.
     pub peers_online: u32,
     /// Total members.
     pub peers_total: u32,
+    /// Relays advertised in the network.
+    pub relays: u32,
 }
 
 /// One peer in [`Response::Peers`].
@@ -301,7 +306,7 @@ pub struct NetworkSummary {
 pub struct PeerInfo {
     /// Peer identity.
     pub node: NodeId,
-    /// Device name.
+    /// The device's name in the network: unique, and a DNS label.
     pub name: String,
     /// Mesh address, as text.
     pub address: String,
@@ -317,6 +322,11 @@ pub struct PeerInfo {
     pub rx_bytes: u64,
     /// Bytes sent to the peer.
     pub tx_bytes: u64,
+    /// Whether the peer is reachable now: a live control connection, or a WireGuard
+    /// handshake within the session lifetime. Everything that shows liveness uses this.
+    pub online: bool,
+    /// The name the device asked for, when its unique `name` had to differ from it.
+    pub display_name: String,
 }
 
 /// How traffic reaches a peer.

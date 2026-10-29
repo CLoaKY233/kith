@@ -57,8 +57,11 @@ pub enum Warning {
 /// A member device other than the local one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
-    /// The device's name.
+    /// The name the device asked for, as given.
     pub name: String,
+    /// Its name in the network: a DNS label, unique among the network's devices. Use this
+    /// to show or look up the device.
+    pub label: String,
     /// The device's valid tags.
     pub tags: BTreeSet<TagName>,
     /// The device's mesh addresses.
@@ -290,12 +293,14 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
                 Some((*node, Member { tags, addresses }))
             })
             .collect();
+        let labels = crate::names::assign(view.devices());
         let mut peers: BTreeMap<NodeId, Peer> = members
             .iter()
             .filter_map(|(node, member)| {
                 let device = view.devices().get(node)?;
                 let peer = Peer {
                     name: device.name.clone(),
+                    label: labels.get(node)?.clone(),
                     tags: member.tags.clone(),
                     addresses: member.addresses,
                 };

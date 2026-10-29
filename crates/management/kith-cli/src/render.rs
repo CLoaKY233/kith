@@ -7,6 +7,15 @@ use kith_ipc::{Event, IpcError, PathKind, PeerInfo, Response, Status};
 use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
 
+/// The PATH column: offline comes from liveness, never from a missing path.
+fn path_cell(peer: &PeerInfo) -> &'static str {
+    match (peer.online, peer.path) {
+        (false, _) => "offline",
+        (true, None) => "-",
+        (true, path) => path_name(path),
+    }
+}
+
 fn path_name(path: Option<PathKind>) -> &'static str {
     match path {
         Some(PathKind::Direct) => "direct",
@@ -86,7 +95,7 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
             [
                 peer.name.clone(),
                 peer.address.clone(),
-                path_name(peer.path).to_owned(),
+                path_cell(peer).to_owned(),
                 peer.endpoint.clone().unwrap_or_else(|| "-".to_owned()),
                 handshake_age(peer.last_handshake_secs),
                 byte_size(peer.rx_bytes),
@@ -233,9 +242,11 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
         }
         write!(
             out,
-            ",\"rx_bytes\":{},\"tx_bytes\":{}}}",
-            peer.rx_bytes, peer.tx_bytes
+            ",\"rx_bytes\":{},\"tx_bytes\":{},\"online\":{},\"display_name\":",
+            peer.rx_bytes, peer.tx_bytes, peer.online
         )?;
+        json_str(out, &peer.display_name)?;
+        out.write_all(b"}")?;
     }
     out.write_all(b"]")
 }
@@ -289,8 +300,8 @@ pub(crate) fn status_json(
         json_str(out, &network.name)?;
         write!(
             out,
-            ",\"peers_online\":{},\"peers_total\":{},\"peers\":",
-            network.peers_online, network.peers_total
+            ",\"peers_online\":{},\"peers_total\":{},\"relays\":{},\"peers\":",
+            network.peers_online, network.peers_total, network.relays
         )?;
         peers_json(out, peers)?;
         out.write_all(b"}")?;
@@ -342,8 +353,11 @@ pub(crate) fn response(
             out,
             "{invite_link}\n\non the other device run: kith join {invite_link}"
         )?,
-        (Cmd::Join { .. }, Response::Joined { network }) => {
-            writeln!(out, "joined network {}", network.short())?;
+        (Cmd::Join { device_name, .. }, Response::Joined { network, device }) => {
+            writeln!(out, "joined network {} as {device}", network.short())?;
+            if let Some(asked) = device_name.as_deref().filter(|asked| *asked != device) {
+                writeln!(out, "(another device already has the name `{asked}`)")?;
+            }
         }
         (Cmd::Leave { network }, Response::Left) => writeln!(out, "left {network}")?,
         (Cmd::Peers { json: true, .. }, Response::Peers(peers)) => {
