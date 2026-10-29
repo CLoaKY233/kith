@@ -424,3 +424,13 @@ async fn version_mismatch_is_a_clean_error() {
         })
     ));
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn bind_creates_a_missing_socket_directory() {
+    let dir = socket_path().with_file_name("run").join("kith");
+    let path = dir.join("kith.sock");
+    let server = IpcServer::bind(&path).unwrap();
+    assert!(dir.is_dir());
+    drop(server);
+}

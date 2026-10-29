@@ -34,12 +34,19 @@ pub struct IpcServer {
 }
 
 impl IpcServer {
-    /// Binds `path`, replacing a stale socket nobody is listening on.
+    /// Binds `path`, replacing a stale socket nobody is listening on. Creates its
+    /// directory if missing, as `/var/run` is emptied at boot.
     #[cfg(unix)]
     pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
-        use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+        use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
 
         let path = path.as_ref().to_path_buf();
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o755)
+                .create(dir)?;
+        }
         if let Ok(meta) = std::fs::symlink_metadata(&path) {
             if !meta.file_type().is_socket() {
                 return Err(io::Error::new(
