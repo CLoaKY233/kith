@@ -8,13 +8,13 @@ use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
 
 /// The PATH column: offline comes from liveness, never from a missing path, and a device
-/// on plain WireGuard shows the kith device it goes through.
+/// on plain WireGuard shows the kith device it goes through, unless it is this one.
 fn path_cell(peer: &PeerInfo) -> String {
     match (peer.online, &peer.gateway, peer.path) {
         (false, _, _) => "offline".to_owned(),
-        (true, Some(gateway), _) => format!("via {gateway}"),
+        (true, _, Some(path)) => path_name(Some(path)).to_owned(),
+        (true, Some(gateway), None) => format!("via {gateway}"),
         (true, None, None) => "-".to_owned(),
-        (true, None, path) => path_name(path).to_owned(),
     }
 }
 

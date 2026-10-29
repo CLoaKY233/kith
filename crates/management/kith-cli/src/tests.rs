@@ -608,3 +608,15 @@ fn up_and_down_take_no_arguments() {
     assert_eq!(parse(&["down"]), Ok(Cmd::Down));
     assert!(parse(&["up", "home"]).is_err());
 }
+
+#[test]
+fn peers_may_leave_out_the_network() {
+    assert!(matches!(
+        parse(&["peers"]),
+        Ok(Cmd::Peers { network: None, .. })
+    ));
+    assert!(matches!(
+        parse(&["peers", "home"]),
+        Ok(Cmd::Peers { network: Some(n), .. }) if n == "home"
+    ));
+}

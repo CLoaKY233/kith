@@ -21,6 +21,12 @@ use cli::Cmd;
 use exec::CliError;
 
 fn main() -> ExitCode {
+    if std::env::args_os().len() <= 1 {
+        if let Err(help) = cli::opts().run_inner(bpaf::Args::from(&["--help"]).set_name("kith")) {
+            help.print_message(100);
+        }
+        return ExitCode::SUCCESS;
+    }
     let opts = cli::opts().run();
     let result = match &opts.cmd {
         Cmd::Daemon {

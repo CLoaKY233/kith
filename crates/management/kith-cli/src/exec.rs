@@ -73,7 +73,9 @@ impl Names {
         if let Ok(id) = text.parse() {
             return Ok(id);
         }
-        let mut matches = self.networks.iter().filter(|(_, name)| name == text);
+        let mut matches = self.networks.iter().filter(|(id, name)| {
+            name == text || (text.len() >= 8 && id.to_string().starts_with(text))
+        });
         match (matches.next(), matches.next()) {
             (Some((id, _)), None) => Ok(*id),
             (Some(_), Some(_)) => Err(CliError(format!(
@@ -150,7 +152,10 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             network: names.network(network)?,
         },
         Cmd::Peers { network, .. } => Request::Peers {
-            network: names.network(network)?,
+            network: match network {
+                Some(network) => names.network(network)?,
+                None => names.only_network()?,
+            },
         },
         Cmd::Dns(DnsCmd::Set {
             network,

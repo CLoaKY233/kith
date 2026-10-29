@@ -51,6 +51,8 @@ const MESH_SILENCE: core::time::Duration = core::time::Duration::from_secs(25);
 /// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent
 /// and still count as online.
 const CLIENT_SILENCE: core::time::Duration = core::time::Duration::from_secs(60);
+/// How far a phone's last seen, as told to other devices, may fall behind.
+const PRESENCE_STALE: core::time::Duration = core::time::Duration::from_secs(30);
 /// How often traffic counters are read: to keep checking the paths of peers that are
 /// exchanging packets, and for a gateway to see whether its phones are online.
 const PEER_TICK: core::time::Duration = core::time::Duration::from_secs(2);
@@ -1398,7 +1400,7 @@ impl Daemon {
                 node: *id,
                 name: client.peer.label.clone(),
                 address: client.peer.addresses.v4.to_string(),
-                path: None,
+                path: (client.gateway == local && online).then_some(kith_ipc::PathKind::Direct),
                 path_reason: None,
                 last_seen_secs: seen_ago.map(|age| age.as_secs()),
                 endpoint,
@@ -2084,7 +2086,9 @@ impl Daemon {
             let unchanged = self.presence.announced.get(&network).is_some_and(|before| {
                 before.len() == entries.len()
                     && before.iter().zip(&entries).all(|((a, x), (b, y))| {
-                        a == b && x.online == y.online && (x.online || x.last_seen == y.last_seen)
+                        a == b
+                            && x.online == y.online
+                            && x.last_seen.abs_diff(y.last_seen) < PRESENCE_STALE.as_secs()
                     })
             });
             if unchanged {

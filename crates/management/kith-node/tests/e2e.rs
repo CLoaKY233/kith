@@ -1052,6 +1052,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a_device_that_restarts_still_sees_phones_online() -> TestResult {
+        let s = start_server(true, false, Some("localhost")).await?;
+        let disk_a = Disk::new("a")?;
+        let a = disk_a.start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server: Ipv4Addr = peer(&a, network, "server").await?;
+        let (phone, everything) = checked_configs(export(&s, network, "Phone", &["phone"]).await?)?;
+        let p = phone_from(&everything).await?;
+        deliver(&p, &s, &udp_packet(phone, server, b"hello")?).await?;
+        wait_for_peer(&a, network, "phone", Duration::from_secs(15), |p| p.online).await?;
+        let on_gateway = peer_info(&s, network, "phone").await?;
+        if on_gateway.path != Some(kith_ipc::PathKind::Direct) {
+            return Err(
+                format!("the gateway should reach its phone directly: {on_gateway:?}").into(),
+            );
+        }
+
+        a.shutdown().await?;
+        let a = disk_a.start().await?;
+        let seen = wait_for_peer(&a, network, "phone", Duration::from_secs(15), |p| p.online)
+            .await
+            .map_err(|e| format!("after a restart alpha never saw the phone online: {e}"))?;
+        if seen.last_seen_secs.is_none_or(|secs| secs > 30) {
+            return Err(format!("the phone's last seen is stale: {seen:?}").into());
+        }
+        shutdown([a, p, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn a_phone_on_plain_wireguard_is_a_full_member() -> TestResult {
         let s = start_server(true, false, Some("localhost")).await?;
         let a = start().await?;

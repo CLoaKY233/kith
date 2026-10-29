@@ -8,7 +8,8 @@ use crate::duration;
 
 const DEFAULT_EXPIRY_SECS: u64 = 24 * 60 * 60;
 
-/// Top-level options.
+/// kith, a WireGuard mesh VPN. Start with `kith status`; `kith up` and `kith down` turn it
+/// on and off.
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 #[bpaf(options, version)]
 pub(crate) struct Opts {
@@ -19,7 +20,7 @@ pub(crate) struct Opts {
     pub cmd: Cmd,
 }
 
-/// A subcommand.
+/// Commands
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 pub(crate) enum Cmd {
     /// Turn kith on, now and at every boot
@@ -84,8 +85,9 @@ pub(crate) enum Cmd {
     Peers {
         /// Print JSON
         json: bool,
+        /// The network (default: the only one)
         #[bpaf(positional("NETWORK"))]
-        network: String,
+        network: Option<String>,
     },
     /// Manage DNS records
     #[bpaf(command)]
