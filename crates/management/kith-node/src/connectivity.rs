@@ -106,6 +106,8 @@ pub(crate) struct Connectivity {
     probes: BTreeMap<SocketAddr, StunProbe>,
     next_stun: Option<Instant>,
     interfaces: Vec<SocketAddr>,
+    /// Addresses the config names for us, such as a server's `public_hostname`.
+    configured: Vec<SocketAddr>,
     reflexive: BTreeMap<SocketAddr, SocketAddr>,
     observed: Vec<SocketAddr>,
     mapped: Option<SocketAddr>,
@@ -167,6 +169,7 @@ impl Connectivity {
             probes: BTreeMap::new(),
             next_stun: None,
             interfaces,
+            configured: Vec::new(),
             reflexive: BTreeMap::new(),
             observed: Vec::new(),
             mapped: None,
@@ -292,46 +295,62 @@ impl Connectivity {
         }
     }
 
-    /// Connects to every advertised relay and drops clients for withdrawn ones.
+    /// Connects to every advertised relay and drops clients for withdrawn ones. Our own
+    /// relay is reached on `own_relay`, loopback, so peers can relay to us as to anyone.
     #[expect(
         clippy::unnecessary_wraps,
         reason = "the daemon treats this as fallible"
     )]
-    pub(crate) fn set_relays(&mut self, relays: &[Relay]) -> Result<(), NodeError> {
+    pub(crate) fn set_relays(
+        &mut self,
+        relays: &[Relay],
+        own_relay: Option<SocketAddr>,
+        resolved: &BTreeMap<String, Vec<SocketAddr>>,
+    ) -> Result<(), NodeError> {
         let local = self.identity.node_id();
-        let wanted: BTreeMap<NodeId, &Relay> = relays
+        let wanted: BTreeMap<NodeId, String> = relays
             .iter()
-            .filter(|relay| relay.node() != local)
-            .map(|relay| (relay.node(), relay))
+            .filter_map(|relay| {
+                let address = if relay.node() == local {
+                    own_relay?.to_string()
+                } else {
+                    relay.address().to_owned()
+                };
+                Some((relay.node(), address))
+            })
             .collect();
         self.relays.retain(|node, client| {
             wanted
                 .get(node)
-                .is_some_and(|relay| relay.address() == client.address)
+                .is_some_and(|address| *address == client.address)
         });
-        for (node, relay) in &wanted {
+        for (node, address) in &wanted {
             if self.relays.contains_key(node) {
                 continue;
             }
             let (client, incoming) = stealth::relay_client(
-                relay.address().to_owned(),
+                address.clone(),
                 *node,
                 Arc::clone(&self.relay_key),
                 &self.stealth,
             );
             tokio::spawn(forward_relayed(incoming, self.commands.clone()));
-            debug!(relay = %node, address = relay.address(), "relay client started");
+            debug!(relay = %node, %address, "relay client started");
             self.relays.insert(
                 *node,
                 RelayClient {
-                    address: relay.address().to_owned(),
+                    address: address.clone(),
                     client,
                 },
             );
         }
-        let stun_servers: Vec<SocketAddr> = wanted
-            .values()
-            .filter_map(|relay| relay.address().parse().ok())
+        let stun_servers: Vec<SocketAddr> = relays
+            .iter()
+            .filter(|relay| relay.node() != local)
+            .flat_map(|relay| match relay.address().parse::<SocketAddr>() {
+                Ok(addr) => vec![addr],
+                Err(_) => resolved.get(relay.address()).cloned().unwrap_or_default(),
+            })
             .collect();
         if stun_servers != self.stun_servers {
             self.stun_servers = stun_servers;
@@ -689,11 +708,20 @@ impl Connectivity {
         }
     }
 
+    /// Sets the addresses the config names for us; they lead the endpoints we offer.
+    pub(crate) fn set_configured_endpoints(&mut self, endpoints: Vec<SocketAddr>) {
+        if self.configured != endpoints {
+            self.configured = endpoints;
+            self.refresh_advertised();
+        }
+    }
+
     fn refresh_advertised(&mut self) {
         let mut advertised: Vec<SocketAddr> = Vec::new();
         let sources = self
-            .mapped
+            .configured
             .iter()
+            .chain(&self.mapped)
             .chain(self.reflexive.values())
             .chain(&self.observed)
             .chain(&self.interfaces);

@@ -1,4 +1,4 @@
-use core::net::{IpAddr, Ipv4Addr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -38,6 +38,8 @@ use crate::types::{
 const MAX_GOSSIP_NODES: usize = 256;
 /// How often changed peer endpoints are written to disk at most.
 const ENDPOINT_SAVE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(30);
+/// How often `public_hostname` is resolved again, to follow an address that changes.
+const PUBLIC_HOSTNAME_REFRESH: core::time::Duration = core::time::Duration::from_secs(300);
 /// Warnings kept for `kith status`.
 const MAX_WARNINGS: usize = 20;
 const COMMAND_QUEUE: usize = 256;
@@ -367,16 +369,18 @@ fn load_networks(state: &StateDir, local: NodeId) -> Result<NetworkSet, NodeErro
     Ok(networks)
 }
 
+/// Our mesh addresses and the IPv4 resolver, the only one served. Every node holding the
+/// shared IPv6 resolver made kernels send from it, and peers drop what claims to come from
+/// their own address.
 fn local_addresses(map: &NetMap) -> Vec<(IpAddr, u8)> {
     let mut addresses = Vec::new();
     if let Some(local) = map.local_addresses() {
         addresses.push((IpAddr::V4(local.v4), map.ipv4_range().prefix_len()));
         addresses.push((IpAddr::V6(local.v6), map.ipv6_range().prefix_len()));
     }
-    for resolver in map.resolver() {
-        let host = if resolver.is_ipv4() { 32 } else { 128 };
+    for resolver in map.resolver().into_iter().filter(IpAddr::is_ipv4) {
         if !addresses.iter().any(|(address, _)| *address == resolver) {
-            addresses.push((resolver, host));
+            addresses.push((resolver, 32));
         }
     }
     addresses
@@ -653,6 +657,7 @@ impl Daemon {
                 Ok(Response::PolicySet)
             }
             Action::UseExit { network, node } => self.use_exit(network, node).await,
+            Action::RemoveDevice { network, node } => self.remove_device(network, node).await,
             Action::AdvertiseRelay {
                 network,
                 name,
@@ -771,10 +776,14 @@ impl Daemon {
             self.identity.node_id(),
         )?)?;
         for entry in token.bootstrap() {
-            if let BootstrapAddr::Socket(addr) = entry.addr() {
-                let known = self.endpoints.entry(entry.node()).or_default();
-                if !known.contains(addr) {
-                    known.push(*addr);
+            let addrs = match entry.addr() {
+                BootstrapAddr::Socket(addr) => vec![*addr],
+                BootstrapAddr::Host(host, port) => resolve(host.as_str(), *port).await,
+            };
+            let known = self.endpoints.entry(entry.node()).or_default();
+            for addr in addrs {
+                if !known.contains(&addr) {
+                    known.push(addr);
                 }
             }
         }
@@ -799,6 +808,38 @@ impl Daemon {
         }
         self.refresh(None).await?;
         Ok(Response::Left)
+    }
+
+    async fn remove_device(
+        &mut self,
+        network: NetworkId,
+        node: NodeId,
+    ) -> Result<Response, NodeError> {
+        if node == self.identity.node_id() {
+            return Err(NodeError::InvalidArgument(
+                "to take this device out of the network, run `kith leave`".to_owned(),
+            ));
+        }
+        if !self.member_map(network)?.peers().contains_key(&node) {
+            return Err(NodeError::NotFound(format!(
+                "{node} is not in this network"
+            )));
+        }
+        if !self.is_admin(network)? {
+            return Err(NodeError::InvalidArgument(
+                "only an admin of this network can remove devices".to_owned(),
+            ));
+        }
+        let identity = Arc::clone(&self.identity);
+        self.runtime_mut(network)?
+            .remove_device(&identity, node, now())?;
+        if self.exit == Some((network, node)) {
+            self.exit = None;
+            self.dataplane.set_exit(None).await?;
+            self.state.save_exit(None)?;
+        }
+        self.commit(network).await?;
+        Ok(Response::DeviceRemoved)
     }
 
     async fn use_exit(
@@ -1306,7 +1347,51 @@ impl Daemon {
         Ok(())
     }
 
+    /// Resolves `public_hostname` again when it is due; a server whose public address
+    /// changes on restart, behind a 1:1 NAT as on EC2, offers it as its first endpoint.
+    /// Also resolves relays advertised by hostname, so STUN can use them.
+    async fn refresh_public_endpoints(&mut self) {
+        let now = Instant::now();
+        let relays: BTreeSet<String> = relays(self.networks.maps())
+            .iter()
+            .map(|relay| relay.address().to_owned())
+            .filter(|address| address.parse::<SocketAddr>().is_err())
+            .collect();
+        let fresh = self
+            .notes
+            .public_resolved
+            .is_some_and(|at| now.saturating_duration_since(at) < PUBLIC_HOSTNAME_REFRESH);
+        if fresh
+            && relays
+                .iter()
+                .all(|r| self.notes.relay_addresses.contains_key(r))
+        {
+            return;
+        }
+        let mut relay_addresses = BTreeMap::new();
+        for address in relays {
+            let resolved = match address.rsplit_once(':') {
+                Some((host, port)) => match port.parse() {
+                    Ok(port) => resolve(host, port).await,
+                    Err(_) => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            relay_addresses.insert(address, resolved);
+        }
+        self.notes.relay_addresses = relay_addresses;
+        self.notes.public_resolved = Some(now);
+        if let Some(host) = self.public_hostname.clone() {
+            let found = resolve(&host, self.channel.local_addr().port()).await;
+            if found.is_empty() {
+                tracing::warn!(%host, "public_hostname does not resolve; peers outside this network cannot reach us directly");
+            }
+            self.connectivity.set_configured_endpoints(found);
+        }
+    }
+
     async fn refresh(&mut self, changed: Option<NetworkId>) -> Result<(), NodeError> {
+        self.refresh_public_endpoints().await;
         self.push_peers().await?;
         let maps = self.networks.maps();
         for (id, map) in maps.iter().filter(|(_, map)| map.is_member()) {
@@ -1331,7 +1416,13 @@ impl Daemon {
         let relays = relays(maps);
         let at = Instant::now();
         self.connectivity.set_peers(&peers, at);
-        self.connectivity.set_relays(&relays)?;
+        let own_relay = self
+            .server
+            .as_ref()
+            .and_then(ServerMode::relay_addr)
+            .map(loopback);
+        self.connectivity
+            .set_relays(&relays, own_relay, &self.notes.relay_addresses)?;
         self.add_known_candidates();
         self.update_targets()?;
         if let Some(server) = &self.server {
@@ -1625,6 +1716,10 @@ struct Notes {
     dns_forwarding: Vec<SocketAddr>,
     /// When to write changed peer endpoints.
     endpoint_writes: WriteThrottle,
+    /// When `public_hostname` and relay hostnames last resolved.
+    public_resolved: Option<Instant>,
+    /// What each relay `host:port` resolved to, for STUN.
+    relay_addresses: BTreeMap<String, Vec<SocketAddr>>,
 }
 
 impl Default for Notes {
@@ -1633,7 +1728,37 @@ impl Default for Notes {
             warnings: VecDeque::new(),
             dns_forwarding: Vec::new(),
             endpoint_writes: WriteThrottle::new(ENDPOINT_SAVE_INTERVAL),
+            public_resolved: None,
+            relay_addresses: BTreeMap::new(),
         }
+    }
+}
+
+/// The addresses `host` resolves to, on `port`; an IP literal is itself.
+async fn resolve(host: &str, port: u16) -> Vec<SocketAddr> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return vec![SocketAddr::new(ip, port)];
+    }
+    match tokio::net::lookup_host((host, port)).await {
+        Ok(found) => found.collect(),
+        Err(error) => {
+            tracing::debug!(%host, %error, "could not resolve");
+            Vec::new()
+        }
+    }
+}
+
+/// Where this node reaches a server it runs bound on `addr`: loopback for an unspecified
+/// bind, else `addr` itself.
+fn loopback(addr: SocketAddr) -> SocketAddr {
+    match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => {
+            SocketAddr::from((Ipv4Addr::LOCALHOST, addr.port()))
+        }
+        IpAddr::V6(ip) if ip.is_unspecified() => {
+            SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port()))
+        }
+        IpAddr::V4(_) | IpAddr::V6(_) => addr,
     }
 }
 
@@ -1748,7 +1873,7 @@ mod tests {
 
     use kith_types::IpPrefix;
 
-    use super::outside;
+    use super::{outside, resolve};
 
     #[test]
     fn mesh_addresses_are_never_shared_as_endpoints() {
@@ -1766,6 +1891,23 @@ mod tests {
         assert_eq!(
             outside(&ranges, learned),
             [addr("192.168.1.20:41641"), addr("203.0.113.7:61000")]
+        );
+    }
+
+    #[tokio::test]
+    async fn public_hostnames_resolve_to_endpoints_on_the_wireguard_port() {
+        let named = resolve("localhost", 41641).await;
+        assert!(
+            named.contains(&"127.0.0.1:41641".parse().unwrap()),
+            "{named:?}"
+        );
+        assert_eq!(
+            resolve("203.0.113.7", 41641).await,
+            ["203.0.113.7:41641".parse().unwrap()]
+        );
+        assert_eq!(
+            resolve("does-not-exist.invalid", 41641).await,
+            Vec::<SocketAddr>::new()
         );
     }
 }

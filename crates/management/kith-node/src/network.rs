@@ -154,6 +154,23 @@ impl NetworkRuntime {
         })?
     }
 
+    /// Signs and inserts a `RemoveDevice` op.
+    pub(crate) fn remove_device(
+        &mut self,
+        identity: &DeviceIdentity,
+        device: NodeId,
+        now: Timestamp,
+    ) -> Result<(), NodeError> {
+        let author = identity.node_id();
+        self.with_ledger(|ledger| {
+            let op = ledger
+                .draft(author, OpBody::RemoveDevice { device }, now)
+                .sign(identity.signing_key())?;
+            ledger.insert(op)?;
+            Ok(())
+        })?
+    }
+
     /// Signs and inserts a `SetRecord` op; an empty value deletes the record.
     pub(crate) fn set_record(
         &mut self,

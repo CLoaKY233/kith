@@ -240,6 +240,10 @@ B=$(mesh_addr a b)
 retry "ping a -> b over the mesh" 30 in_ns a ping -c 1 -W 1 "$B"
 log "a reaches b at $B: $(path_of a b)"
 
+if in_ns a ip -6 addr show | grep -q 'fd7a:115c:a1e0::1/128'; then
+    fail "the shared IPv6 resolver address is on the tunnel; kernels would send from it"
+fi
+
 log "names: mesh names resolve, and other names are forwarded to the LAN's resolver"
 got=$(in_ns a dig +short +time=2 +tries=3 "@$MESH_DNS" "b.$NET.kith.internal" A)
 [ "$got" = "$B" ] || fail "b.$NET.kith.internal resolved to '$got', want $B"
@@ -266,6 +270,9 @@ log "exit: a sends internet traffic through srv"
 in_ns a ping -c 1 -W 1 203.0.113.1 >/dev/null 2>&1 && fail "a reached the internet without an exit"
 retry "srv granted as exit" 20 kith_in a exit use "$NET" srv
 retry "ping a -> internet through srv" 20 in_ns a ping -c 1 -W 1 203.0.113.1
+start=$(date +%s)
+in_ns a ping -6 -c 1 -W 3 2001:db8::1 >/dev/null 2>&1 || true
+[ $(($(date +%s) - start)) -le 2 ] || fail "IPv6 through a v4-only exit is not refused at once"
 in_ns srv nft list chain ip filter DOCKER-USER | grep -q 'comment "kith"' ||
     fail "srv did not open DOCKER-USER for exit traffic"
 kith_in a exit off >/dev/null

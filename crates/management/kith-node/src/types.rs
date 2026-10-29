@@ -170,6 +170,13 @@ pub(crate) enum Action {
         /// The parsed policy.
         policy: Box<Policy>,
     },
+    /// Remove a device from a network; admins only.
+    RemoveDevice {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+    },
     /// Route default traffic through a peer, or stop with `None`.
     UseExit {
         /// The network.

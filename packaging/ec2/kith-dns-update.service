@@ -1,0 +1,15 @@
+[Unit]
+Description=Point the kith server's DNS record at this instance's public IP
+Wants=network-online.target
+After=network-online.target
+Before=kith.service
+ConditionPathExists=/etc/kith/cloudflare.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kith-dns-update
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

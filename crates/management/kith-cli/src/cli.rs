@@ -58,6 +58,15 @@ pub(crate) enum Cmd {
         #[bpaf(positional("LINK"))]
         link: String,
     },
+    /// Remove another device from a network (admins only)
+    #[bpaf(command)]
+    Remove {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The device's name or id
+        #[bpaf(positional("DEVICE"))]
+        device: String,
+    },
     /// Leave a network
     #[bpaf(command)]
     Leave {

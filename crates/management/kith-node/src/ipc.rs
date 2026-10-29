@@ -163,6 +163,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             ),
         },
         Request::UseExit { network, node } => Action::UseExit { network, node },
+        Request::RemoveDevice { network, node } => Action::RemoveDevice { network, node },
         Request::AdvertiseRelay {
             network,
             name,

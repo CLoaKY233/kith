@@ -359,6 +359,9 @@ pub(crate) fn response(
             writeln!(out, "internet traffic now goes through {node}")?;
         }
         (Cmd::Exit(ExitCmd::Off { .. }), Response::ExitSet) => writeln!(out, "exit node off")?,
+        (Cmd::Remove { device, network }, Response::DeviceRemoved) => {
+            writeln!(out, "removed {device} from {network}")?;
+        }
         (Cmd::Exit(ExitCmd::Allow { node, .. }), Response::ExitGrantSet) => {
             writeln!(out, "{node} may now act as an exit node")?;
         }

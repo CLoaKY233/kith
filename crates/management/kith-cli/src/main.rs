@@ -31,6 +31,7 @@ fn main() -> ExitCode {
         | Cmd::Invite { .. }
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
+        | Cmd::Remove { .. }
         | Cmd::Peers { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)

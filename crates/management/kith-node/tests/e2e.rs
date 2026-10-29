@@ -429,6 +429,58 @@ mod tests {
         shutdown([a, b, c]).await
     }
 
+    async fn remove(by: &NodeHandle, network: NetworkId, node: NodeId) -> Response {
+        by.request(Request::RemoveDevice { network, node }).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_admin_removes_a_device_and_it_is_cut_off() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let c = start().await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "beta").await?;
+        join(&a, &c, network, "gamma").await?;
+        let alpha = peer(&b, network, "alpha").await?;
+        let beta_info = peer_info(&a, network, "beta").await?;
+        let beta: Ipv4Addr = beta_info.address.parse()?;
+        let me = peer_info(&b, network, "alpha").await?.node;
+        deliver(&b, &a, &udp_packet(beta, alpha, b"before removal")?).await?;
+
+        if remove(&a, network, me).await == Response::DeviceRemoved {
+            return Err("an admin removed itself instead of being told to leave".into());
+        }
+        let gamma = peer_info(&b, network, "gamma").await?.node;
+        if remove(&b, network, gamma).await == Response::DeviceRemoved {
+            return Err("a non-admin removed a device".into());
+        }
+
+        let removed = remove(&a, network, beta_info.node).await;
+        if removed != Response::DeviceRemoved {
+            return Err(format!("removal failed: {removed:?}").into());
+        }
+        for (node, name) in [(&a, "alpha"), (&c, "gamma")] {
+            let mut gone = false;
+            for _ in 0..100 {
+                let Response::Peers(peers) = node.request(Request::Peers { network }).await else {
+                    return Err("peers failed".into());
+                };
+                if peers.iter().all(|p| p.name != "beta") {
+                    gone = true;
+                    break;
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+            if !gone {
+                return Err(format!("{name} still lists beta after its removal").into());
+            }
+        }
+        never_delivered(&b, &a, &udp_packet(beta, alpha, b"after removal")?)
+            .await
+            .map_err(|e| format!("a removed device still reached alpha: {e}"))?;
+        shutdown([a, b, c]).await
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn restarted_nodes_reconnect_from_their_saved_state() -> TestResult {
         let disk_a = Disk::new("a")?;
@@ -470,6 +522,15 @@ mod tests {
 
         deliver(&a, &b, &udp_packet(alpha, beta, b"via relay")?).await?;
         deliver(&b, &a, &udp_packet(beta, alpha, b"via relay")?).await?;
+
+        // The relay's own node is reachable through its relay too, as a lone server is.
+        let server = peer(&a, network, "server").await?;
+        deliver(&a, &s, &udp_packet(alpha, server, b"to the relay host")?)
+            .await
+            .map_err(|e| format!("alpha to the relay host: {e}"))?;
+        deliver(&s, &a, &udp_packet(server, alpha, b"from the relay host")?)
+            .await
+            .map_err(|e| format!("relay host to alpha: {e}"))?;
         let beta_info = peer_info(&a, network, "beta").await?;
         if beta_info.endpoint.as_deref() != Some("relay")
             || !beta_info

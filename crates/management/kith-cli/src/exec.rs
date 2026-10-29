@@ -156,6 +156,10 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             network: names.network(network)?,
             name: name.clone(),
         },
+        Cmd::Remove { network, device } => Request::RemoveDevice {
+            network: names.network(network)?,
+            node: names.node(device)?,
+        },
         Cmd::Exit(ExitCmd::Use { network, node }) => Request::UseExit {
             network: names.network(network)?,
             node: Some(names.node(node)?),
@@ -300,6 +304,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Invite { .. }
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
+        | Cmd::Remove { .. }
         | Cmd::Peers { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
@@ -325,6 +330,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Invite { .. }
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
+        | Cmd::Remove { .. }
         | Cmd::Peers { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
@@ -367,6 +373,7 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
         | ExitCmd::Allow { network, .. }
         | ExitCmd::Deny { network, .. },
     )
+    | Cmd::Remove { network, .. }
     | Cmd::Relay(RelayCmd::Advertise {
         network,
         node: Some(_),

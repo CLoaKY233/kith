@@ -79,6 +79,14 @@ fn every_command_parses_into_the_right_request() {
         ),
         (vec!["leave", "home"], Ok(Request::Leave { network: NET })),
         (
+            vec!["remove", "home", "nas"],
+            Ok(Request::RemoveDevice {
+                network: NET,
+                node: NODE,
+            }),
+        ),
+        (vec!["remove", "home", "ghost"], Err(())),
+        (
             vec!["peers", "home", "--json"],
             Ok(Request::Peers { network: NET }),
         ),
@@ -344,12 +352,11 @@ async fn status_renders_what_the_daemon_reports() {
         "ok    daemon is running on port 41641\n\
          ok    home/nas: direct to 198.51.100.7:41641 (12 ms)\n\
          warn  home/phone \"old\" is unreachable: relay: no direct addresses known for this peer yet\n      \
-         fix: make sure it is on, or run a relay with `kith server --relay` on a public host\n\
+         fix: make sure it is on; if it is gone for good, `kith remove home 'phone \"old\"'`\n\
          ok    exit node home/nas is reachable\n\
          warn  100.100.100.100/32 via utun37 overlaps kith's addresses; kith peers there are unreachable\n      \
          fix: quit the other VPN (often Tailscale) while using kith\n\
-         warn  2 packets refused by the network's policy (policy)\n      \
-         fix: check the policy an admin set for this network\n\
+         info  2 packets arrived unasked and the firewall refused them (policy)\n\
          warn  30s ago: control channel: connection refused\n"
     );
 }

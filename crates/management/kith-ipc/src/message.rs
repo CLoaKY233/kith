@@ -131,6 +131,13 @@ pub enum Request {
     },
     /// Turns the connection into an [`Event`] stream.
     Watch,
+    /// Removes a device from a network; admins only.
+    RemoveDevice {
+        /// Network to change.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+    },
 }
 
 /// A typed DNS record.
@@ -220,6 +227,8 @@ pub enum Response {
         /// Human-readable explanation.
         message: String,
     },
+    /// Answers [`Request::RemoveDevice`].
+    DeviceRemoved,
 }
 
 /// Why the daemon refused a request.

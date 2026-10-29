@@ -1,0 +1,14 @@
+#!/bin/sh
+# Points a Cloudflare DNS record at this EC2 instance's current public IPv4, for servers
+# without an Elastic IP. Reads CF_API_TOKEN, CF_ZONE_ID and CF_RECORD_ID from
+# /etc/kith/cloudflare.env; the token needs only "Zone > DNS > Edit" on that zone.
+set -eu
+. /etc/kith/cloudflare.env
+imds=http://169.254.169.254/latest
+token=$(curl -fsS -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" "$imds/api/token")
+ip=$(curl -fsS -m 5 -H "X-aws-ec2-metadata-token: $token" "$imds/meta-data/public-ipv4")
+curl -fsS -m 10 -X PATCH \
+    "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$CF_RECORD_ID" \
+    -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
+    --data "{\"content\":\"$ip\"}" >/dev/null
+echo "DNS record now points at $ip"

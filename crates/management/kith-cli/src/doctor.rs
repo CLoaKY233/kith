@@ -9,6 +9,8 @@ use kith_ipc::{PathKind, PeerInfo, Status};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Level {
     Ok,
+    /// Worth knowing, but normal; no fix needed.
+    Info,
     Warn,
     Fail,
 }
@@ -89,17 +91,35 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
         ));
     }
     for (reason, count) in &status.drops {
-        let (what, fix) = match reason.as_str() {
-            "policy" => (
-                "refused by the network's policy",
-                Some("check the policy an admin set for this network"),
+        let (level, what, fix) = match reason.as_str() {
+            "no_route" | "no_endpoint" => (
+                Level::Info,
+                "were for a peer that is offline or an unused mesh address",
+                None,
             ),
-            "no_endpoint" | "no_route" => ("had no path to a peer", None),
-            "source_not_allowed" => ("came from an address the sender does not own", None),
-            _ => ("were dropped", None),
+            "policy" => (
+                Level::Info,
+                "arrived unasked and the firewall refused them",
+                None,
+            ),
+            "invalid" | "malformed" => (
+                Level::Info,
+                "were not kith traffic, as a public server always gets",
+                None,
+            ),
+            "source_not_allowed" => (
+                Level::Warn,
+                "came from an address the sending peer does not own",
+                Some("run `kith doctor` on that peer, and report it if it persists"),
+            ),
+            _ => (
+                Level::Warn,
+                "were dropped because a queue or table was full",
+                Some("report this with `kith status --json`"),
+            ),
         };
         found.push(finding(
-            Level::Warn,
+            level,
             format!("{count} packets {what} ({reason})"),
             fix,
         ));
@@ -122,17 +142,34 @@ fn check_peer(network: &str, peer: &PeerInfo) -> Finding {
     let reason = peer.path_reason.as_deref().unwrap_or("no path information");
     let name = format!("{network}/{}", peer.name);
     match peer.path {
-        _ if !online(peer) => finding(
-            Level::Warn,
-            format!("{name} is unreachable: {reason}"),
-            Some("make sure it is on, or run a relay with `kith server --relay` on a public host"),
-        ),
+        _ if !online(peer) => Finding {
+            level: Level::Warn,
+            what: format!("{name} is unreachable: {reason}"),
+            fix: Some(format!(
+                "make sure it is on; if it is gone for good, `kith remove {} {}`",
+                shell_word(network),
+                shell_word(&peer.name)
+            )),
+        },
         Some(PathKind::Direct) => finding(Level::Ok, format!("{name}: {reason}"), None),
         _ => finding(
             Level::Warn,
             format!("{name} works but is slower: {reason}"),
             Some("open UDP port 41641 on either side's firewall for a direct path"),
         ),
+    }
+}
+
+/// `word` as one shell argument: as it is when plain, else single-quoted.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
     }
 }
 
@@ -172,6 +209,7 @@ pub(crate) fn render(out: &mut impl Write, findings: &[Finding]) -> io::Result<(
     for found in findings {
         let tag = match found.level {
             Level::Ok => "ok  ",
+            Level::Info => "info",
             Level::Warn => "warn",
             Level::Fail => "FAIL",
         };
