@@ -154,15 +154,6 @@ impl ChannelLayer {
         })
     }
 
-    /// Members with a live control connection now, in either direction.
-    pub(crate) fn connected(&self) -> BTreeSet<NodeId> {
-        self.channel
-            .peers()
-            .into_iter()
-            .map(|(node, _)| node)
-            .collect()
-    }
-
     /// The bound listener address.
     pub(crate) const fn local_addr(&self) -> SocketAddr {
         self.server.local_addr()

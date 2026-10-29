@@ -631,6 +631,69 @@ mod tests {
         shutdown([a, b]).await
     }
 
+    /// Polls `node`'s view of `name` until `done` holds, for at most `within`.
+    async fn wait_for_peer(
+        node: &NodeHandle,
+        network: NetworkId,
+        name: &str,
+        within: Duration,
+        done: impl Fn(&PeerInfo) -> bool,
+    ) -> TestResult<PeerInfo> {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let info = peer_info(node, network, name).await?;
+            if done(&info) {
+                return Ok(info);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("{name} never reached the expected state: {info:?}").into());
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_silent_peer_goes_offline_quickly_and_is_remembered_across_restarts() -> TestResult {
+        let disk_a = Disk::new("seen")?;
+        let a = disk_a.start().await?;
+        let b = start().await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "beta").await?;
+        wait_for_peer(&a, network, "beta", Duration::from_secs(15), |p| p.online).await?;
+        for _ in 0..15 {
+            let idle = peer_info(&a, network, "beta").await?;
+            if !idle.online || idle.last_seen_secs.is_none_or(|secs| secs >= 12) {
+                return Err(format!("an idle running peer went quiet: {idle:?}").into());
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+
+        b.shutdown().await?;
+        let gone = tokio::time::Instant::now();
+        let offline =
+            wait_for_peer(&a, network, "beta", Duration::from_secs(35), |p| !p.online).await?;
+        if offline.path.is_some() || offline.endpoint.is_some() || offline.last_seen_secs.is_none()
+        {
+            return Err(format!(
+                "an offline peer shows a path or lost its last-seen time: {offline:?}"
+            )
+            .into());
+        }
+        let took = gone.elapsed();
+
+        a.shutdown().await?;
+        let a = disk_a.start().await?;
+        let after = peer_info(&a, network, "beta").await?;
+        if after.online
+            || after
+                .last_seen_secs
+                .is_none_or(|secs| secs < took.as_secs())
+        {
+            return Err(format!("a restart forgot when beta was last seen: {after:?}").into());
+        }
+        shutdown([a]).await
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_server_set_up_by_config_relays_for_peers_without_direct_udp() -> TestResult {
         let s = start_server(false, true, None).await?;

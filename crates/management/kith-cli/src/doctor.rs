@@ -151,7 +151,7 @@ fn check_peer(network: &NetworkSummary, peer: &PeerInfo) -> Finding {
     let name = format!("{}/{}", network.name, peer.name);
     match peer.path {
         _ if !peer.online => {
-            let seen = match peer.last_handshake_secs {
+            let seen = match peer.last_seen_secs {
                 Some(secs) => format!("has not been seen for {}", ago(secs)),
                 None => "has never connected".to_owned(),
             };

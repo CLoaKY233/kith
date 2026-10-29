@@ -342,6 +342,7 @@ mod tests {
             Decapsulated::Nothing
         );
         assert_eq!(a.rx_bytes(), b.tx_bytes());
+        assert_eq!(a.last_received(), Some(Duration::from_secs(10)));
 
         // Steady two-way traffic: no handshake until the session reaches REKEY_AFTER_TIME.
         let mut rekeyed_at = None;
@@ -474,10 +475,12 @@ mod tests {
         ) {
             let (mut b, transport) = established(seed);
             let mut out = vec![0; BUFFER];
+            let heard = b.last_received();
             for datagram in &datagrams {
                 let result = b.decapsulate(at(2), datagram, &mut out);
                 prop_assert!(!matches!(result, Ok(Decapsulated::Packet(_))));
             }
+            prop_assert_eq!(b.last_received(), heard, "garbage must not count as hearing the peer");
             let result = b.decapsulate(at(3), &transport, &mut out);
             prop_assert!(matches!(result, Ok(Decapsulated::Packet(_))));
         }

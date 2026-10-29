@@ -273,7 +273,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             address: "100.64.0.2".into(),
             path: Some(PathKind::Direct),
             path_reason: Some("direct to 198.51.100.7:41641 (12 ms)".into()),
-            last_handshake_secs: Some(75),
+            last_seen_secs: Some(4),
             endpoint: Some("198.51.100.7:41641".into()),
             rx_bytes: 1_234_567,
             tx_bytes: 512,
@@ -286,7 +286,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             address: "100.64.0.3".into(),
             path: None,
             path_reason: None,
-            last_handshake_secs: None,
+            last_seen_secs: None,
             endpoint: None,
             rx_bytes: 0,
             tx_bytes: 0,
@@ -326,8 +326,8 @@ async fn status_renders_what_the_daemon_reports() {
          internet traffic goes through home/nas\n\
          \n\
          network home (aaaaaaaa)  1/2 online\n  \
-         NAME   ADDRESS     PATH     ENDPOINT            HANDSHAKE  RX       TX     NODE\n  \
-         nas    100.64.0.2  direct   198.51.100.7:41641  1m ago     1.1 MiB  512 B  bbbbbbbb\n  \
+         NAME   ADDRESS     PATH     ENDPOINT            LAST SEEN  RX       TX     NODE\n  \
+         nas    100.64.0.2  direct   198.51.100.7:41641  4s ago     1.1 MiB  512 B  bbbbbbbb\n  \
          phone  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n\
          \n\
          notes (run `kith doctor` for fixes):\n  \
@@ -347,11 +347,11 @@ async fn status_renders_what_the_daemon_reports() {
                 r#""name":"home","peers_online":1,"peers_total":2,"relays":1,"peers":["#,
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
                 r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
-                r#""endpoint":"198.51.100.7:41641","last_handshake_secs":75,"#,
+                r#""endpoint":"198.51.100.7:41641","last_seen_secs":4,"#,
                 r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS"}},"#,
                 r#"{{"node":"{phone}","name":"phone","address":"100.64.0.3","#,
                 r#""path":null,"path_reason":null,"#,
-                r#""endpoint":null,"last_handshake_secs":null,"#,
+                r#""endpoint":null,"last_seen_secs":null,"#,
                 r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\""}}]}}]}}"#,
                 "\n",
             ),
@@ -439,7 +439,7 @@ fn liveness_alone_decides_offline_and_the_hint_knows_about_relays() {
     status.exit_node = None;
     status.networks[0].relays = 0;
     let mut peers = fake_peers();
-    peers[1].last_handshake_secs = Some(400);
+    peers[1].last_seen_secs = Some(400);
     peers[1].path = Some(PathKind::Relay);
     let found = diagnose(&status, &[peers.clone()]);
     let phone = found

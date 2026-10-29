@@ -281,6 +281,13 @@ impl Peer {
         self.last_handshake
     }
 
+    /// When an authenticated handshake or transport message last arrived from the peer,
+    /// keepalives included, in monotonic time.
+    #[must_use]
+    pub const fn last_received(&self) -> Option<Duration> {
+        self.last_received
+    }
+
     /// Bytes of authenticated datagrams received from the peer.
     #[must_use]
     pub const fn rx_bytes(&self) -> u64 {

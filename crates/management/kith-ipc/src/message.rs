@@ -316,8 +316,9 @@ pub struct PeerInfo {
     pub path: Option<PathKind>,
     /// Why that path was chosen, such as which addresses failed to answer.
     pub path_reason: Option<String>,
-    /// Seconds since the last WireGuard handshake, or `None` if there has been none.
-    pub last_handshake_secs: Option<u64>,
+    /// Seconds since anything authenticated last arrived from it, remembered across
+    /// restarts, or `None` if it has never been heard from.
+    pub last_seen_secs: Option<u64>,
     /// The peer's current WireGuard endpoint, as text.
     pub endpoint: Option<String>,
     /// Bytes received from the peer.

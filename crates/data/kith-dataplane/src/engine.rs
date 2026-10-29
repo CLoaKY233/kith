@@ -506,6 +506,7 @@ impl State {
                 node: *node,
                 endpoint: entry.endpoint,
                 last_handshake: peer.last_handshake().and_then(|at| clock.at(at)),
+                last_received: peer.last_received().and_then(|at| clock.at(at)),
                 rx_bytes: peer.rx_bytes(),
                 tx_bytes: peer.tx_bytes(),
             });
@@ -521,6 +522,7 @@ impl State {
                     public_key: entry.public_key,
                     endpoint: entry.endpoint,
                     last_handshake: peer.last_handshake().and_then(|at| clock.at(at)),
+                    last_received: peer.last_received().and_then(|at| clock.at(at)),
                     rx_bytes: peer.rx_bytes(),
                     tx_bytes: peer.tx_bytes(),
                 });

@@ -49,7 +49,7 @@ fn golden_bytes() {
         address: "b".to_owned(),
         path: Some(PathKind::Direct),
         path_reason: None,
-        last_handshake_secs: Some(300),
+        last_seen_secs: Some(300),
         endpoint: Some("c".to_owned()),
         rx_bytes: 1,
         tx_bytes: 128,
@@ -202,7 +202,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
             .prop_map(
                 |(
                     (node, name, address, path),
-                    (last_handshake_secs, endpoint, rx_bytes, tx_bytes),
+                    (last_seen_secs, endpoint, rx_bytes, tx_bytes),
                     (online, display_name),
                 )| {
                     PeerInfo {
@@ -211,7 +211,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                         address,
                         path,
                         path_reason: None,
-                        last_handshake_secs,
+                        last_seen_secs,
                         endpoint,
                         rx_bytes,
                         tx_bytes,

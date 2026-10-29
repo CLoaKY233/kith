@@ -26,7 +26,7 @@ fn path_name(path: Option<PathKind>) -> &'static str {
     }
 }
 
-fn handshake_age(secs: Option<u64>) -> String {
+fn seen_ago(secs: Option<u64>) -> String {
     let Some(secs) = secs else {
         return "never".to_owned();
     };
@@ -81,7 +81,7 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
         "ADDRESS",
         "PATH",
         "ENDPOINT",
-        "HANDSHAKE",
+        "LAST SEEN",
         "RX",
         "TX",
         "NODE",
@@ -97,7 +97,7 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
                 peer.address.clone(),
                 path_cell(peer).to_owned(),
                 peer.endpoint.clone().unwrap_or_else(|| "-".to_owned()),
-                handshake_age(peer.last_handshake_secs),
+                seen_ago(peer.last_seen_secs),
                 byte_size(peer.rx_bytes),
                 byte_size(peer.tx_bytes),
                 peer.node.short().to_string(),
@@ -236,9 +236,9 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
             Some(endpoint) => json_str(out, endpoint)?,
             None => out.write_all(b"null")?,
         }
-        match peer.last_handshake_secs {
-            Some(secs) => write!(out, ",\"last_handshake_secs\":{secs}")?,
-            None => out.write_all(b",\"last_handshake_secs\":null")?,
+        match peer.last_seen_secs {
+            Some(secs) => write!(out, ",\"last_seen_secs\":{secs}")?,
+            None => out.write_all(b",\"last_seen_secs\":null")?,
         }
         write!(
             out,

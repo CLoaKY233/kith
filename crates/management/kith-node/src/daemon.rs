@@ -38,14 +38,15 @@ use crate::types::{
 const MAX_GOSSIP_NODES: usize = 256;
 /// How often changed peer endpoints are written to disk at most.
 const ENDPOINT_SAVE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(30);
-/// How long after its last handshake a peer still counts as online without a control
-/// connection: WireGuard's own session lifetime (`REJECT_AFTER_TIME`).
-const PEER_SESSION_LIFETIME: core::time::Duration = core::time::Duration::from_secs(180);
+/// How often every mesh peer is sent a keepalive, so silence means it is gone.
+const MESH_KEEPALIVE_SECS: u16 = 10;
+/// How long a mesh peer may stay silent and still count as online: two missed keepalives.
+const MESH_SILENCE: core::time::Duration = core::time::Duration::from_secs(25);
 
-/// The one rule for whether a peer is online: its control channel is up, or its
-/// WireGuard session is still young enough that WireGuard would use it.
-fn is_online(connected: bool, handshake_age: Option<core::time::Duration>) -> bool {
-    connected || handshake_age.is_some_and(|age| age < PEER_SESSION_LIFETIME)
+/// The one rule for whether a peer is online: something authenticated arrived from it
+/// within `silence`.
+fn is_online(heard_ago: Option<core::time::Duration>, silence: core::time::Duration) -> bool {
+    heard_ago.is_some_and(|age| age < silence)
 }
 /// How often `public_hostname` is resolved again, to follow an address that changes.
 const PUBLIC_HOSTNAME_REFRESH: core::time::Duration = core::time::Duration::from_secs(300);
@@ -285,6 +286,8 @@ pub(crate) struct Daemon {
     dataplane_task: JoinHandle<()>,
     events: broadcast::Sender<Event>,
     endpoints: BTreeMap<NodeId, Vec<SocketAddr>>,
+    /// When each peer was last heard from, in Unix seconds, as of the last stats read.
+    last_seen: BTreeMap<NodeId, u64>,
     public_hostname: Option<String>,
     notes: Notes,
     paths: BTreeMap<NodeId, Endpoint>,
@@ -508,6 +511,7 @@ impl Daemon {
         };
         let mut daemon = Self {
             identity,
+            last_seen: state.load_last_seen()?,
             state,
             networks,
             channel,
@@ -546,21 +550,22 @@ impl Daemon {
     ) -> Result<(), NodeError> {
         loop {
             self.save_endpoints_if_due(false);
+            self.save_last_seen_if_due(false).await;
             let deadline = self.connectivity.poll_timeout();
             tokio::select! {
                 command = commands.recv() => match command {
                     Some(Command::Shutdown { reply }) => {
-                        let result = self.shutdown();
+                        let result = self.shutdown().await;
                         let failed = result.is_err();
                         let _sent = reply.send(result);
                         return if failed { Err(NodeError::Stopped) } else { Ok(()) };
                     }
                     Some(command) => self.handle(command).await,
-                    None => return self.shutdown(),
+                    None => return self.shutdown().await,
                 },
                 event = self.dataplane_events.recv() => {
                     let Some(event) = event else {
-                        self.shutdown()?;
+                        self.shutdown().await?;
                         return Err(NodeError::Stopped);
                     };
                     let handled = self.on_dataplane(event).await;
@@ -591,7 +596,7 @@ impl Daemon {
                 self.report(handled);
             }
             Command::Shutdown { reply } => {
-                let _sent = reply.send(self.shutdown());
+                let _sent = reply.send(self.shutdown().await);
             }
         }
         let flushed = self.flush_outputs().await;
@@ -1181,11 +1186,11 @@ impl Daemon {
         Ok(Response::Peers(self.peer_infos(network, map, &stats)))
     }
 
-    /// Every peer of `network` as `kith status` shows it. Liveness is decided here, once:
-    /// a live control connection, or a WireGuard handshake within its session lifetime.
+    /// Every peer of `network` as `kith status` shows it. Liveness is decided here, once,
+    /// by [`is_online`] from what this run of the dataplane heard; the saved last-seen
+    /// time only fills in when it was last heard from before a restart.
     fn peer_infos(&self, network: NetworkId, map: &NetMap, stats: &Stats) -> Vec<PeerInfo> {
         let at = wall_instant();
-        let connected = self.channel.connected();
         map.peers()
             .iter()
             .map(|(node, peer)| {
@@ -1193,17 +1198,18 @@ impl Daemon {
                     .peers
                     .iter()
                     .find(|stat| stat.network == network && stat.node == *node);
-                let handshake_age = stat
-                    .and_then(|stat| stat.last_handshake)
+                let heard_ago = stat
+                    .and_then(|stat| stat.last_received)
                     .map(|when| at.saturating_duration_since(when));
-                let online = is_online(connected.contains(node), handshake_age);
+                let online = is_online(heard_ago, MESH_SILENCE);
+                let seen_ago = heard_ago.or_else(|| self.last_seen.get(node).map(|s| secs_ago(*s)));
                 PeerInfo {
                     node: *node,
                     name: peer.label.clone(),
                     address: peer.addresses.v4.to_string(),
                     path: self.connectivity.path_kind(node).filter(|_| online),
                     path_reason: self.connectivity.path_reason(node).filter(|_| online),
-                    last_handshake_secs: handshake_age.map(|age| age.as_secs()),
+                    last_seen_secs: seen_ago.map(|age| age.as_secs()),
                     endpoint: stat.and_then(|stat| stat.endpoint).filter(|_| online).map(
                         |endpoint| match endpoint {
                             Endpoint::Direct(addr) => addr.to_string(),
@@ -1533,7 +1539,7 @@ impl Daemon {
                     node: *node,
                     allowed_ips,
                     endpoint: self.paths.get(node).copied(),
-                    persistent_keepalive: None,
+                    persistent_keepalive: Some(MESH_KEEPALIVE_SECS),
                 });
             }
         }
@@ -1693,10 +1699,49 @@ impl Daemon {
         Ok(())
     }
 
-    /// Reverts the OS plan.
-    pub(crate) fn shutdown(&mut self) -> Result<(), NodeError> {
+    /// Saves what is worth keeping and reverts the OS plan.
+    pub(crate) async fn shutdown(&mut self) -> Result<(), NodeError> {
         self.save_endpoints_if_due(true);
+        self.save_last_seen_if_due(true).await;
         self.os.revert()
+    }
+
+    /// Folds the dataplane's latest receive times into `last_seen`, keeping only peers
+    /// still in some network, and writes it when it changed, at most every
+    /// [`ENDPOINT_SAVE_INTERVAL`] or now with `force`.
+    async fn save_last_seen_if_due(&mut self, force: bool) {
+        let now = Instant::now();
+        self.notes.last_seen_writes.mark();
+        if !self.notes.last_seen_writes.due(now, force) {
+            return;
+        }
+        let before = self.last_seen.clone();
+        if let Ok(stats) = self.dataplane.stats().await {
+            self.absorb_last_seen(&stats);
+        }
+        let known: BTreeSet<NodeId> = member_maps(self.networks.maps())
+            .flat_map(|map| map.peers().keys().copied())
+            .collect();
+        self.last_seen.retain(|node, _| known.contains(node));
+        if self.last_seen == before {
+            self.notes.last_seen_writes.written(now);
+            return;
+        }
+        match self.state.save_last_seen(&self.last_seen) {
+            Ok(()) => self.notes.last_seen_writes.written(now),
+            Err(error) => {
+                tracing::warn!(error = %Chain(&error), "could not save when peers were last seen");
+            }
+        }
+    }
+
+    fn absorb_last_seen(&mut self, stats: &Stats) {
+        for stat in &stats.peers {
+            if let Some(secs) = stat.last_received.and_then(unix_secs) {
+                let seen = self.last_seen.entry(stat.node).or_insert(0);
+                *seen = (*seen).max(secs);
+            }
+        }
     }
 
     /// Writes peer endpoints at most every [`ENDPOINT_SAVE_INTERVAL`], or now with `force`.
@@ -1799,6 +1844,8 @@ struct Notes {
     dns_forwarding: Vec<SocketAddr>,
     /// When to write changed peer endpoints.
     endpoint_writes: WriteThrottle,
+    /// When to write when peers were last heard from.
+    last_seen_writes: WriteThrottle,
     /// When `public_hostname` and relay hostnames last resolved.
     public_resolved: Option<Instant>,
     /// What each relay `host:port` resolved to, for STUN.
@@ -1811,6 +1858,7 @@ impl Default for Notes {
             warnings: VecDeque::new(),
             dns_forwarding: Vec::new(),
             endpoint_writes: WriteThrottle::new(ENDPOINT_SAVE_INTERVAL),
+            last_seen_writes: WriteThrottle::new(ENDPOINT_SAVE_INTERVAL),
             public_resolved: None,
             relay_addresses: BTreeMap::new(),
         }
@@ -1933,6 +1981,18 @@ fn host_prefixes(addresses: Addresses) -> Result<[IpPrefix; 2], NodeError> {
     ])
 }
 
+/// `at` as Unix seconds, via how long ago it was.
+fn unix_secs(at: std::time::Instant) -> Option<u64> {
+    let ago = wall_instant().saturating_duration_since(at);
+    let now = now().as_millis() / 1000;
+    now.checked_sub(ago.as_secs())
+}
+
+/// How long ago `secs` (Unix seconds) was; zero for the future, as after a clock change.
+fn secs_ago(secs: u64) -> core::time::Duration {
+    core::time::Duration::from_secs((now().as_millis() / 1000).saturating_sub(secs))
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "handshake ages are measured against the dataplane's std clock"
@@ -1997,16 +2057,21 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_is_online_while_connected_or_its_session_is_alive() {
+    fn a_peer_is_online_only_while_it_is_heard_from() {
         use core::time::Duration;
 
-        use super::{PEER_SESSION_LIFETIME, is_online};
-        let just_under = Duration::from_millis(179_999);
-        assert!(is_online(true, None));
-        assert!(is_online(true, Some(Duration::from_secs(9999))));
-        assert!(is_online(false, Some(Duration::ZERO)));
-        assert!(is_online(false, Some(just_under)));
-        assert!(!is_online(false, Some(PEER_SESSION_LIFETIME)));
-        assert!(!is_online(false, None));
+        use super::{MESH_KEEPALIVE_SECS, MESH_SILENCE, is_online};
+        let keepalive = Duration::from_secs(u64::from(MESH_KEEPALIVE_SECS));
+        assert!(
+            MESH_SILENCE > keepalive * 2,
+            "one late keepalive must not flap"
+        );
+        assert!(is_online(Some(Duration::ZERO), MESH_SILENCE));
+        assert!(is_online(Some(Duration::from_millis(24_999)), MESH_SILENCE));
+        assert!(!is_online(Some(MESH_SILENCE), MESH_SILENCE));
+        assert!(
+            !is_online(None, MESH_SILENCE),
+            "never heard from is offline"
+        );
     }
 }

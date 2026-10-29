@@ -161,6 +161,8 @@ pub struct ExternalPeerStats {
     pub endpoint: Option<SocketAddr>,
     /// When its latest session was established.
     pub last_handshake: Option<Instant>,
+    /// When anything authenticated, keepalives included, last arrived from it.
+    pub last_received: Option<Instant>,
     /// Bytes of authenticated WireGuard datagrams received from it.
     pub rx_bytes: u64,
     /// Bytes of WireGuard datagrams produced for it.
@@ -179,6 +181,8 @@ pub struct PeerStats {
     pub endpoint: Option<Endpoint>,
     /// When its latest session was established.
     pub last_handshake: Option<Instant>,
+    /// When anything authenticated, keepalives included, last arrived from it.
+    pub last_received: Option<Instant>,
     /// Bytes of authenticated WireGuard datagrams received from it.
     pub rx_bytes: u64,
     /// Bytes of WireGuard datagrams produced for it.

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -155,6 +156,39 @@ impl StateDir {
         Ok(())
     }
 
+    /// Loads when each peer was last heard from, in Unix seconds; a corrupt file is ignored.
+    pub(crate) fn load_last_seen(&self) -> Result<BTreeMap<NodeId, u64>, NodeError> {
+        let Some(bytes) = self.store.get(&last_seen_key()?)? else {
+            return Ok(BTreeMap::new());
+        };
+        let mut seen = BTreeMap::new();
+        let mut rest = bytes.as_slice();
+        while !rest.is_empty() {
+            let Some((node, tail)) = rest.split_first_chunk::<32>() else {
+                tracing::warn!("ignoring corrupt last-seen cache");
+                return Ok(BTreeMap::new());
+            };
+            let Some((secs, tail)) = tail.split_first_chunk::<8>() else {
+                tracing::warn!("ignoring corrupt last-seen cache");
+                return Ok(BTreeMap::new());
+            };
+            seen.insert(NodeId::from_bytes(*node), u64::from_be_bytes(*secs));
+            rest = tail;
+        }
+        Ok(seen)
+    }
+
+    /// Persists when each peer was last heard from, in Unix seconds.
+    pub(crate) fn save_last_seen(&self, seen: &BTreeMap<NodeId, u64>) -> Result<(), NodeError> {
+        let mut out = Vec::with_capacity(seen.len() * 40);
+        for (node, secs) in seen {
+            out.extend_from_slice(node.as_bytes());
+            out.extend_from_slice(&secs.to_be_bytes());
+        }
+        self.store.put(&last_seen_key()?, &out)?;
+        Ok(())
+    }
+
     /// Loads the exit node in use, if one was saved.
     pub(crate) fn load_exit(&self) -> Result<Option<(NetworkId, NodeId)>, NodeError> {
         let Some(bytes) = self.store.get(&exit_key()?)? else {
@@ -202,9 +236,14 @@ const GATEWAY_NAME: &str = "gateway";
 const PEERS_NAMESPACE: &str = "peers";
 const ENDPOINTS_NAME: &str = "endpoints";
 const EXIT_NAME: &str = "exit";
+const LAST_SEEN_NAME: &str = "last-seen";
 
 fn exit_key() -> Result<Key, NodeError> {
     Ok(Key::parse(PEERS_NAMESPACE, EXIT_NAME).map_err(kith_store::Error::from)?)
+}
+
+fn last_seen_key() -> Result<Key, NodeError> {
+    Ok(Key::parse(PEERS_NAMESPACE, LAST_SEEN_NAME).map_err(kith_store::Error::from)?)
 }
 
 fn endpoints_key() -> Result<Key, NodeError> {
