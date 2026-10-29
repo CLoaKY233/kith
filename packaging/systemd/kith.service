@@ -5,7 +5,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/kith daemon --config /etc/kith/kith.toml
+ExecStart=/usr/bin/kith daemon
 Restart=on-failure
 RestartSec=2s
 StateDirectory=kith

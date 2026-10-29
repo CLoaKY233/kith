@@ -8,8 +8,6 @@
 	<array>
 		<string>/usr/local/bin/kith</string>
 		<string>daemon</string>
-		<string>--config</string>
-		<string>/Library/Application Support/kith/kith.toml</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
