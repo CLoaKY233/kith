@@ -25,9 +25,16 @@ use crate::api::{
 use crate::packet;
 use crate::timers::Timers;
 use crate::tun_device::TunDevice;
+use kith_packet::{clamp_mss, needs_mss_clamp};
 
 /// Handshakes per second answered before cookies are demanded.
 const HANDSHAKES_PER_SECOND: u32 = 1000;
+
+/// What WireGuard adds to each packet over IPv6, the larger of the two families: IPv6
+/// and UDP headers and WireGuard's own 32 bytes. TCP through the tunnel is kept to the
+/// tunnel MTU minus this, so with the default of 1280, the IPv6 minimum any working path
+/// carries, nothing ever needs a bigger path than that.
+const WIREGUARD_OVERHEAD: u16 = 80;
 
 /// A peer whose timer is due but has nothing to send must not spin the loop.
 const MIN_TIMER_DELAY: Duration = Duration::from_millis(1);
@@ -77,8 +84,11 @@ struct State {
     tun_out: PacketBatch,
     out: Output,
     scratch: Vec<u8>,
-    /// A packet a mesh member sent, copied out of `scratch` while it is routed.
+    /// A packet a mesh member sent, or one whose MSS is lowered, copied out while routed.
     forward: Vec<u8>,
+    /// The IP packet size TCP segments are kept to: what fits a path no larger than the
+    /// tunnel MTU itself, once WireGuard's own bytes are added.
+    clamp_to: u16,
 }
 
 struct PeerEntry {
@@ -158,6 +168,7 @@ impl<T: TunDevice> Engine<T> {
         link: UdpLink,
     ) -> Result<(Self, DataplaneHandle, mpsc::Receiver<Event>), DataplaneError> {
         let (handle, commands, events, event_receiver) = channels();
+        let clamp_to = tun.mtu().saturating_sub(WIREGUARD_OVERHEAD);
         let secret = signing_key.to_agreement_secret().to_bytes();
         let device = new_device(*secret);
         let engine = Self {
@@ -183,6 +194,7 @@ impl<T: TunDevice> Engine<T> {
                 },
                 scratch: vec![0; required_output_len(MAX_PACKET_CAPACITY).max(MAX_SLOT_LEN)],
                 forward: Vec::with_capacity(MAX_PACKET_CAPACITY),
+                clamp_to,
             },
             io: Io {
                 tun_in: tun.new_batch()?,
@@ -581,43 +593,57 @@ impl State {
 
     fn outbound(&mut self, now: Now, batch: &PacketBatch) {
         for packet in batch.iter() {
-            let Some(destination) = packet::destination(packet) else {
-                count(&mut self.out.drops.no_route);
-                continue;
-            };
-            if self.local.contains(&destination) {
-                if self.tun_out.push(packet).is_err() {
-                    count(&mut self.out.drops.no_route);
-                }
-                continue;
+            if needs_mss_clamp(packet, self.clamp_to) {
+                let mut copy = core::mem::take(&mut self.forward);
+                copy.clear();
+                copy.extend_from_slice(packet);
+                clamp_mss(&mut copy, self.clamp_to);
+                self.outbound_packet(now, &copy);
+                self.forward = copy;
+            } else {
+                self.outbound_packet(now, packet);
             }
-            let route = self.router.route(destination);
-            let mesh_rank = route.map(|route| (route.prefix.prefix_len(), false));
-            if let Some((slot, id)) =
-                self.external_route(packet::source(packet), destination, mesh_rank)
-            {
-                if self.guard_member(now, packet, slot, id) {
-                    self.outbound_external(now, packet, slot, id);
-                }
-                continue;
-            }
-            let Some(route) = route else {
-                count(&mut self.out.drops.no_route);
-                continue;
-            };
-            if route.prefix.prefix_len() == 0
-                && packet::source(packet).is_some_and(|source| !self.local.contains(&source))
-            {
-                count(&mut self.out.drops.foreign_source);
-                continue;
-            }
-            if let Some(filter) = self.filters.get_mut(&route.network)
-                && filter.outbound(packet, now.monotonic) != Verdict::Accept
-            {
-                continue;
-            }
-            self.seal_to_peer(now, packet, route.peer);
         }
+    }
+
+    /// Sends a packet from the TUN to whoever its destination routes to.
+    fn outbound_packet(&mut self, now: Now, packet: &[u8]) {
+        let Some(destination) = packet::destination(packet) else {
+            count(&mut self.out.drops.no_route);
+            return;
+        };
+        if self.local.contains(&destination) {
+            if self.tun_out.push(packet).is_err() {
+                count(&mut self.out.drops.no_route);
+            }
+            return;
+        }
+        let route = self.router.route(destination);
+        let mesh_rank = route.map(|route| (route.prefix.prefix_len(), false));
+        if let Some((slot, id)) =
+            self.external_route(packet::source(packet), destination, mesh_rank)
+        {
+            if self.guard_member(now, packet, slot, id) {
+                self.outbound_external(now, packet, slot, id);
+            }
+            return;
+        }
+        let Some(route) = route else {
+            count(&mut self.out.drops.no_route);
+            return;
+        };
+        if route.prefix.prefix_len() == 0
+            && packet::source(packet).is_some_and(|source| !self.local.contains(&source))
+        {
+            count(&mut self.out.drops.foreign_source);
+            return;
+        }
+        if let Some(filter) = self.filters.get_mut(&route.network)
+            && filter.outbound(packet, now.monotonic) != Verdict::Accept
+        {
+            return;
+        }
+        self.seal_to_peer(now, packet, route.peer);
     }
 
     /// Encrypts `packet` for mesh peer `node` and sends it.
@@ -791,6 +817,9 @@ impl State {
             }
             match output.result {
                 Decapsulated::Packet(len) => {
+                    if let Some(packet) = self.scratch.get_mut(..len) {
+                        clamp_mss(packet, self.clamp_to);
+                    }
                     if let Some(packet) = self.scratch.get(..len) {
                         if !packet::source(packet).is_some_and(|address| {
                             entry
@@ -1014,6 +1043,9 @@ impl State {
         let mut for_member = None;
         match output.result {
             Decapsulated::Packet(len) => {
+                if let Some(packet) = self.scratch.get_mut(..len) {
+                    clamp_mss(packet, self.clamp_to);
+                }
                 if let Some(packet) = self.scratch.get(..len) {
                     let member = packet::destination(packet)
                         .and_then(|destination| member_route(&self.externals, destination));

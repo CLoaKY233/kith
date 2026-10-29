@@ -15,6 +15,7 @@ test-support = []
 [dependencies]
 kith-crypto = { workspace = true, features = ["getrandom"] }
 kith-filter.workspace = true
+kith-packet.workspace = true
 kith-policy.workspace = true
 kith-router.workspace = true
 kith-transport-udp.workspace = true

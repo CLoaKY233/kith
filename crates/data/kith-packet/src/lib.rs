@@ -24,6 +24,7 @@ mod icmp;
 mod ip;
 mod ipv4;
 mod ipv6;
+mod mss;
 mod tcp;
 
 #[cfg(test)]
@@ -35,6 +36,7 @@ pub use icmp::IcmpPacket;
 pub use ip::{IpPacket, PseudoHeader};
 pub use ipv4::Ipv4Packet;
 pub use ipv6::Ipv6Packet;
+pub use mss::{clamp_mss, needs_mss_clamp};
 pub use tcp::{TcpFlags, TcpPacket};
 
 /// IANA protocol numbers used by this crate (the IPv4 `protocol` field and

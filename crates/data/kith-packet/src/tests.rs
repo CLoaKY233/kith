@@ -379,3 +379,159 @@ proptest! {
         }
     }
 }
+
+/// A TCP segment with `flags` and `options` (padded with NOPs to a word), inside IPv4 or
+/// IPv6, with valid checksums.
+fn tcp_segment(v6: bool, flags: u8, options: &[u8]) -> std::vec::Vec<u8> {
+    let mut tcp = std::vec![
+        0x30, 0x39, 0x01, 0xbb, 0, 0, 0, 1, 0, 0, 0, 0, 0, flags, 0xff, 0xff, 0, 0, 0, 0
+    ];
+    tcp.extend_from_slice(options);
+    while tcp.len() % 4 != 0 {
+        tcp.push(1);
+    }
+    tcp[12] = u8::try_from(tcp.len() / 4).unwrap() << 4;
+    let len = u16::try_from(tcp.len()).unwrap();
+    let mut packet = if v6 {
+        let mut ip = std::vec![0x60, 0, 0, 0, 0, 0, ip_protocol::TCP, 64];
+        ip[4..6].copy_from_slice(&len.to_be_bytes());
+        ip.extend_from_slice(&Ipv6Addr::new(0xfd7a, 0, 0, 0, 0, 0, 0, 2).octets());
+        ip.extend_from_slice(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1).octets());
+        ip
+    } else {
+        let mut ip = std::vec![
+            0x45,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0x40,
+            0,
+            64,
+            ip_protocol::TCP,
+            0,
+            0,
+            100,
+            64,
+            0,
+            2,
+            93,
+            184,
+            216,
+            34
+        ];
+        ip[2..4].copy_from_slice(&(len + 20).to_be_bytes());
+        ip
+    };
+    let header = packet.len();
+    packet.extend_from_slice(&tcp);
+    if !v6 {
+        Ipv4Packet::new_checked(&mut packet[..])
+            .unwrap()
+            .fill_checksum();
+    }
+    let pseudo = IpPacket::new_checked(&packet[..]).unwrap().pseudo_header();
+    TcpPacket::new_checked(&mut packet[header..])
+        .unwrap()
+        .fill_checksum(&pseudo);
+    packet
+}
+
+fn tcp_checksum_ok(packet: &[u8]) -> bool {
+    let ip = IpPacket::new_checked(packet).unwrap();
+    let header = packet.len() - ip.payload().len();
+    TcpPacket::new_checked(&packet[header..])
+        .unwrap()
+        .verify_checksum(&ip.pseudo_header())
+}
+
+fn mss_of(packet: &[u8]) -> Option<u16> {
+    let ip = IpPacket::new_checked(packet).unwrap();
+    let options = TcpPacket::new_checked(ip.payload())
+        .unwrap()
+        .options()
+        .to_vec();
+    let mut at = 0;
+    while at < options.len() {
+        match options[at] {
+            0 => return None,
+            1 => at += 1,
+            2 => return Some(u16::from_be_bytes([options[at + 2], options[at + 3]])),
+            _ => at += usize::from(options[at + 1]),
+        }
+    }
+    None
+}
+
+#[test]
+fn a_syn_is_clamped_to_fit_the_tunnel_in_both_families_and_any_alignment() {
+    let mss_1460 = [2, 4, 0x05, 0xb4];
+    for v6 in [false, true] {
+        let max = if v6 { 1140 } else { 1160 };
+        for lead in [&[][..], &[1][..], &[1, 1, 1][..], &[4, 2, 1][..]] {
+            let options: std::vec::Vec<u8> = lead.iter().chain(&mss_1460).copied().collect();
+            for flags in [0x02, 0x12] {
+                let mut packet = tcp_segment(v6, flags, &options);
+                assert!(crate::needs_mss_clamp(&packet, 1200));
+                assert!(crate::clamp_mss(&mut packet, 1200));
+                assert_eq!(mss_of(&packet), Some(max), "v6 {v6}, lead {lead:?}");
+                assert!(tcp_checksum_ok(&packet), "v6 {v6}, lead {lead:?}");
+                assert!(!crate::clamp_mss(&mut packet, 1200), "clamping twice");
+            }
+        }
+    }
+    let mut golden = TCP_SYN;
+    assert!(crate::clamp_mss(&mut golden, 1200));
+    assert!(tcp_checksum_ok(&golden));
+}
+
+#[test]
+fn only_a_syn_with_a_large_mss_is_touched() {
+    let cases: [(bool, u8, &[u8]); 5] = [
+        (false, 0x10, &[2, 4, 0x05, 0xb4]),
+        (false, 0x02, &[2, 4, 0x04, 0x00]),
+        (true, 0x02, &[4, 2]),
+        (false, 0x02, &[0, 2, 4, 0x05, 0xb4]),
+        (false, 0x02, &[2, 3, 0x05]),
+    ];
+    for (v6, flags, options) in cases {
+        let packet = tcp_segment(v6, flags, options);
+        let mut copy = packet.clone();
+        assert!(!crate::needs_mss_clamp(&packet, 1200), "{options:?}");
+        assert!(!crate::clamp_mss(&mut copy, 1200));
+        assert_eq!(copy, packet);
+    }
+    let mut fragment = tcp_segment(false, 0x02, &[2, 4, 0x05, 0xb4]);
+    fragment[6..8].copy_from_slice(&0x0010_u16.to_be_bytes());
+    assert!(!crate::clamp_mss(&mut fragment.clone(), 1200));
+    let mut extension = tcp_segment(true, 0x02, &[2, 4, 0x05, 0xb4]);
+    extension[6] = 0;
+    assert!(!crate::clamp_mss(&mut extension, 1200));
+    assert!(!crate::clamp_mss(&mut DNS_QUERY.clone(), 1200));
+}
+
+proptest! {
+    #[test]
+    fn clamping_keeps_the_checksum_valid_and_never_raises_the_mss(
+        v6 in any::<bool>(),
+        lead in proptest::collection::vec(prop_oneof![Just(1_u8)], 0..6),
+        mss in any::<u16>(),
+        mtu in 1100_u16..1500,
+    ) {
+        let mut options = lead;
+        options.extend_from_slice(&[2, 4]);
+        options.extend_from_slice(&mss.to_be_bytes());
+        let mut packet = tcp_segment(v6, 0x02, &options);
+        crate::clamp_mss(&mut packet, mtu);
+        let max = mtu - if v6 { 60 } else { 40 };
+        prop_assert_eq!(mss_of(&packet), Some(mss.min(max)));
+        prop_assert!(tcp_checksum_ok(&packet));
+    }
+
+    #[test]
+    fn clamping_never_panics(mut bytes in proptest::collection::vec(any::<u8>(), 0..128), mtu in any::<u16>()) {
+        let _ = crate::needs_mss_clamp(&bytes, mtu);
+        let _ = crate::clamp_mss(&mut bytes, mtu);
+    }
+}

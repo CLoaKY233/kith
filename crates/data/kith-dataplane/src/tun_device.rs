@@ -5,6 +5,9 @@ use std::net::IpAddr;
 use kith_tun::{BatchError, PacketBatch, Tun, TunError};
 
 pub(crate) trait TunDevice {
+    /// The largest packet the device carries.
+    fn mtu(&self) -> u16;
+
     fn new_batch(&self) -> Result<PacketBatch, BatchError>;
 
     fn recv_batch(
@@ -23,6 +26,10 @@ pub(crate) trait TunDevice {
 }
 
 impl TunDevice for Tun {
+    fn mtu(&self) -> u16 {
+        Self::mtu(self)
+    }
+
     fn new_batch(&self) -> Result<PacketBatch, BatchError> {
         Self::new_batch(self)
     }
@@ -57,6 +64,14 @@ pub(crate) enum AnyTun {
 }
 
 impl TunDevice for AnyTun {
+    fn mtu(&self) -> u16 {
+        match self {
+            Self::Os(tun) => tun.mtu(),
+            #[cfg(feature = "test-support")]
+            Self::Memory(tun) => tun.mtu(),
+        }
+    }
+
     fn new_batch(&self) -> Result<PacketBatch, BatchError> {
         match self {
             Self::Os(tun) => tun.new_batch(),

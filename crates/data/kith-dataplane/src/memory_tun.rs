@@ -35,21 +35,31 @@ impl MemoryTun {
 pub(crate) struct MemoryDevice {
     incoming: Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
+    mtu: u16,
 }
 
-pub(crate) fn memory_tun() -> (MemoryDevice, MemoryTun) {
+/// kith's default tunnel MTU, the IPv6 minimum, which memory TUNs report unless told otherwise.
+pub(crate) const DEFAULT_MTU: u16 = 1280;
+
+/// A memory TUN reporting `mtu`.
+pub(crate) fn memory_tun_with_mtu(mtu: u16) -> (MemoryDevice, MemoryTun) {
     let (inject, incoming) = mpsc::unbounded_channel();
     let (outgoing, delivered) = mpsc::unbounded_channel();
     (
         MemoryDevice {
             incoming: Mutex::new(incoming),
             outgoing,
+            mtu,
         },
         MemoryTun { inject, delivered },
     )
 }
 
 impl TunDevice for MemoryDevice {
+    fn mtu(&self) -> u16 {
+        self.mtu
+    }
+
     fn new_batch(&self) -> Result<PacketBatch, BatchError> {
         PacketBatch::new(usize::from(MAX_MTU))
     }

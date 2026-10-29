@@ -899,6 +899,7 @@ version = "0.0.0"
 dependencies = [
  "kith-crypto",
  "kith-filter",
+ "kith-packet",
  "kith-policy",
  "kith-router",
  "kith-transport-udp",

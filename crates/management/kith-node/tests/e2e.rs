@@ -1015,6 +1015,7 @@ mod tests {
         let address = conf_value(&exported.mesh, "Address")?;
         let phone: Ipv4Addr = address.split('/').next().unwrap_or_default().parse()?;
         if !address.contains("/128")
+            || conf_value(&exported.mesh, "MTU")? != "1280"
             || conf_value(&exported.mesh, "AllowedIPs")?.contains("0.0.0.0/0")
         {
             return Err(format!("the mesh config is wrong: {}", exported.mesh).into());

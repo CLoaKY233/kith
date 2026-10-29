@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::engine::Engine;
-use crate::memory_tun::{MemoryTun, memory_tun};
+use crate::memory_tun::{MemoryTun, memory_tun_with_mtu};
 use crate::{
     Dataplane, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface, ExternalMember,
     ExternalPeer, PeerSpec,
@@ -32,10 +32,14 @@ struct Node {
 }
 
 fn spawn_node(index: u8) -> Node {
+    spawn_node_with_mtu(index, crate::memory_tun::DEFAULT_MTU)
+}
+
+fn spawn_node_with_mtu(index: u8, mtu: u16) -> Node {
     let key = SigningKey::from_seed(&[index; 32]);
     let link = UdpLink::bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let udp = link.local_addr();
-    let (device, tun) = memory_tun();
+    let (device, tun) = memory_tun_with_mtu(mtu);
     let (engine, handle, events) = Engine::new(&key, device, link).unwrap();
     tokio::spawn(engine.run());
     Node {
@@ -373,40 +377,13 @@ async fn external_interfaces_interoperate_beside_the_mesh() {
     assert_eq!(stats.drops, DropCounters::default());
 }
 
-#[tokio::test]
-async fn a_phone_reaches_its_gateway_only_in_its_own_network_and_always_its_resolver() {
-    let mut gateway = spawn_node(12);
-    let phone = spawn_node(13);
-    let other = NetworkId::from_bytes([8; 32]);
-    let resolver = Ipv4Addr::new(100, 64, 0, 1);
-    let elsewhere = Ipv4Addr::new(100, 99, 0, 12);
-    gateway
-        .handle
-        .set_addresses(
-            NETWORK,
-            vec![(gateway.addresses.v4.into(), 16), (resolver.into(), 32)],
-        )
-        .await
-        .unwrap();
-    gateway
-        .handle
-        .set_addresses(other, vec![(elsewhere.into(), 16)])
-        .await
-        .unwrap();
-    let nobody = Policy::new(Vec::new()).unwrap();
-    let everyone = Policy::default_allow_all();
-    let both = members(&[&gateway, &phone]);
-    gateway
-        .handle
-        .set_filter(NETWORK, compile(&everyone, &both, gateway.id))
-        .await
-        .unwrap();
-    gateway
-        .handle
-        .set_filter(other, compile(&everyone, &both, gateway.id))
-        .await
-        .unwrap();
-
+/// Makes `phone` a plain WireGuard member behind `gateway`, guarded by `policy`.
+async fn serve_phone(
+    gateway: &Node,
+    phone: &Node,
+    policy: kith_policy::CompiledFilter,
+    resolver: Ipv4Addr,
+) {
     let (gateway_key, phone_key) = ([31; 32], [32; 32]);
     let public = |secret| kith_wg::StaticIdentity::from_secret_bytes(secret).public_key();
     let host = |v4: Ipv4Addr| IpPrefix::V4(Ipv4Prefix::new(v4, 32).unwrap());
@@ -442,17 +419,66 @@ async fn a_phone_reaches_its_gateway_only_in_its_own_network_and_always_its_reso
                 persistent_keepalive: None,
                 member: Some(ExternalMember {
                     network: NETWORK,
-                    policy: compile(&nobody, &both, phone.id),
+                    policy,
                     resolver: resolver.into(),
                 }),
             }],
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_phone_reaches_its_gateway_only_in_its_own_network_and_always_its_resolver() {
+    let mut gateway = spawn_node(12);
+    let phone = spawn_node_with_mtu(13, 9000);
+    let other = NetworkId::from_bytes([8; 32]);
+    let resolver = Ipv4Addr::new(100, 64, 0, 1);
+    let elsewhere = Ipv4Addr::new(100, 99, 0, 12);
+    gateway
+        .handle
+        .set_addresses(
+            NETWORK,
+            vec![(gateway.addresses.v4.into(), 16), (resolver.into(), 32)],
+        )
+        .await
+        .unwrap();
+    gateway
+        .handle
+        .set_addresses(other, vec![(elsewhere.into(), 16)])
+        .await
+        .unwrap();
+    let nobody = Policy::new(Vec::new()).unwrap();
+    let everyone = Policy::default_allow_all();
+    let both = members(&[&gateway, &phone]);
+    gateway
+        .handle
+        .set_filter(NETWORK, compile(&everyone, &both, gateway.id))
+        .await
+        .unwrap();
+    gateway
+        .handle
+        .set_filter(other, compile(&everyone, &both, gateway.id))
+        .await
+        .unwrap();
+
+    serve_phone(
+        &gateway,
+        &phone,
+        compile(&nobody, &both, phone.id),
+        resolver,
+    )
+    .await;
 
     let to_gateway = udp_packet(&phone, &gateway, b"to its gateway");
     phone.tun.inject(to_gateway.clone()).unwrap();
     assert_eq!(next_packet(&mut gateway).await, to_gateway);
+    phone.tun.inject(tcp_syn(&phone, &gateway, false)).unwrap();
+    assert_eq!(
+        announced_mss(&next_packet(&mut gateway).await),
+        1160,
+        "a phone runs no kith, so its gateway must lower what it announces"
+    );
 
     let across = udp_between(phone.addresses.v4, elsewhere, b"into another network");
     phone.tun.inject(across).unwrap();
@@ -475,6 +501,59 @@ async fn a_phone_reaches_its_gateway_only_in_its_own_network_and_always_its_reso
     })
     .await
     .expect("the phone's filter let in a packet its policy refuses");
+}
+
+/// A TCP SYN from `source` to `destination` announcing an MSS of 1460, as a host on an
+/// Ethernet link sends, with valid checksums.
+fn tcp_syn(source: &Node, destination: &Node, ack: bool) -> Vec<u8> {
+    let flags = if ack { 0x12 } else { 0x02 };
+    let mut packet = vec![0x45, 0, 0, 44, 0, 0, 0x40, 0, 64, 6, 0, 0];
+    packet.extend_from_slice(&source.addresses.v4.octets());
+    packet.extend_from_slice(&destination.addresses.v4.octets());
+    packet.extend_from_slice(&[0x30, 0x39, 0x01, 0xbb, 0, 0, 0, 1, 0, 0, 0, 0, 0x60, flags]);
+    packet.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0, 2, 4, 0x05, 0xb4]);
+    kith_packet::Ipv4Packet::new_checked(&mut packet[..])
+        .unwrap()
+        .fill_checksum();
+    let pseudo = kith_packet::IpPacket::new_checked(&packet[..])
+        .unwrap()
+        .pseudo_header();
+    kith_packet::TcpPacket::new_checked(&mut packet[20..])
+        .unwrap()
+        .fill_checksum(&pseudo);
+    packet
+}
+
+/// The MSS a SYN announces, after checking its TCP checksum still holds.
+fn announced_mss(packet: &[u8]) -> u16 {
+    let ip = kith_packet::IpPacket::new_checked(packet).unwrap();
+    let tcp = kith_packet::TcpPacket::new_checked(ip.payload()).unwrap();
+    assert!(
+        tcp.verify_checksum(&ip.pseudo_header()),
+        "the checksum broke"
+    );
+    u16::from_be_bytes([tcp.options()[2], tcp.options()[3]])
+}
+
+#[tokio::test]
+async fn tcp_through_the_tunnel_is_kept_to_what_any_path_carries() {
+    let mut a = spawn_node(14);
+    let mut b = spawn_node_with_mtu(15, 9000);
+    let everyone = Policy::default_allow_all();
+    connect(&a, &b, Endpoint::Direct(b.udp), &everyone).await;
+    connect(&b, &a, Endpoint::Direct(a.udp), &everyone).await;
+    a.tun.inject(tcp_syn(&a, &b, false)).unwrap();
+    assert_eq!(
+        announced_mss(&next_packet(&mut b).await),
+        1160,
+        "the sender keeps what it sends to fit"
+    );
+    b.tun.inject(tcp_syn(&b, &a, true)).unwrap();
+    assert_eq!(
+        announced_mss(&next_packet(&mut a).await),
+        1160,
+        "the receiver keeps what it is told to fit"
+    );
 }
 
 fn _dataplane_task_is_send(dataplane: Dataplane) -> impl Send {

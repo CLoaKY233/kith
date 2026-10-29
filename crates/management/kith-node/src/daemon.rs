@@ -427,7 +427,7 @@ async fn start_dns(
 }
 
 async fn restore_external(state: &StateDir, config: &Config) -> Result<ExternalPeers, NodeError> {
-    let mut external = ExternalPeers::restore(state).await?;
+    let mut external = ExternalPeers::restore(state, config.network.mtu).await?;
     for import in &config.import_wireguard {
         external
             .import(state, import.name.clone(), import.load()?)
@@ -1096,6 +1096,7 @@ impl Daemon {
                 secret: &secret,
                 addresses,
                 dns: map.resolver()[0],
+                mtu: self.external.mtu,
                 gateway,
                 endpoint: &endpoint,
                 allowed_ips,

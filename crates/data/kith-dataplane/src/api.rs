@@ -324,7 +324,7 @@ impl Dataplane {
         ),
         DataplaneError,
     > {
-        let (device, tun) = crate::memory_tun::memory_tun();
+        let (device, tun) = crate::memory_tun::memory_tun_with_mtu(crate::memory_tun::DEFAULT_MTU);
         let (engine, handle, events) = Engine::new(signing_key, AnyTun::Memory(device), link)?;
         Ok((Self { engine }, handle, events, tun))
     }

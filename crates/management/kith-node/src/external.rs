@@ -17,10 +17,12 @@ const IMPORT_CONTEXT: Context = Context::new("kith-node external import network 
 
 /// Standard WireGuard peers: imported exits, and the key plain WireGuard members, such as
 /// phones, connect to when this device is their gateway.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ExternalPeers {
     imported: BTreeMap<String, ExternalInterface>,
     gateway: Option<AgreementSecret>,
+    /// The tunnel MTU, which exported devices are told to use too.
+    pub(crate) mtu: u16,
 }
 
 /// What a plain WireGuard member's config holds.
@@ -31,6 +33,8 @@ pub(crate) struct ClientConfig<'a> {
     pub(crate) addresses: Addresses,
     /// The mesh DNS resolver.
     pub(crate) dns: IpAddr,
+    /// The tunnel MTU. Without it Android's app uses 1420, too big for many paths.
+    pub(crate) mtu: u16,
     /// The gateway's WireGuard public key.
     pub(crate) gateway: [u8; 32],
     /// Where the gateway is reached, as `host:port`.
@@ -41,8 +45,9 @@ pub(crate) struct ClientConfig<'a> {
 
 impl ExternalPeers {
     /// Restores the persisted gateway and imports from `state`.
-    pub(crate) async fn restore(state: &StateDir) -> Result<Self, NodeError> {
+    pub(crate) async fn restore(state: &StateDir, mtu: u16) -> Result<Self, NodeError> {
         let mut peers = Self {
+            mtu,
             imported: BTreeMap::new(),
             gateway: state
                 .load_gateway()?
@@ -209,6 +214,7 @@ pub(crate) fn render_client(config: &ClientConfig<'_>) -> Result<String, NodeErr
             config.addresses.v4, config.addresses.v6
         )?;
         writeln!(out, "DNS = {}", config.dns)?;
+        writeln!(out, "MTU = {}", config.mtu)?;
         writeln!(out)?;
         writeln!(out, "[Peer]")?;
         writeln!(out, "PublicKey = {}", WgPublicKey(config.gateway))?;
