@@ -531,8 +531,9 @@ impl Connectivity {
         }
     }
 
-    /// Notes that a peer's WireGuard session is up.
-    pub(crate) fn note_handshake(&mut self, peer: NodeId, now: Instant) {
+    /// Notes that packets are flowing with a peer, or its WireGuard session just came up,
+    /// so its paths keep being checked.
+    pub(crate) fn note_activity(&mut self, peer: NodeId, now: Instant) {
         let at = self.at(now);
         if let Some(state) = self.peers.get_mut(&peer) {
             state.paths.note_activity(at);

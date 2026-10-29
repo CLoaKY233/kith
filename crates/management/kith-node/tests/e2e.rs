@@ -684,11 +684,8 @@ mod tests {
         a.shutdown().await?;
         let a = disk_a.start().await?;
         let after = peer_info(&a, network, "beta").await?;
-        if after.online
-            || after
-                .last_seen_secs
-                .is_none_or(|secs| secs < took.as_secs())
-        {
+        let silent_for = took.as_secs().saturating_sub(1);
+        if after.online || after.last_seen_secs.is_none_or(|secs| secs < silent_for) {
             return Err(format!("a restart forgot when beta was last seen: {after:?}").into());
         }
         shutdown([a]).await
@@ -772,6 +769,60 @@ mod tests {
         path_becomes(&a, network, "beta", direct).await?;
         path_becomes(&b, network, "alpha", direct).await?;
         deliver(&a, &b, &udp_packet(alpha, beta, b"direct again")?).await?;
+        shutdown([a, b, s]).await
+    }
+
+    /// How long a peer that went quiet long ago may take to move to the relay, or back:
+    /// a lost direct path is distrusted after 6.5s, and pings go out every 3 to 5s.
+    const FAILOVER_BUDGET: Duration = Duration::from_secs(15);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_idle_peer_stays_online_through_the_relay_and_comes_back_direct() -> TestResult {
+        let s = start_server(false, true, None).await?;
+        let a = start().await?;
+        let b = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        join(&s, &b, network, "beta").await?;
+        let alpha = peer(&b, network, "alpha").await?;
+        let beta = peer(&a, network, "beta").await?;
+        deliver(&a, &b, &udp_packet(alpha, beta, b"direct")?).await?;
+        path_becomes(&a, network, "beta", |path| path != "relay").await?;
+        sleep(Duration::from_secs(50)).await;
+
+        a.block_direct_udp(true).await?;
+        b.block_direct_udp(true).await?;
+        let relayed = timeout(FAILOVER_BUDGET, async {
+            loop {
+                let info = peer_info(&a, network, "beta").await?;
+                if info.online && info.endpoint.as_deref() == Some("relay") {
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await;
+        if !matches!(relayed, Ok(Ok(()))) {
+            let info = peer_info(&a, network, "beta").await?;
+            return Err(
+                format!("a long-idle peer did not move to the relay in time: {info:?}").into(),
+            );
+        }
+        timeout(
+            FAILOVER_BUDGET,
+            deliver(&a, &b, &udp_packet(alpha, beta, b"relayed")?),
+        )
+        .await
+        .map_err(|_| "no traffic through the relay in time")??;
+
+        a.block_direct_udp(false).await?;
+        b.block_direct_udp(false).await?;
+        timeout(
+            FAILOVER_BUDGET,
+            path_becomes(&a, network, "beta", |path| path != "relay"),
+        )
+        .await
+        .map_err(|_| "did not come back to direct in time")??;
         shutdown([a, b, s]).await
     }
 

@@ -51,8 +51,9 @@ const MESH_SILENCE: core::time::Duration = core::time::Duration::from_secs(25);
 /// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent
 /// and still count as online.
 const CLIENT_SILENCE: core::time::Duration = core::time::Duration::from_secs(60);
-/// How often a gateway checks whether its plain WireGuard members are online.
-const PRESENCE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(5);
+/// How often traffic counters are read: to keep checking the paths of peers that are
+/// exchanging packets, and for a gateway to see whether its phones are online.
+const PEER_TICK: core::time::Duration = core::time::Duration::from_secs(2);
 
 /// The one rule for whether a peer is online: something authenticated arrived from it
 /// within `silence`.
@@ -552,8 +553,8 @@ impl Daemon {
         loop {
             self.save_endpoints_if_due(false);
             self.save_last_seen_if_due(false).await;
-            self.announce_presence_if_due().await;
-            let deadline = earliest(self.connectivity.poll_timeout(), self.presence_deadline());
+            self.tick_peers_if_due().await;
+            let deadline = earliest(self.connectivity.poll_timeout(), self.peer_tick_deadline());
             tokio::select! {
                 command = commands.recv() => match command {
                     Some(Command::Shutdown { reply }) => {
@@ -1529,7 +1530,7 @@ impl Daemon {
                 self.connectivity.send_relayed(peer, datagram)
             }
             kith_dataplane::Event::HandshakeCompleted { peer } => {
-                self.connectivity.note_handshake(peer, at);
+                self.connectivity.note_activity(peer, at);
                 if let Some(path) = self.connectivity.path_kind(&peer) {
                     for (network, _) in self.maps_with(peer) {
                         let _receivers = self.events.send(Event::PeerConnected {
@@ -1999,25 +2000,39 @@ impl Daemon {
             .collect()
     }
 
-    /// When to next check this device's plain WireGuard members, if it has any.
-    fn presence_deadline(&self) -> Option<Instant> {
-        let local = self.identity.node_id();
-        let serves = member_maps(self.networks.maps())
-            .any(|map| map.clients().values().any(|client| client.gateway == local));
-        (serves || !self.presence.announced.is_empty()).then_some(self.presence.due)
+    /// When to next read traffic counters: while there is any peer or phone to watch.
+    fn peer_tick_deadline(&self) -> Option<Instant> {
+        let watching = member_maps(self.networks.maps())
+            .any(|map| !map.peers().is_empty() || !map.clients().is_empty());
+        (watching || !self.presence.announced.is_empty()).then_some(self.presence.due)
+    }
+
+    /// Reads traffic counters every [`PEER_TICK`]: peers exchanging packets, keepalives
+    /// included, keep having their paths checked, so a dead direct path falls back to the
+    /// relay within seconds; and a gateway says whether its phones are online.
+    async fn tick_peers_if_due(&mut self) {
+        let now = Instant::now();
+        if self.peer_tick_deadline().is_none_or(|due| due > now) {
+            return;
+        }
+        self.presence.due = now + PEER_TICK;
+        let Ok(stats) = self.dataplane.stats().await else {
+            return;
+        };
+        for stat in &stats.peers {
+            let counters = (stat.rx_bytes, stat.tx_bytes);
+            if self.presence.traffic.insert(stat.node, counters) != Some(counters) {
+                self.connectivity.note_activity(stat.node, now);
+            }
+        }
+        let known: BTreeSet<NodeId> = stats.peers.iter().map(|stat| stat.node).collect();
+        self.presence.traffic.retain(|node, _| known.contains(node));
+        self.announce_presence(&stats);
     }
 
     /// Tells the network which of this device's plain WireGuard members are online,
     /// whenever that changes.
-    async fn announce_presence_if_due(&mut self) {
-        let now = Instant::now();
-        if self.presence_deadline().is_none_or(|due| due > now) {
-            return;
-        }
-        self.presence.due = now + PRESENCE_INTERVAL;
-        let Ok(stats) = self.dataplane.stats().await else {
-            return;
-        };
+    fn announce_presence(&mut self, stats: &Stats) {
         let local = self.identity.node_id();
         let at = wall_instant();
         let mut wanted: BTreeMap<NetworkId, Vec<(NodeId, Presence)>> = BTreeMap::new();
@@ -2212,14 +2227,17 @@ async fn start_server(
     Ok(Some(server))
 }
 
-/// Whether plain WireGuard members, such as phones, are online.
+/// What the periodic read of traffic counters keeps: whether plain WireGuard members,
+/// such as phones, are online, and which peers are exchanging packets.
 #[derive(Debug)]
 struct Presences {
     /// Other gateways' members, as each gateway said: member to (gateway, presence).
     said: BTreeMap<(NetworkId, NodeId), (NodeId, Presence)>,
     /// What this device last said about its own members, per network.
     announced: BTreeMap<NetworkId, Vec<(NodeId, Presence)>>,
-    /// When to next check this device's own members.
+    /// Each peer's received and sent bytes at the last tick.
+    traffic: BTreeMap<NodeId, (u64, u64)>,
+    /// When to next read traffic counters.
     due: Instant,
 }
 
@@ -2228,6 +2246,7 @@ impl Presences {
         Self {
             said: BTreeMap::new(),
             announced: BTreeMap::new(),
+            traffic: BTreeMap::new(),
             due: Instant::now(),
         }
     }
