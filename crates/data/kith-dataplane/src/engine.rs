@@ -149,6 +149,8 @@ struct Member {
     /// The echo out now: its sequence number, size and when it left.
     probe: Option<(u16, u16, Duration)>,
     next_sequence: u16,
+    /// No probe before this: one could not be sent, so wait before trying again.
+    hold_until: Duration,
 }
 
 impl Member {
@@ -160,6 +162,7 @@ impl Member {
             size: SizeSearch::default(),
             probe: None,
             next_sequence: 0,
+            hold_until: Duration::ZERO,
         }
     }
 }
@@ -1000,6 +1003,7 @@ impl State {
                             && let Some((sequence, size, _)) = member.probe
                             && echo_reply_sequence(packet) == Some(sequence)
                         {
+                            debug!(interface = %external.name, size, "size probe answered");
                             member.size.answered(size);
                             member.probe = None;
                         } else if let Some(member) = entry.member.as_mut() {
@@ -1354,21 +1358,25 @@ impl State {
             if let Some((_, size, sent)) = member.probe
                 && at.saturating_sub(sent) >= PROBE_TIMEOUT
             {
+                debug!(interface = %external.name, size, "size probe to a member got no answer");
                 member.size.lost(size);
                 member.probe = None;
             }
             if member.size.target() != self.tunnel_mtu {
                 member.size = SizeSearch::new(self.tunnel_mtu);
             }
-            let source = self
-                .local_in
-                .get(&member.network)
-                .and_then(|held| held.iter().find(|address| address.is_ipv4()).copied());
+            let resolver = member.resolver;
+            let source = self.local_in.get(&member.network).and_then(|held| {
+                held.iter()
+                    .find(|address| address.is_ipv4() && **address != resolver)
+                    .copied()
+            });
             let destination = entry.allowed_ips.iter().find_map(|prefix| match prefix {
                 IpPrefix::V4(v4) if v4.prefix_len() == 32 => Some(IpAddr::V4(v4.addr())),
                 IpPrefix::V4(_) | IpPrefix::V6(_) => None,
             });
-            if heard
+            let ready = heard && peer.has_session(at) && at >= member.hold_until;
+            if ready
                 && member.probe.is_none()
                 && let (Some(source), Some(destination)) = (source, destination)
                 && let Some(size) = member.size.next_probe(at)
@@ -1376,20 +1384,32 @@ impl State {
                 let sequence = member.next_sequence;
                 member.next_sequence = sequence.wrapping_add(1);
                 let echo = echo_request(source, destination, sequence, size);
-                if let Some(out) = self.scratch.get_mut(..required_output_len(echo.len()))
-                    && let Ok(Encapsulated::Transport(len)) = peer.encapsulate(now, &echo, out)
-                {
+                let sealed = self
+                    .scratch
+                    .get_mut(..required_output_len(echo.len()))
+                    .map(|out| peer.encapsulate(now, &echo, out));
+                if !matches!(sealed, Some(Ok(Encapsulated::Transport(_)))) {
+                    debug!(interface = %external.name, size, ?sealed, "size probe could not be sealed");
+                }
+                if let Some(Ok(Encapsulated::Transport(len))) = sealed {
+                    debug!(interface = %external.name, size, %source, %destination, "size probe sent to a member");
                     member.probe = Some((sequence, size, at));
                     self.out
                         .send_external(entry.endpoint, self.scratch.get(..len));
                 } else {
-                    member.size.lost(size);
+                    member.size.not_sent();
+                    member.hold_until = at.saturating_add(PROBE_RETRY);
                 }
             }
             let probe_due = member
                 .probe
                 .map(|(_, _, sent)| sent.saturating_add(PROBE_TIMEOUT))
-                .or_else(|| heard.then(|| member.size.next_due(at)).flatten());
+                .or_else(|| {
+                    let able = heard && peer.has_session(at);
+                    able.then(|| member.size.next_due(at))
+                        .flatten()
+                        .map(|due| due.max(member.hold_until))
+                });
             due = [due, probe_due].into_iter().flatten().min();
         }
         if let Some(due) = due {
@@ -1476,6 +1496,8 @@ fn exit_role(
 
 /// The ICMP identifier of a gateway's size probes to its plain WireGuard members.
 const PROBE_ID: u16 = 0x6b70;
+/// How long to wait before trying again a probe that could not be sent.
+const PROBE_RETRY: Duration = Duration::from_secs(1);
 /// How long an echo probe may take to come back.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent

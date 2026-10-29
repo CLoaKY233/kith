@@ -141,6 +141,11 @@ fn drop_finding(reason: &str, count: u64) -> Finding {
             "were late internet replies after the exit was turned off; their connections had ended",
             None,
         ),
+        "too_big" => (
+            Level::Info,
+            "were bigger than their path carries; their senders were told the size that fits",
+            None,
+        ),
         "foreign_source" => (
             Level::Info,
             "left from an address that is not this device's, usually connections \

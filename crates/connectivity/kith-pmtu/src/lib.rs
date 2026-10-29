@@ -56,10 +56,12 @@ impl SizeSearch {
 
     /// The largest size that gets through, once the search has found the path does not
     /// carry the target; `None` until then. A guess from halfway through is never given,
-    /// since senders remember a limit for minutes and would stay too small.
+    /// since senders remember a limit for minutes and would stay too small. Nor is a
+    /// limit given when no probe was ever answered: that says the other end does not
+    /// answer probes, not that its path carries nothing.
     pub fn limit(&self) -> Option<u16> {
         self.bad
-            .filter(|bad| bad.saturating_sub(self.good) <= PRECISION)
+            .filter(|bad| self.good > 0 && bad.saturating_sub(self.good) <= PRECISION)
             .map(|_| self.good)
     }
 
@@ -118,6 +120,12 @@ impl SizeSearch {
         self.good = self.good.max(size);
     }
 
+    /// The probe [`next_probe`](Self::next_probe) gave could not be sent, so it says
+    /// nothing about the path; the same size is offered again.
+    pub fn not_sent(&mut self) {
+        self.waiting = false;
+    }
+
     /// A probe of `size` went unanswered.
     pub fn lost(&mut self, size: u16) {
         self.waiting = false;
@@ -168,6 +176,27 @@ mod tests {
                 prop_assert!(limit <= carries && carries - limit <= PRECISION, "{} for {}", limit, carries);
             }
         }
+    }
+
+    #[test]
+    fn a_probe_that_could_not_be_sent_counts_for_nothing() {
+        let mut search = SizeSearch::new(1312);
+        for _ in 0..10 {
+            assert_eq!(search.next_probe(Duration::ZERO), Some(1312));
+            search.not_sent();
+        }
+        assert_eq!(search.limit(), None);
+        assert_eq!(
+            search.next_probe(Duration::ZERO),
+            Some(1312),
+            "the target is still the next try"
+        );
+    }
+
+    #[test]
+    fn an_end_that_never_answers_has_no_limit() {
+        let mut search = SizeSearch::new(1312);
+        assert_eq!(run(&mut search, 0, 0, Duration::ZERO), None);
     }
 
     #[test]
