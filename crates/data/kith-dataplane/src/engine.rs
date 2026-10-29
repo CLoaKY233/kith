@@ -70,6 +70,8 @@ struct State {
     timers: Timers<Key>,
     touched: Vec<Key>,
     local: BTreeSet<IpAddr>,
+    /// The exit in use until `.2`, whose late internet replies are expected for a while.
+    former_exit: Option<(NetworkId, NodeId, Duration)>,
     tun_out: PacketBatch,
     out: Output,
     scratch: Vec<u8>,
@@ -148,6 +150,7 @@ impl<T: TunDevice> Engine<T> {
                 timers: Timers::new(),
                 touched: Vec::with_capacity(kith_tun::BATCH_SIZE),
                 local: BTreeSet::new(),
+                former_exit: None,
                 tun_out: tun.new_batch()?,
                 out: Output {
                     udp: SendBatch::with_capacity(kith_tun::BATCH_SIZE, 256 * 1024),
@@ -322,7 +325,7 @@ impl State {
                 reply.send(result.map_err(DataplaneError::from)).ok();
             }
             Command::SetExit(exit, reply) => {
-                reply.send(self.set_exit(exit)).ok();
+                reply.send(self.set_exit(now.monotonic, exit)).ok();
             }
             Command::SetFilter(network, policy) => self.set_filter(network, policy),
             Command::SendRaw(destination, datagram) => {
@@ -459,7 +462,18 @@ impl State {
         debug!(network = %network.short(), peers = members.len(), "network removed");
     }
 
-    fn set_exit(&mut self, exit: Option<(NetworkId, NodeId)>) -> Result<(), DataplaneError> {
+    fn set_exit(
+        &mut self,
+        now: Duration,
+        exit: Option<(NetworkId, NodeId)>,
+    ) -> Result<(), DataplaneError> {
+        if let Some((network, peer)) = self
+            .router
+            .exit_peer()
+            .filter(|current| Some(*current) != exit)
+        {
+            self.former_exit = Some((network, peer, now));
+        }
         if let Some((network, peer)) = exit {
             self.router.set_exit_peer(network, Some(peer))?;
             self.router.set_active_exit(Some(network))?;
@@ -548,6 +562,12 @@ impl State {
                 count(&mut self.out.drops.no_route);
                 continue;
             };
+            if route.prefix.prefix_len() == 0
+                && packet::source(packet).is_some_and(|source| !self.local.contains(&source))
+            {
+                count(&mut self.out.drops.foreign_source);
+                continue;
+            }
             if let Some(filter) = self.filters.get_mut(&route.network)
                 && filter.outbound(packet, now.monotonic) != Verdict::Accept
             {
@@ -845,13 +865,22 @@ impl State {
                 entry.endpoint = endpoint;
             }
         }
-        let is_exit = self.router.exit_peer() == Some((entry.network, node));
+        let role = if self.router.exit_peer() == Some((entry.network, node)) {
+            ExitRole::Current
+        } else if self.former_exit.is_some_and(|(network, peer, until)| {
+            (network, peer) == (entry.network, node)
+                && now.monotonic.saturating_sub(until) < AFTER_EXIT_GRACE
+        }) {
+            ExitRole::Former
+        } else {
+            ExitRole::None
+        };
         match output.result {
             Decapsulated::Packet(len) => {
                 if let Some(packet) = self.scratch.get(..len)
                     && admits(
                         entry,
-                        is_exit,
+                        role,
                         &mut self.filters,
                         &mut self.out.drops,
                         packet,
@@ -987,9 +1016,22 @@ fn absorb(drops: &mut DropCounters, filter: Counters) {
 }
 
 /// Cryptokey routing (the peer may use this source address), then the network's filter.
+/// How a peer relates to the exit, for which sources its packets may carry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExitRole {
+    /// The exit in use: any source, since replies come from the internet.
+    Current,
+    /// The exit until moments ago: internet sources are late replies, dropped quietly.
+    Former,
+    None,
+}
+
+/// How long internet replies from a former exit count as expected.
+const AFTER_EXIT_GRACE: Duration = Duration::from_secs(120);
+
 fn admits(
     entry: &PeerEntry,
-    is_exit: bool,
+    role: ExitRole,
     filters: &mut BTreeMap<NetworkId, Filter>,
     drops: &mut DropCounters,
     packet: &[u8],
@@ -999,13 +1041,23 @@ fn admits(
         count(&mut drops.malformed);
         return false;
     };
-    if !is_exit
+    if role != ExitRole::Current
         && !entry
             .allowed_ips
             .iter()
             .any(|prefix| prefix.contains(source))
     {
+        if role == ExitRole::Former {
+            count(&mut drops.after_exit);
+            return false;
+        }
         count(&mut drops.source_not_allowed);
+        debug!(
+            network = %entry.network.short(),
+            %source,
+            destination = ?packet::destination(packet),
+            "dropped a packet from an address its sender does not own"
+        );
         return false;
     }
     if let Some(filter) = filters.get_mut(&entry.network) {

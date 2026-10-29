@@ -1415,6 +1415,16 @@ impl Daemon {
             .collect();
         let relays = relays(maps);
         let at = Instant::now();
+        self.connectivity.set_mesh_ranges(
+            member_maps(maps)
+                .flat_map(|map| {
+                    [
+                        IpPrefix::V4(map.ipv4_range()),
+                        IpPrefix::V6(map.ipv6_range()),
+                    ]
+                })
+                .collect(),
+        );
         self.connectivity.set_peers(&peers, at);
         let own_relay = self
             .server
@@ -1517,15 +1527,7 @@ impl Daemon {
 
     fn apply_os(&mut self) -> Result<(), NodeError> {
         let maps = self.networks.maps();
-        let exit_endpoints = self
-            .exit
-            .and_then(|(_, node)| self.paths.get(&node))
-            .and_then(|endpoint| match endpoint {
-                Endpoint::Direct(addr) => Some(addr.ip()),
-                Endpoint::Relay => None,
-            })
-            .into_iter()
-            .collect();
+        let exit_endpoints = self.exit_bypass(maps);
         let dns = self.dns.as_ref().and_then(|dns| {
             let domains = dns.domains(maps);
             (!domains.is_empty()).then(|| Dns {
@@ -1543,6 +1545,58 @@ impl Daemon {
         };
         let plan = self.os.plan(maps, &inputs)?;
         self.os.apply(plan)
+    }
+
+    /// Underlay addresses that must keep the original route while an exit is in use: every
+    /// known address of the exit node and of every relay. Without them, on systems with no
+    /// fwmark, kith's own traffic to them would enter the tunnel it carries.
+    fn exit_bypass(&self, maps: &Networks) -> Vec<IpAddr> {
+        let Some((_, node)) = self.exit else {
+            return Vec::new();
+        };
+        let current = self.paths.get(&node).and_then(|endpoint| match endpoint {
+            Endpoint::Direct(addr) => Some(*addr),
+            Endpoint::Relay => None,
+        });
+        let relays = relays(maps);
+        let relay_addrs =
+            relays
+                .iter()
+                .flat_map(|relay| match relay.address().parse::<SocketAddr>() {
+                    Ok(addr) => vec![addr],
+                    Err(_) => self
+                        .notes
+                        .relay_addresses
+                        .get(relay.address())
+                        .cloned()
+                        .unwrap_or_default(),
+                });
+        let ranges: Vec<IpPrefix> = member_maps(maps)
+            .flat_map(|map| {
+                [
+                    IpPrefix::V4(map.ipv4_range()),
+                    IpPrefix::V6(map.ipv6_range()),
+                ]
+            })
+            .collect();
+        let mut ips: Vec<IpAddr> = outside(
+            &ranges,
+            self.endpoints
+                .get(&node)
+                .into_iter()
+                .flatten()
+                .copied()
+                .chain(current)
+                .chain(relay_addrs)
+                .collect(),
+        )
+        .into_iter()
+        .map(|addr| addr.ip())
+        .filter(|ip| !ip.is_unspecified() && !ip.is_loopback())
+        .collect();
+        ips.sort();
+        ips.dedup();
+        ips
     }
 
     fn update_targets(&mut self) -> Result<(), NodeError> {
@@ -1781,6 +1835,8 @@ fn drop_reasons(drops: &DropCounters) -> BTreeMap<String, u64> {
         ("malformed", drops.malformed),
         ("table_full", drops.table_full),
         ("overflow", drops.overflow),
+        ("foreign_source", drops.foreign_source),
+        ("after_exit", drops.after_exit),
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)

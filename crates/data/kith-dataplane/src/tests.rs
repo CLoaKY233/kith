@@ -170,8 +170,30 @@ async fn exit_traffic_and_its_replies_cross_the_exit_peer() {
     connect(&a, &b, Endpoint::Direct(b.udp), &allow).await;
     connect(&b, &a, Endpoint::Direct(a.udp), &allow).await;
     a.handle.set_exit(Some((NETWORK, b.id))).await.unwrap();
+    a.handle
+        .set_addresses(NETWORK, vec![(a.addresses.v4.into(), 16)])
+        .await
+        .unwrap();
 
     let internet = Ipv4Addr::new(1, 1, 1, 1);
+    a.tun
+        .inject(udp_between(
+            Ipv4Addr::new(192, 168, 1, 5),
+            internet,
+            b"stale",
+        ))
+        .unwrap();
+    timeout(PATIENCE, async {
+        while a.handle.stats().await.unwrap().drops.foreign_source == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        b.tun.try_receive().is_none(),
+        "foreign-source traffic must not reach the exit"
+    );
     let request = udp_between(a.addresses.v4, internet, b"out");
     a.tun.inject(request.clone()).unwrap();
     assert_eq!(next_packet(&mut b).await, request);
@@ -179,6 +201,27 @@ async fn exit_traffic_and_its_replies_cross_the_exit_peer() {
     let reply = udp_between(internet, a.addresses.v4, b"back");
     b.tun.inject(reply.clone()).unwrap();
     assert_eq!(next_packet(&mut a).await, reply);
+
+    a.handle.set_exit(None).await.unwrap();
+    b.tun
+        .inject(udp_between(internet, a.addresses.v4, b"late"))
+        .unwrap();
+    let drops = timeout(PATIENCE, async {
+        loop {
+            let drops = a.handle.stats().await.unwrap().drops;
+            if drops.after_exit > 0 {
+                break drops;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        drops.source_not_allowed, 0,
+        "late exit replies are not a spoofing alarm"
+    );
+    assert!(a.tun.try_receive().is_none());
 }
 
 #[tokio::test]

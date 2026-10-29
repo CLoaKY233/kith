@@ -360,6 +360,14 @@ mod tests {
         Err(format!("exit not set: {last:?}").into())
     }
 
+    async fn drops(node: &NodeHandle) -> TestResult<std::collections::BTreeMap<String, u64>> {
+        let response = node.request(Request::Status).await;
+        if let Response::Status(status) = response {
+            return Ok(status.drops);
+        }
+        Err(format!("status failed: {response:?}").into())
+    }
+
     async fn shutdown(nodes: impl IntoIterator<Item = NodeHandle>) -> TestResult {
         for node in nodes {
             node.shutdown().await?;
@@ -607,6 +615,20 @@ mod tests {
             .map_err(|e| format!("before any exit: {e}"))?;
 
         use_exit(&a, network, Some(server)).await?;
+        let stale = udp_packet(
+            Ipv4Addr::new(192, 168, 1, 5),
+            INTERNET,
+            b"opened before the exit",
+        )?;
+        never_delivered(&a, &s, &stale)
+            .await
+            .map_err(|e| format!("traffic from a LAN address reached the exit: {e}"))?;
+        if !drops(&a).await?.contains_key("foreign_source") {
+            return Err("the client did not count traffic from a foreign source".into());
+        }
+        if drops(&s).await?.contains_key("source_not_allowed") {
+            return Err("foreign-source traffic still reached the exit node".into());
+        }
         deliver(&a, &s, &outbound)
             .await
             .map_err(|e| format!("exit on, out: {e}"))?;

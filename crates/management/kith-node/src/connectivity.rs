@@ -7,14 +7,16 @@ use std::sync::Arc;
 use kith_control::records::Relay;
 use kith_crypto::{AgreementPublic, AgreementSecret, RandomError, SigningKey, VerifyingKey};
 use kith_dataplane::Endpoint;
-use kith_disco::{Event, Message, PathReason, PathTarget, PeerPaths, RandomSource, Transmit};
+use kith_disco::{
+    CallMeMaybe, Event, Message, PathReason, PathTarget, PeerPaths, RandomSource, Transmit,
+};
 use kith_identity::DeviceIdentity;
 use kith_ipc::PathKind;
 use kith_netmon::{Change, NetworkSnapshot, PortMapConfig, PortMapper};
 use kith_relay::{Client, SendError, Status};
 use kith_stun::{StunProbe, TransactionId, is_stun};
 use kith_transport_quic::QuicEndpoint;
-use kith_types::NodeId;
+use kith_types::{IpPrefix, NodeId};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -108,6 +110,9 @@ pub(crate) struct Connectivity {
     interfaces: Vec<SocketAddr>,
     /// Addresses the config names for us, such as a server's `public_hostname`.
     configured: Vec<SocketAddr>,
+    /// Every network's mesh ranges: an address in them exists only through a tunnel, so it
+    /// is never a path to a peer, whoever reports it.
+    mesh: Vec<IpPrefix>,
     reflexive: BTreeMap<SocketAddr, SocketAddr>,
     observed: Vec<SocketAddr>,
     mapped: Option<SocketAddr>,
@@ -170,6 +175,7 @@ impl Connectivity {
             next_stun: None,
             interfaces,
             configured: Vec::new(),
+            mesh: Vec::new(),
             reflexive: BTreeMap::new(),
             observed: Vec::new(),
             mapped: None,
@@ -277,7 +283,24 @@ impl Connectivity {
     }
 
     /// Adds candidate addresses for a peer from gossip or its control connection.
+    /// Sets the mesh ranges whose addresses are never paths.
+    pub(crate) fn set_mesh_ranges(&mut self, ranges: Vec<IpPrefix>) {
+        if self.mesh != ranges {
+            self.mesh = ranges;
+            for state in self.peers.values_mut() {
+                state.candidates.retain(|addr| !in_ranges(&self.mesh, addr));
+            }
+            self.refresh_advertised();
+        }
+    }
+
+    fn in_mesh(&self, addr: &SocketAddr) -> bool {
+        in_ranges(&self.mesh, addr)
+    }
+
     pub(crate) fn add_candidates(&mut self, peer: NodeId, addrs: &[SocketAddr], now: Instant) {
+        let addrs: Vec<SocketAddr> = addrs.iter().copied().filter(|a| !self.in_mesh(a)).collect();
+        let addrs = addrs.as_slice();
         let at = self.at(now);
         let Some(state) = self.peers.get_mut(&peer) else {
             return;
@@ -385,6 +408,10 @@ impl Connectivity {
         datagram: &[u8],
         now: Instant,
     ) -> Result<(), NodeError> {
+        if self.in_mesh(&source) {
+            debug!(%source, "ignoring disco or STUN that came through a tunnel");
+            return Ok(());
+        }
         if is_stun(datagram) {
             self.handle_stun(source, datagram);
             return Ok(());
@@ -405,7 +432,11 @@ impl Connectivity {
             Message::Pong(pong) => {
                 state.paths.handle_pong(at, source, &pong);
             }
-            Message::CallMeMaybe(call) => state.paths.handle_call_me_maybe(at, &call),
+            Message::CallMeMaybe(call) => {
+                if let Some(call) = without_ranges(&self.mesh, &call) {
+                    state.paths.handle_call_me_maybe(at, &call);
+                }
+            }
         }
         self.pump(peer, now);
         Ok(())
@@ -464,7 +495,9 @@ impl Connectivity {
         }
         if let Message::CallMeMaybe(call) = message {
             let at = self.at(now);
-            if let Some(state) = self.peers.get_mut(&from) {
+            if let Some(state) = self.peers.get_mut(&from)
+                && let Some(call) = without_ranges(&self.mesh, &call)
+            {
                 state.paths.handle_call_me_maybe(at, &call);
                 self.pump(from, now);
             }
@@ -642,7 +675,9 @@ impl Connectivity {
                         endpoint,
                     });
                 }
-                Event::EndpointObserved(addr) if !self.observed.contains(&addr) => {
+                Event::EndpointObserved(addr)
+                    if !self.observed.contains(&addr) && !in_ranges(&self.mesh, &addr) =>
+                {
                     self.observed.insert(0, addr);
                     self.observed.truncate(MAX_OBSERVED);
                     observed_changed = true;
@@ -725,7 +760,7 @@ impl Connectivity {
             .chain(self.reflexive.values())
             .chain(&self.observed)
             .chain(&self.interfaces);
-        for addr in sources {
+        for addr in sources.filter(|addr| !in_ranges(&self.mesh, addr)) {
             if !advertised.contains(addr) {
                 advertised.push(*addr);
             }
@@ -763,6 +798,24 @@ fn interface_endpoints(
         })
         .map(|address| SocketAddr::new(address, port))
         .collect()
+}
+
+fn in_ranges(ranges: &[IpPrefix], addr: &SocketAddr) -> bool {
+    ranges.iter().any(|range| range.contains(addr.ip()))
+}
+
+/// `call` without endpoints in `ranges`, or `None` when none are left.
+fn without_ranges(ranges: &[IpPrefix], call: &CallMeMaybe) -> Option<CallMeMaybe> {
+    let kept: Vec<SocketAddr> = call
+        .endpoints()
+        .iter()
+        .copied()
+        .filter(|addr| !in_ranges(ranges, addr))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    CallMeMaybe::new(kept)
 }
 
 /// Tunnel interfaces, kith's own and other VPNs': their addresses only work through the
@@ -820,7 +873,10 @@ fn spawn_port_mapper(local_port: u16, commands: mpsc::Sender<Command>) -> JoinHa
 mod tests {
     use kith_netmon::{InterfaceAddress, NetworkSnapshot};
 
-    use super::interface_endpoints;
+    use kith_disco::CallMeMaybe;
+    use kith_types::IpPrefix;
+
+    use super::{interface_endpoints, without_ranges};
 
     #[test]
     fn tunnel_addresses_are_never_offered_as_endpoints() {
@@ -846,5 +902,25 @@ mod tests {
             "192.168.1.20:41641".parse().unwrap(),
         ];
         assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn mesh_addresses_are_never_taken_as_paths() {
+        let mesh: Vec<IpPrefix> = vec![
+            "100.64.0.0/10".parse().unwrap(),
+            "fd7a:115c:a1e0::/48".parse().unwrap(),
+        ];
+        let addr = |text: &str| text.parse::<std::net::SocketAddr>().unwrap();
+        let call = CallMeMaybe::new(vec![
+            addr("3.110.233.43:41641"),
+            addr("100.84.209.2:41641"),
+            addr("[fd7a:115c:a1e0:1::2]:41641"),
+        ])
+        .unwrap();
+        let kept = without_ranges(&mesh, &call).unwrap();
+        assert_eq!(kept.endpoints(), [addr("3.110.233.43:41641")]);
+
+        let only_mesh = CallMeMaybe::new(vec![addr("100.84.209.2:41641")]).unwrap();
+        assert!(without_ranges(&mesh, &only_mesh).is_none());
     }
 }

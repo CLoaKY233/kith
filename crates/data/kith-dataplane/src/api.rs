@@ -205,6 +205,12 @@ pub struct DropCounters {
     pub table_full: u64,
     /// Packets, datagrams and events that did not fit an output queue.
     pub overflow: u64,
+    /// Outbound exit traffic from an address that is not ours, such as a connection opened
+    /// before the exit was turned on; the exit node could not send it on anyway.
+    pub foreign_source: u64,
+    /// Internet replies from a former exit node arriving just after it stopped being the
+    /// exit; their connections had already moved or ended.
+    pub after_exit: u64,
 }
 
 /// Why a dataplane operation failed.

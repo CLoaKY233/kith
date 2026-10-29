@@ -91,38 +91,7 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
         ));
     }
     for (reason, count) in &status.drops {
-        let (level, what, fix) = match reason.as_str() {
-            "no_route" | "no_endpoint" => (
-                Level::Info,
-                "were for a peer that is offline or an unused mesh address",
-                None,
-            ),
-            "policy" => (
-                Level::Info,
-                "arrived unasked and the firewall refused them",
-                None,
-            ),
-            "invalid" | "malformed" => (
-                Level::Info,
-                "were not kith traffic, as a public server always gets",
-                None,
-            ),
-            "source_not_allowed" => (
-                Level::Warn,
-                "came from an address the sending peer does not own",
-                Some("run `kith doctor` on that peer, and report it if it persists"),
-            ),
-            _ => (
-                Level::Warn,
-                "were dropped because a queue or table was full",
-                Some("report this with `kith status --json`"),
-            ),
-        };
-        found.push(finding(
-            level,
-            format!("{count} packets {what} ({reason})"),
-            fix,
-        ));
+        found.push(drop_finding(reason, *count));
     }
     for warning in &status.warnings {
         found.push(finding(
@@ -132,6 +101,49 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
         ));
     }
     found
+}
+
+/// What a drop counter means: most are normal traffic, a few point to a real problem.
+fn drop_finding(reason: &str, count: u64) -> Finding {
+    let (level, what, fix) = match reason {
+        "no_route" | "no_endpoint" => (
+            Level::Info,
+            "were for a peer that is offline or an unused mesh address",
+            None,
+        ),
+        "policy" => (
+            Level::Info,
+            "arrived unasked and the firewall refused them",
+            None,
+        ),
+        "after_exit" => (
+            Level::Info,
+            "were late internet replies after the exit was turned off; their connections had ended",
+            None,
+        ),
+        "foreign_source" => (
+            Level::Info,
+            "left from an address that is not this device's, usually connections \
+             opened before the exit was turned on; apps reconnect",
+            None,
+        ),
+        "invalid" | "malformed" => (
+            Level::Info,
+            "were not kith traffic, as a public server always gets",
+            None,
+        ),
+        "source_not_allowed" => (
+            Level::Warn,
+            "came from an address the sending peer does not own",
+            Some("run `kith doctor` on that peer, and report it if it persists"),
+        ),
+        _ => (
+            Level::Warn,
+            "were dropped because a queue or table was full",
+            Some("report this with `kith status --json`"),
+        ),
+    };
+    finding(level, format!("{count} packets {what} ({reason})"), fix)
 }
 
 fn online(peer: &PeerInfo) -> bool {
