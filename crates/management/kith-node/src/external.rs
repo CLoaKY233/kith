@@ -123,6 +123,7 @@ impl ExternalPeers {
         runtime: &NetworkRuntime,
         device_name: &str,
         endpoint: &str,
+        exit: bool,
     ) -> Result<String, NodeError> {
         if device_name.is_empty() {
             return Err(NodeError::InvalidArgument("empty device name".into()));
@@ -171,12 +172,16 @@ impl ExternalPeers {
             writeln!(out, "[Peer]")?;
             writeln!(out, "PublicKey = {server}")?;
             writeln!(out, "Endpoint = {endpoint}")?;
-            writeln!(
-                out,
-                "AllowedIPs = {}, {}",
-                IpPrefix::V4(map.ipv4_range()),
-                IpPrefix::V4(gateway.range)
-            )?;
+            if exit {
+                writeln!(out, "AllowedIPs = 0.0.0.0/0, ::/0")?;
+            } else {
+                writeln!(
+                    out,
+                    "AllowedIPs = {}, {}",
+                    IpPrefix::V4(map.ipv4_range()),
+                    IpPrefix::V4(gateway.range)
+                )?;
+            }
             writeln!(out, "PersistentKeepalive = 25")
         })();
         render.map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
@@ -190,6 +195,15 @@ impl ExternalPeers {
             interfaces.push(gateway.interface()?);
         }
         Ok(interfaces)
+    }
+
+    /// The addresses of exported clients, once there is one: the OS must route them
+    /// into the tunnel and masquerade what they send.
+    pub(crate) fn gateway_range(&self) -> Option<IpPrefix> {
+        self.gateway
+            .as_ref()
+            .filter(|gateway| !gateway.clients.is_empty())
+            .map(|gateway| IpPrefix::V4(gateway.range))
     }
 
     /// Routes the OS must send into the tunnel for imported exits.

@@ -231,6 +231,8 @@ pub(crate) enum Action {
         network: NetworkId,
         /// The client's name.
         device_name: String,
+        /// Route all of the client's traffic through this device.
+        exit: bool,
     },
 }
 

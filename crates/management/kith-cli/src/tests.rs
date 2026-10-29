@@ -173,6 +173,15 @@ fn every_command_parses_into_the_right_request() {
             Ok(Request::ExportWireGuard {
                 network: NET,
                 device_name: "router".into(),
+                exit: false,
+            }),
+        ),
+        (
+            vec!["wg", "export", "--exit", "home", "phone"],
+            Ok(Request::ExportWireGuard {
+                network: NET,
+                device_name: "phone".into(),
+                exit: true,
             }),
         ),
         (vec!["frobnicate"], Err(())),

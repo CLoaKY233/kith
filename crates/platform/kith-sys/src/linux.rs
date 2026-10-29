@@ -73,23 +73,36 @@ pub(crate) fn apply<S: System>(sys: &mut Sys<S>, plan: &Plan) -> Result<(), Erro
     if plan.forwarding {
         sys.enable_sysctls(&["net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding"])?;
     }
-    if let Some(nat) = plan.nat.as_ref().filter(|n| !n.sources.is_empty()) {
-        let cmd = ip(false).args(["route", "show", "default"]);
-        let line = cmd.to_string();
-        let out = sys.exec(&cmd)?.stdout;
-        let wan = field(&out, "dev").ok_or(Error::Parse {
-            command: line,
-            output: out.clone(),
-        })?;
-        let wan = Interface::new(wan)?;
-        let rules = lines(nat.sources.iter().map(|src| {
+    if let Some(nat) = plan
+        .nat
+        .as_ref()
+        .filter(|n| !n.sources.is_empty() || !n.into_tunnel.is_empty())
+    {
+        let wan = if nat.sources.is_empty() {
+            None
+        } else {
+            let cmd = ip(false).args(["route", "show", "default"]);
+            let line = cmd.to_string();
+            let out = sys.exec(&cmd)?.stdout;
+            let wan = field(&out, "dev").ok_or(Error::Parse {
+                command: line,
+                output: out.clone(),
+            })?;
+            Some(Interface::new(wan)?)
+        };
+        let masquerade = |out: &Interface, src: &IpPrefix| {
             let family = if matches!(src, IpPrefix::V6(_)) {
                 "ip6"
             } else {
                 "ip"
             };
-            format!("\t\toifname \"{wan}\" {family} saddr {src} masquerade")
-        }));
+            format!("\t\toifname \"{out}\" {family} saddr {src} masquerade")
+        };
+        let rules = lines(
+            wan.iter()
+                .flat_map(|wan| nat.sources.iter().map(|src| masquerade(wan, src)))
+                .chain(nat.into_tunnel.iter().map(|src| masquerade(dev, src))),
+        );
         let ruleset = format!(
             "add table inet kith\ndelete table inet kith\ntable inet kith {{\n\tchain postrouting {{\n\t\t\
              type nat hook postrouting priority srcnat; policy accept;\n{rules}\t}}\n}}\n"

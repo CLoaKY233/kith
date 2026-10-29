@@ -128,6 +128,8 @@ pub enum Request {
         network: NetworkId,
         /// Name of the gateway device.
         device_name: String,
+        /// Send all of the device's traffic through this one, not only mesh traffic.
+        exit: bool,
     },
     /// Turns the connection into an [`Event`] stream.
     Watch,

@@ -710,7 +710,8 @@ impl Daemon {
             Action::ExportWireGuard {
                 network,
                 device_name,
-            } => self.export(network, &device_name).await,
+                exit,
+            } => self.export(network, &device_name, exit).await,
         }
     }
 
@@ -1043,21 +1044,24 @@ impl Daemon {
         &mut self,
         network: NetworkId,
         device_name: &str,
+        exit: bool,
     ) -> Result<Response, NodeError> {
-        let endpoint = self
-            .connectivity
-            .local_endpoints()
-            .first()
-            .copied()
-            .unwrap_or_else(|| self.channel.local_addr())
-            .to_string();
+        if exit && !self.server.as_ref().is_some_and(ServerMode::is_exit) {
+            return Err(NodeError::InvalidArgument(
+                "this device is not an exit node; run `kith server --exit` on it first".to_owned(),
+            ));
+        }
+        let endpoint = self.bootstrap().first().map_or_else(
+            || self.channel.local_addr().to_string(),
+            |b| b.addr().to_string(),
+        );
         let runtime = self
             .networks
             .get(&network)
             .ok_or_else(|| NodeError::NotFound(network.to_string()))?;
         let conf_text = self
             .external
-            .export(&self.state, runtime, device_name, &endpoint)?;
+            .export(&self.state, runtime, device_name, &endpoint, exit)?;
         self.refresh(None).await?;
         Ok(Response::WireGuardConfig { conf_text })
     }
@@ -1566,6 +1570,7 @@ impl Daemon {
             dns,
             serve_exit: self.server.as_ref().is_some_and(ServerMode::is_exit),
             extra_routes: self.external.routes(),
+            gateway: self.external.gateway_range(),
         };
         let plan = self.os.plan(maps, &inputs)?;
         self.os.apply(plan)

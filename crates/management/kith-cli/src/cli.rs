@@ -222,9 +222,12 @@ pub(crate) enum WgCmd {
         #[bpaf(positional("FILE"))]
         file: PathBuf,
     },
-    /// Print a wg-quick file for a device without kith
+    /// Print a wg-quick file for a device without kith, such as a phone
     #[bpaf(command)]
     Export {
+        /// Send all of its internet traffic through this device (needs `kith server --exit`)
+        #[bpaf(long)]
+        exit: bool,
         #[bpaf(positional("NETWORK"))]
         network: String,
         #[bpaf(positional("DEVICE-NAME"))]

@@ -365,6 +365,7 @@ fn full_plan(all_dns: bool) -> Plan {
     plan.sources = vec!["100.70.0.2".parse().unwrap(), "fd7a::2".parse().unwrap()];
     plan.nat = Some(Nat {
         sources: vec!["100.64.0.0/10".parse().unwrap()],
+        into_tunnel: vec!["10.225.0.0/24".parse().unwrap()],
     });
     plan
 }
@@ -728,7 +729,10 @@ fn plan() -> impl Strategy<Value = Plan> {
         proptest::option::of(proptest::collection::vec(ep, 0..3)),
         proptest::option::of(dns),
         any::<bool>(),
-        proptest::option::of(proptest::collection::vec(prefix(), 0..3)),
+        proptest::option::of((
+            proptest::collection::vec(prefix(), 0..3),
+            proptest::collection::vec(prefix(), 0..2),
+        )),
         proptest::collection::vec(any::<[u8; 4]>().prop_map(IpAddr::from), 0..3),
     )
         .prop_map(|(name, routes, exit, dns, forwarding, nat, sources)| Plan {
@@ -737,7 +741,10 @@ fn plan() -> impl Strategy<Value = Plan> {
             exit_node: exit.map(|peer_endpoints| ExitNode { peer_endpoints }),
             dns,
             forwarding,
-            nat: nat.map(|sources| Nat { sources }),
+            nat: nat.map(|(sources, into_tunnel)| Nat {
+                sources,
+                into_tunnel,
+            }),
             sources,
         })
 }
@@ -872,4 +879,51 @@ fn writes_go_through_symlinks_and_keep_them() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(still_link, "the link must stay a link");
     assert_eq!(written, "nameserver 100.64.0.1\n");
+}
+
+#[test]
+fn gateway_clients_are_masqueraded_into_the_mesh_with_or_without_an_exit() {
+    for platform in [Platform::Linux, Platform::MacOs] {
+        let applied = |plan: &Plan| {
+            let mut sys = Sys::new(
+                Fake {
+                    world: base_world(),
+                    ..Fake::default()
+                },
+                platform,
+                "/var/lib/kith/sys",
+            );
+            sys.apply(plan).unwrap();
+            let w = &sys.system().world;
+            let rules = w.nft.clone().or_else(|| w.pf_anchor.clone()).unwrap();
+            (rules, sys.system().log.clone())
+        };
+        let (both, _) = applied(&full_plan(false));
+        let (wan, tun) = match platform {
+            Platform::Linux => (
+                "oifname \"eth0\" ip saddr 100.64.0.0/10 masquerade",
+                "oifname \"kith0\" ip saddr 10.225.0.0/24 masquerade",
+            ),
+            Platform::MacOs => (
+                "nat on en0 inet from 100.64.0.0/10 to any -> (en0)",
+                "nat on kith0 inet from 10.225.0.0/24 to any -> (kith0)",
+            ),
+        };
+        assert!(both.contains(wan) && both.contains(tun), "{both}");
+
+        let mut gateway_only = Plan::new(Interface::new("kith0").unwrap());
+        gateway_only.nat = Some(Nat {
+            sources: Vec::new(),
+            into_tunnel: vec!["10.225.0.0/24".parse().unwrap()],
+        });
+        let (rules, log) = applied(&gateway_only);
+        assert!(
+            rules.contains(tun) && !rules.contains("100.64.0.0/10"),
+            "{rules}"
+        );
+        assert!(
+            !log.iter().any(|cmd| cmd.contains("default")),
+            "looked up a default route it does not need: {log:?}"
+        );
+    }
 }

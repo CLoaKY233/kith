@@ -819,4 +819,82 @@ mod tests {
         peer(&a, network, "server").await?;
         shutdown([a, s]).await
     }
+
+    async fn export(
+        node: &NodeHandle,
+        network: NetworkId,
+        name: &str,
+        exit: bool,
+    ) -> TestResult<String> {
+        let response = node
+            .request(Request::ExportWireGuard {
+                network,
+                device_name: name.into(),
+                exit,
+            })
+            .await;
+        let Response::WireGuardConfig { conf_text } = response else {
+            return Err(format!("export failed: {response:?}").into());
+        };
+        Ok(conf_text)
+    }
+
+    fn conf_value<'a>(conf: &'a str, key: &str) -> TestResult<&'a str> {
+        conf.lines()
+            .find_map(|line| line.strip_prefix(key)?.trim_start().strip_prefix('='))
+            .map(str::trim)
+            .ok_or_else(|| format!("no {key} in {conf}").into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_phone_with_plain_wireguard_reaches_the_server_and_its_exit() -> TestResult {
+        let s = start_server(true, false, Some("localhost")).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server: Ipv4Addr = peer(&a, network, "server").await?;
+
+        let mesh_only = export(&s, network, "phone", false).await?;
+        if !conf_value(&mesh_only, "Endpoint")?.starts_with("localhost:") {
+            return Err(format!("the export skips the public hostname: {mesh_only}").into());
+        }
+        if conf_value(&mesh_only, "AllowedIPs")?.contains("0.0.0.0/0") {
+            return Err(format!("a mesh-only export takes all traffic: {mesh_only}").into());
+        }
+        if export(&a, network, "phone", true).await.is_ok() {
+            return Err("a device that is not an exit exported an exit config".into());
+        }
+        let full = export(&s, network, "phone", true).await?;
+        if conf_value(&full, "AllowedIPs")? != "0.0.0.0/0, ::/0" {
+            return Err(format!("an exit export leaves traffic outside: {full}").into());
+        }
+        let phone: Ipv4Addr = conf_value(&full, "Address")?
+            .trim_end_matches("/32")
+            .parse()?;
+
+        let p = start().await?;
+        let imported = p
+            .request(Request::ImportWireGuard {
+                name: "phone".into(),
+                conf_text: full.replace("Endpoint = localhost:", "Endpoint = 127.0.0.1:"),
+            })
+            .await;
+        if !matches!(imported, Response::Imported { .. }) {
+            return Err(format!("the phone config did not import: {imported:?}").into());
+        }
+        deliver(&p, &s, &udp_packet(phone, server, b"phone to server")?)
+            .await
+            .map_err(|e| format!("phone to server: {e}"))?;
+        deliver(&s, &p, &udp_packet(server, phone, b"server to phone")?)
+            .await
+            .map_err(|e| format!("server to phone: {e}"))?;
+        deliver(
+            &p,
+            &s,
+            &udp_packet(phone, INTERNET, b"phone to the internet")?,
+        )
+        .await
+        .map_err(|e| format!("phone to the internet: {e}"))?;
+        shutdown([p, a, s]).await
+    }
 }

@@ -215,11 +215,13 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             conf_text: read_wg(file)?,
         },
         Cmd::Wg(WgCmd::Export {
+            exit,
             network,
             device_name,
         }) => Request::ExportWireGuard {
             network: names.network(network)?,
             device_name: device_name.clone(),
+            exit: *exit,
         },
         Cmd::Watch | Cmd::Doctor | Cmd::Config(_) | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));

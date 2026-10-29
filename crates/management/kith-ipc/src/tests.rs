@@ -30,7 +30,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 6, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 7, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -40,7 +40,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 6, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 7, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -56,7 +56,7 @@ fn golden_bytes() {
         online: true,
         display_name: "D".to_owned(),
     }]));
-    let mut expected = vec![58, b'k', b't', 0x70, 6, 0, 6, 1];
+    let mut expected = vec![58, b'k', b't', 0x70, 7, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D',
@@ -140,9 +140,12 @@ fn request() -> impl Strategy<Value = Request> {
         (any::<bool>(), any::<bool>())
             .prop_map(|(exit, relay)| Request::ServerMode { exit, relay }),
         (text(), text()).prop_map(|(name, conf_text)| Request::ImportWireGuard { name, conf_text }),
-        (net(), text()).prop_map(|(network, device_name)| Request::ExportWireGuard {
-            network,
-            device_name
+        (net(), text(), any::<bool>()).prop_map(|(network, device_name, exit)| {
+            Request::ExportWireGuard {
+                network,
+                device_name,
+                exit,
+            }
         }),
         Just(Request::Watch),
     ]
