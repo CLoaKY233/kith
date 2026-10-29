@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
-"""Publishes the kith server's memory, disk and kith numbers to CloudWatch every run.
+"""Publishes the kith server's health to CloudWatch every run.
 
-Seven custom metrics in namespace `kith`, within CloudWatch's ten free ones. Drop
-counters are cumulative in kith, so the change since the last run is sent.
+Ten custom metrics in namespace `kith`, CloudWatch's free allowance: CPU, network in
+and out, memory, disk, whether kith is up, devices online and in the network, and
+packets refused or too big. Counters are cumulative, so the change since the last run is
+sent. Standard library only: the request is signed here (AWS Signature Version 4), so
+the server needs no AWS CLI.
+
+Credentials come from /etc/kith-metrics/credentials, two lines: an access key id and its
+secret, for a user that may only put metrics in namespace `kith`.
 """
+import datetime
+import hashlib
+import hmac
 import json
 import os
 import shutil
 import subprocess
+import urllib.parse
+import urllib.request
 
-STATE = "/var/lib/kith-metrics/last-drops.json"
+REGION = "ap-south-1"
+HOST = f"monitoring.{REGION}.amazonaws.com"
+CREDENTIALS = "/etc/kith-metrics/credentials"
+STATE = "/var/lib/kith-metrics/last.json"
 
 
 def kith_status():
@@ -29,7 +43,28 @@ def memory_used_percent():
     return 100.0 * (1 - info["MemAvailable"] / info["MemTotal"])
 
 
-def since_last(drops):
+def cpu_times():
+    with open("/proc/stat") as stat:
+        fields = [int(n) for n in stat.readline().split()[1:]]
+    idle = fields[3] + fields[4]
+    return sum(fields), idle
+
+
+def network_bytes():
+    received = sent = 0
+    with open("/proc/net/dev") as dev:
+        for line in dev.readlines()[2:]:
+            name, data = line.split(":", 1)
+            if name.strip() == "lo" or name.strip().startswith("tun"):
+                continue
+            values = data.split()
+            received += int(values[0])
+            sent += int(values[8])
+    return received, sent
+
+
+def changes(now):
+    """The change of each counter in `now` since the last run; nothing on the first."""
     try:
         with open(STATE) as saved:
             last = json.load(saved)
@@ -37,33 +72,69 @@ def since_last(drops):
         last = {}
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as saved:
-        json.dump(drops, saved)
-    return {name: max(0, count - last.get(name, count)) for name, count in drops.items()}
+        json.dump(now, saved)
+    return {name: max(0, value - last[name]) for name, value in now.items() if name in last}
+
+
+def sign(key, message):
+    return hmac.new(key, message.encode(), hashlib.sha256).digest()
+
+
+def put_metrics(metrics):
+    with open(CREDENTIALS) as credentials:
+        access, secret = credentials.read().split()[:2]
+    form = {"Action": "PutMetricData", "Version": "2010-08-01", "Namespace": "kith"}
+    for index, (name, value, unit) in enumerate(metrics, start=1):
+        form[f"MetricData.member.{index}.MetricName"] = name
+        form[f"MetricData.member.{index}.Value"] = repr(float(value))
+        form[f"MetricData.member.{index}.Unit"] = unit
+    body = urllib.parse.urlencode(sorted(form.items()))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stamp, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+    content_type = "application/x-www-form-urlencoded; charset=utf-8"
+    headers = f"content-type:{content_type}\nhost:{HOST}\nx-amz-date:{stamp}\n"
+    signed = "content-type;host;x-amz-date"
+    request = "\n".join(["POST", "/", "", headers, signed, hashlib.sha256(body.encode()).hexdigest()])
+    scope = f"{day}/{REGION}/monitoring/aws4_request"
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", stamp, scope, hashlib.sha256(request.encode()).hexdigest()])
+    key = sign(sign(sign(sign(f"AWS4{secret}".encode(), day), REGION), "monitoring"), "aws4_request")
+    signature = hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
+    authorization = f"AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed}, Signature={signature}"
+    urllib.request.urlopen(urllib.request.Request(
+        f"https://{HOST}/", data=body.encode(), method="POST",
+        headers={"Content-Type": content_type, "X-Amz-Date": stamp, "Authorization": authorization},
+    ), timeout=30).read()
 
 
 def main():
-    disk = shutil.disk_usage("/")
     status = kith_status()
+    total, idle = cpu_times()
+    received, sent = network_bytes()
+    counters = {"cpu_total": total, "cpu_idle": idle, "rx": received, "tx": sent}
+    if status:
+        drops = status.get("drops", {})
+        counters["policy"] = drops.get("policy", 0)
+        counters["too_big"] = drops.get("too_big", 0)
+    new = changes(counters)
+    disk = shutil.disk_usage("/")
     metrics = [
         ("MemoryUsedPercent", memory_used_percent(), "Percent"),
         ("DiskUsedPercent", 100.0 * disk.used / disk.total, "Percent"),
         ("KithUp", 1 if status else 0, "Count"),
     ]
+    if "cpu_total" in new and new["cpu_total"] > 0:
+        metrics.append(("CPUUtilization", 100.0 * (1 - new["cpu_idle"] / new["cpu_total"]), "Percent"))
+    if "rx" in new:
+        metrics += [("NetworkIn", new["rx"], "Bytes"), ("NetworkOut", new["tx"], "Bytes")]
     if status:
         networks = status.get("networks", [])
-        new = since_last(status.get("drops", {}))
         metrics += [
             ("PeersOnline", sum(n["peers_online"] for n in networks), "Count"),
             ("PeersTotal", sum(n["peers_total"] for n in networks), "Count"),
             ("PacketsRefused", new.get("policy", 0), "Count"),
             ("PacketsTooBig", new.get("too_big", 0), "Count"),
         ]
-    data = [{"MetricName": name, "Value": value, "Unit": unit} for name, value, unit in metrics]
-    subprocess.run(
-        ["aws", "cloudwatch", "put-metric-data", "--region", "ap-south-1", "--namespace", "kith",
-         "--metric-data", json.dumps(data)],
-        check=True, timeout=30,
-    )
+    put_metrics(metrics)
 
 
 if __name__ == "__main__":
