@@ -16,7 +16,7 @@ use tokio_rustls::TlsStream;
 use tracing::{debug, warn};
 
 use crate::channel::{HANDSHAKE_TIMEOUT, Hub};
-use crate::message::{Entries, FrameReader, Message};
+use crate::message::{Entries, FrameReader, Message, Presence};
 use crate::{ChannelError, ChannelHandler};
 
 const RESYNC_INTERVAL: Duration = Duration::from_secs(60);
@@ -30,7 +30,8 @@ const MAX_UNADMITTED_PENDING: usize = 16 * 1024;
 #[derive(Clone)]
 pub(crate) enum Command {
     Changed(NetworkId),
-    Endpoints(NetworkId, Arc<[u8]>),
+    /// A gossip frame for the members of a network.
+    Gossip(NetworkId, Arc<[u8]>),
 }
 
 pub(crate) struct Peer {
@@ -235,6 +236,7 @@ impl<H: ChannelHandler> Connection<H> {
             (true, Message::Hello { networks }) => self.on_hello(networks),
             (true, Message::Sync { network, bytes }) => self.on_sync(network, &bytes),
             (true, Message::Endpoints { network, entries }) => self.on_endpoints(network, entries),
+            (true, Message::Presence { network, entries }) => self.on_presence(network, entries),
             (
                 true,
                 Message::JoinRequest { .. }
@@ -257,7 +259,7 @@ impl<H: ChannelHandler> Connection<H> {
                 }
                 Ok(())
             }
-            Command::Endpoints(network, frame) => {
+            Command::Gossip(network, frame) => {
                 if self.active.contains(&network) {
                     self.send_frame(frame.to_vec())?;
                 }
@@ -371,6 +373,18 @@ impl<H: ChannelHandler> Connection<H> {
         Ok(())
     }
 
+    fn on_presence(
+        &self,
+        network: NetworkId,
+        entries: Vec<(NodeId, Presence)>,
+    ) -> Result<(), Close> {
+        if !self.active.contains(&network) {
+            return Err(Close::Violation("gossip for a network that is not shared"));
+        }
+        self.handler.on_presence(network, self.peer.node, entries);
+        Ok(())
+    }
+
     fn refresh(&mut self) -> Result<bool, Close> {
         if !self.member {
             return Ok(false);
@@ -404,7 +418,7 @@ impl<H: ChannelHandler> Connection<H> {
         self.active = active;
         if let Some(hub) = self.hub.upgrade() {
             for network in &added {
-                if let Some(frame) = hub.latest_endpoints(*network) {
+                for frame in hub.latest_gossip(*network) {
                     self.send_frame(frame.to_vec())?;
                 }
             }

@@ -199,11 +199,11 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
         Request::ExportWireGuard {
             network,
             device_name,
-            exit,
+            tags,
         } => Action::ExportWireGuard {
             network,
             device_name: non_empty("device name", device_name)?,
-            exit,
+            tags,
         },
         _ => {
             return Err(NodeError::InvalidArgument("unsupported request".to_owned()));

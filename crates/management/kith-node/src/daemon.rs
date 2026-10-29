@@ -2,14 +2,19 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+use kith_channel::Presence;
 use kith_config::Config;
 use kith_control::records::{Record, Relay};
-use kith_control::{NetMap, Networks};
-use kith_dataplane::{Dataplane, DataplaneHandle, DropCounters, Endpoint, PeerSpec, Stats};
+use kith_control::{NetMap, Networks, Warning as MapWarning};
+use kith_crypto::AgreementSecret;
+use kith_dataplane::{
+    Dataplane, DataplaneHandle, DropCounters, Endpoint, ExternalMember, ExternalPeer, PeerSpec,
+    Stats,
+};
 use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
-use kith_ipc::{Event, NetworkSummary, PeerInfo, Request, Response, Status, Warning};
+use kith_ipc::{Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning};
 use kith_ledger::JoinProof;
 use kith_policy::Addresses;
 use kith_router::MeshRanges;
@@ -23,7 +28,7 @@ use tokio::time::Instant;
 use crate::channel::{ChannelLayer, now, pick_targets};
 use crate::connectivity::{Connectivity, Output};
 use crate::dns::DnsService;
-use crate::external::ExternalPeers;
+use crate::external::{ClientConfig, ExternalPeers, render_client};
 use crate::ipc;
 use crate::network::{Change, NetworkRuntime, NetworkSet};
 use crate::os::{DynSystem, OsPlanner, PlanInputs};
@@ -42,6 +47,12 @@ const ENDPOINT_SAVE_INTERVAL: core::time::Duration = core::time::Duration::from_
 const MESH_KEEPALIVE_SECS: u16 = 10;
 /// How long a mesh peer may stay silent and still count as online: two missed keepalives.
 const MESH_SILENCE: core::time::Duration = core::time::Duration::from_secs(25);
+
+/// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent
+/// and still count as online.
+const CLIENT_SILENCE: core::time::Duration = core::time::Duration::from_secs(60);
+/// How often a gateway checks whether its plain WireGuard members are online.
+const PRESENCE_INTERVAL: core::time::Duration = core::time::Duration::from_secs(5);
 
 /// The one rule for whether a peer is online: something authenticated arrived from it
 /// within `silence`.
@@ -288,6 +299,7 @@ pub(crate) struct Daemon {
     endpoints: BTreeMap<NodeId, Vec<SocketAddr>>,
     /// When each peer was last heard from, in Unix seconds, as of the last stats read.
     last_seen: BTreeMap<NodeId, u64>,
+    presence: Presences,
     public_hostname: Option<String>,
     notes: Notes,
     paths: BTreeMap<NodeId, Endpoint>,
@@ -479,20 +491,8 @@ impl Daemon {
             &config.daemon.state_dir,
         );
         let relay_listen = SocketAddr::new(options.listen_ip, bound.port().saturating_add(1));
-        let server = if config.server.enabled {
-            Some(
-                ServerMode::start(
-                    &identity,
-                    Listeners::from_config(&config.server, relay_listen),
-                    config.server.exit,
-                    connectivity.quic_links(),
-                    commands.clone(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        let server =
+            start_server(config, &identity, relay_listen, &connectivity, &commands).await?;
         let external = restore_external(&state, config).await?;
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
@@ -512,6 +512,7 @@ impl Daemon {
         let mut daemon = Self {
             identity,
             last_seen: state.load_last_seen()?,
+            presence: Presences::new(),
             state,
             networks,
             channel,
@@ -551,7 +552,8 @@ impl Daemon {
         loop {
             self.save_endpoints_if_due(false);
             self.save_last_seen_if_due(false).await;
-            let deadline = self.connectivity.poll_timeout();
+            self.announce_presence_if_due().await;
+            let deadline = earliest(self.connectivity.poll_timeout(), self.presence_deadline());
             tokio::select! {
                 command = commands.recv() => match command {
                     Some(Command::Shutdown { reply }) => {
@@ -715,8 +717,8 @@ impl Daemon {
             Action::ExportWireGuard {
                 network,
                 device_name,
-                exit,
-            } => self.export(network, &device_name, exit).await,
+                tags,
+            } => self.export(network, device_name, tags).await,
         }
     }
 
@@ -841,7 +843,12 @@ impl Daemon {
                 "to take this device out of the network, run `kith leave`".to_owned(),
             ));
         }
-        if !self.member_map(network)?.peers().contains_key(&node) {
+        let member = self
+            .networks
+            .get(&network)
+            .ok_or_else(|| NodeError::NotFound(network.to_string()))?
+            .with_ledger(|ledger| ledger.view().is_member(&node))?;
+        if !member {
             return Err(NodeError::NotFound(format!(
                 "{node} is not in this network"
             )));
@@ -1045,30 +1052,83 @@ impl Daemon {
         Ok(Response::ServerModeSet { notes })
     }
 
+    /// Adds a plain WireGuard device, such as a phone, to `network` through this device,
+    /// and returns its configs. Its private key exists only in them. The configs are
+    /// written before the device is admitted, so a failure leaves no member behind.
     async fn export(
         &mut self,
         network: NetworkId,
-        device_name: &str,
-        exit: bool,
+        device_name: String,
+        tags: Vec<String>,
     ) -> Result<Response, NodeError> {
-        if exit && !self.server.as_ref().is_some_and(ServerMode::is_exit) {
+        if !self.is_admin(network)? {
             return Err(NodeError::InvalidArgument(
-                "this device is not an exit node; run `kith server --exit` on it first".to_owned(),
+                "only an admin of this network can add a device".to_owned(),
             ));
         }
-        let endpoint = self.bootstrap().first().map_or_else(
-            || self.channel.local_addr().to_string(),
-            |b| b.addr().to_string(),
-        );
+        let gateway = self.external.gateway_public_key(&self.state)?;
+        let secret = AgreementSecret::generate()
+            .map_err(|error| NodeError::Io(std::io::Error::other(error)))?;
+        let key = secret.public_key().to_bytes();
         let runtime = self
             .networks
             .get(&network)
             .ok_or_else(|| NodeError::NotFound(network.to_string()))?;
-        let conf_text = self
-            .external
-            .export(&self.state, runtime, device_name, &endpoint, exit)?;
-        self.refresh(None).await?;
-        Ok(Response::WireGuardConfig { conf_text })
+        let addresses = runtime.client_addresses(&key)?;
+        let endpoint = self.bootstrap().first().map_or_else(
+            || self.channel.local_addr().to_string(),
+            |b| b.addr().to_string(),
+        );
+        let map = self.member_map(network)?;
+        let invalid =
+            |error: kith_types::PrefixError| NodeError::InvalidArgument(error.to_string());
+        let mesh_ranges = [
+            IpPrefix::V4(map.ipv4_range()),
+            IpPrefix::V6(map.ipv6_range()),
+        ];
+        let everything_ranges = [
+            IpPrefix::V4(Ipv4Prefix::new(Ipv4Addr::UNSPECIFIED, 0).map_err(invalid)?),
+            IpPrefix::V6(Ipv6Prefix::new(Ipv6Addr::UNSPECIFIED, 0).map_err(invalid)?),
+        ];
+        let config = |allowed_ips: &[IpPrefix]| {
+            render_client(&ClientConfig {
+                secret: &secret,
+                addresses,
+                dns: map.resolver()[0],
+                gateway,
+                endpoint: &endpoint,
+                allowed_ips,
+            })
+        };
+        let mesh = config(&mesh_ranges)?;
+        let everything = if self.server.as_ref().is_some_and(ServerMode::is_exit) {
+            Some(config(&everything_ranges)?)
+        } else {
+            None
+        };
+        let identity = Arc::clone(&self.identity);
+        self.runtime_mut(network)?.add_client(
+            &identity,
+            key,
+            (device_name, tags),
+            addresses,
+            now(),
+        )?;
+        self.commit(network).await?;
+        let id = kith_ledger::client_id(&key);
+        let map = self.member_map(network)?;
+        let Some(client) = map.clients().get(&id) else {
+            return Err(NodeError::InvalidArgument(format!(
+                "another device was given the same address at the same moment; remove this one with `kith remove {} {id}` and add it again",
+                map.name()
+            )));
+        };
+        Ok(Response::WireGuardConfig {
+            device: client.peer.label.clone(),
+            endpoint,
+            mesh,
+            everything,
+        })
     }
 
     /// Our endpoints, minus any inside a mesh range: those exist only through the tunnel,
@@ -1137,8 +1197,13 @@ impl Daemon {
                         .iter()
                         .filter(|peer| peer.online),
                 ),
-                peers_total: count(map.peers().iter()),
+                peers_total: count(
+                    map.peers()
+                        .iter()
+                        .chain(map.clients().iter().map(|(id, c)| (id, &c.peer))),
+                ),
                 relays: count(map.relays().iter()),
+                problems: self.problems(*id, map),
             })
             .collect();
         let now = Instant::now();
@@ -1186,21 +1251,69 @@ impl Daemon {
         Ok(Response::Peers(self.peer_infos(network, map, &stats)))
     }
 
-    /// Every peer of `network` as `kith status` shows it. Liveness is decided here, once,
-    /// by [`is_online`] from what this run of the dataplane heard; the saved last-seen
-    /// time only fills in when it was last heard from before a restart.
+    /// What is wrong with `network` that its admins must fix, in words.
+    fn problems(&self, network: NetworkId, map: &NetMap) -> Vec<Problem> {
+        let name_of = |node: &NodeId| {
+            self.networks
+                .get(&network)
+                .and_then(|runtime| {
+                    runtime
+                        .with_ledger(|ledger| {
+                            ledger.view().devices().get(node).map(|d| d.name.clone())
+                        })
+                        .ok()
+                        .flatten()
+                })
+                .unwrap_or_else(|| node.short().to_string())
+        };
+        let remove = |node: &NodeId| format!("kith remove {} {node}", map.name());
+        map.warnings()
+            .iter()
+            .filter_map(|warning| match warning {
+                MapWarning::ClientAddressTaken { client } => Some(Problem {
+                    what: format!(
+                        "{} has no address: another device was given the same one at the same moment",
+                        name_of(client)
+                    ),
+                    fix: format!("remove it with `{}` and add it again", remove(client)),
+                }),
+                MapWarning::ClientWithoutGateway { client, gateway } => Some(Problem {
+                    what: format!(
+                        "{} is cut off: {}, the device it connects through, was removed",
+                        name_of(client),
+                        name_of(gateway)
+                    ),
+                    fix: format!(
+                        "add that device back, or remove it with `{}` and add it again through another",
+                        remove(client)
+                    ),
+                }),
+                MapWarning::InvalidPolicy(_)
+                | MapWarning::InvalidTag { .. }
+                | MapWarning::InvalidRecord { .. }
+                | MapWarning::RecordForNonMember { .. }
+                | _ => None,
+            })
+            .collect()
+    }
+
+    /// Every peer of `network` as `kith status` shows it, kith devices first, then plain
+    /// WireGuard members. Liveness is decided here, once, by [`is_online`] from what this
+    /// run of the dataplane heard; a member behind another gateway is online when that
+    /// gateway is and says it is. The saved last-seen time only fills in when a peer was
+    /// last heard from before a restart.
     fn peer_infos(&self, network: NetworkId, map: &NetMap, stats: &Stats) -> Vec<PeerInfo> {
         let at = wall_instant();
-        map.peers()
+        let age = |when: std::time::Instant| at.saturating_duration_since(when);
+        let mut infos: Vec<PeerInfo> = map
+            .peers()
             .iter()
             .map(|(node, peer)| {
                 let stat = stats
                     .peers
                     .iter()
                     .find(|stat| stat.network == network && stat.node == *node);
-                let heard_ago = stat
-                    .and_then(|stat| stat.last_received)
-                    .map(|when| at.saturating_duration_since(when));
+                let heard_ago = stat.and_then(|stat| stat.last_received).map(age);
                 let online = is_online(heard_ago, MESH_SILENCE);
                 let seen_ago = heard_ago.or_else(|| self.last_seen.get(node).map(|s| secs_ago(*s)));
                 PeerInfo {
@@ -1220,9 +1333,66 @@ impl Daemon {
                     tx_bytes: stat.map_or(0, |stat| stat.tx_bytes),
                     online,
                     display_name: peer.name.clone(),
+                    gateway: None,
                 }
             })
-            .collect()
+            .collect();
+        let local = self.identity.node_id();
+        let label_of = |node: &NodeId| {
+            map.peers()
+                .get(node)
+                .or_else(|| map.local_device().filter(|_| *node == local))
+                .map(|peer| peer.label.clone())
+        };
+        for (id, client) in map.clients() {
+            let (online, seen_ago, endpoint, rx_bytes, tx_bytes) = if client.gateway == local {
+                let stat = stats
+                    .external
+                    .iter()
+                    .find(|stat| stat.public_key == client.key);
+                let heard_ago = stat.and_then(|stat| stat.last_received).map(age);
+                let online = is_online(heard_ago, CLIENT_SILENCE);
+                (
+                    online,
+                    heard_ago.or_else(|| self.last_seen.get(id).map(|s| secs_ago(*s))),
+                    stat.and_then(|stat| stat.endpoint)
+                        .filter(|_| online)
+                        .map(|e| e.to_string()),
+                    stat.map_or(0, |stat| stat.rx_bytes),
+                    stat.map_or(0, |stat| stat.tx_bytes),
+                )
+            } else {
+                let gateway_online = infos
+                    .iter()
+                    .any(|info| info.node == client.gateway && info.online);
+                let said = self
+                    .presence
+                    .said
+                    .get(&(network, *id))
+                    .filter(|(from, _)| *from == client.gateway)
+                    .map(|(_, presence)| *presence);
+                let online = gateway_online && said.is_some_and(|presence| presence.online);
+                let seen_ago = said
+                    .filter(|presence| presence.last_seen > 0)
+                    .map(|presence| secs_ago(presence.last_seen));
+                (online, seen_ago, None, 0, 0)
+            };
+            infos.push(PeerInfo {
+                node: *id,
+                name: client.peer.label.clone(),
+                address: client.peer.addresses.v4.to_string(),
+                path: None,
+                path_reason: None,
+                last_seen_secs: seen_ago.map(|age| age.as_secs()),
+                endpoint,
+                rx_bytes,
+                tx_bytes,
+                online,
+                display_name: client.peer.name.clone(),
+                gateway: label_of(&client.gateway),
+            });
+        }
+        infos
     }
 
     fn persist(&self, network: NetworkId) -> Result<(), NodeError> {
@@ -1260,6 +1430,30 @@ impl Daemon {
                     Some(change) => self.apply_change(change).await,
                     None => self.persist(network),
                 }
+            }
+            ChannelEvent::Presence {
+                network,
+                from,
+                entries,
+            } => {
+                let Some(map) = self.networks.maps().get(&network) else {
+                    return Ok(());
+                };
+                self.presence
+                    .said
+                    .retain(|(id, _), (gateway, _)| *id != network || *gateway != from);
+                for (client, presence) in entries {
+                    if map
+                        .clients()
+                        .get(&client)
+                        .is_some_and(|c| c.gateway == from)
+                    {
+                        self.presence
+                            .said
+                            .insert((network, client), (from, presence));
+                    }
+                }
+                Ok(())
             }
             ChannelEvent::Endpoints {
                 network,
@@ -1482,6 +1676,14 @@ impl Daemon {
             dns.update(self.networks.maps())?;
         }
         self.push_external().await?;
+        let maps = self.networks.maps();
+        self.presence
+            .said
+            .retain(|(network, client), (gateway, _)| {
+                maps.get(network)
+                    .and_then(|map| map.clients().get(client))
+                    .is_some_and(|client| client.gateway == *gateway)
+            });
         self.apply_os()?;
         self.gossiped.clear();
         self.gossip()
@@ -1534,6 +1736,12 @@ impl Daemon {
                         .filter(|(_, owner)| *owner == node)
                         .map(|(prefix, _)| *prefix),
                 );
+                allowed_ips.extend(
+                    client_prefixes(map)?
+                        .into_iter()
+                        .filter(|(_, gateway)| gateway == node)
+                        .map(|(prefix, _)| prefix),
+                );
                 specs.push(PeerSpec {
                     network: *id,
                     node: *node,
@@ -1547,7 +1755,7 @@ impl Daemon {
     }
 
     async fn push_external(&mut self) -> Result<(), NodeError> {
-        let interfaces = self.external.interfaces()?;
+        let interfaces = self.external.interfaces(self.local_clients()?);
         let names: BTreeSet<String> = interfaces.iter().map(|i| i.name.clone()).collect();
         for interface in interfaces {
             self.dataplane.set_external(interface).await?;
@@ -1557,6 +1765,33 @@ impl Daemon {
         }
         self.external_names = names;
         Ok(())
+    }
+
+    /// The plain WireGuard members this device is the gateway for, in every network.
+    fn local_clients(&self) -> Result<Vec<ExternalPeer>, NodeError> {
+        let local = self.identity.node_id();
+        let mut peers: Vec<ExternalPeer> = Vec::new();
+        for (network, map) in member_maps_with_ids(self.networks.maps()) {
+            for (id, client) in map.clients().iter().filter(|(_, c)| c.gateway == local) {
+                if peers.iter().any(|peer| peer.public_key == client.key) {
+                    tracing::warn!(client = %id.short(), "a WireGuard key is in two networks; serving it in the first");
+                    continue;
+                }
+                peers.push(ExternalPeer {
+                    public_key: client.key,
+                    preshared_key: None,
+                    endpoint: None,
+                    allowed_ips: host_prefixes(client.peer.addresses)?.to_vec(),
+                    persistent_keepalive: None,
+                    member: Some(ExternalMember {
+                        network,
+                        policy: client.filter.clone().unwrap_or_default(),
+                        resolver: map.resolver()[0],
+                    }),
+                });
+            }
+        }
+        Ok(peers)
     }
 
     fn apply_os(&mut self) -> Result<(), NodeError> {
@@ -1576,7 +1811,6 @@ impl Daemon {
             dns,
             serve_exit: self.server.as_ref().is_some_and(ServerMode::is_exit),
             extra_routes: self.external.routes(),
-            gateway: self.external.gateway_range(),
         };
         let plan = self.os.plan(maps, &inputs)?;
         self.os.apply(plan)
@@ -1720,7 +1954,7 @@ impl Daemon {
             self.absorb_last_seen(&stats);
         }
         let known: BTreeSet<NodeId> = member_maps(self.networks.maps())
-            .flat_map(|map| map.peers().keys().copied())
+            .flat_map(|map| map.peers().keys().chain(map.clients().keys()).copied())
             .collect();
         self.last_seen.retain(|node, _| known.contains(node));
         if self.last_seen == before {
@@ -1736,10 +1970,101 @@ impl Daemon {
     }
 
     fn absorb_last_seen(&mut self, stats: &Stats) {
-        for stat in &stats.peers {
-            if let Some(secs) = stat.last_received.and_then(unix_secs) {
-                let seen = self.last_seen.entry(stat.node).or_insert(0);
+        let clients = self.local_client_ids();
+        let heard = stats
+            .peers
+            .iter()
+            .map(|stat| (Some(stat.node), stat.last_received))
+            .chain(
+                stats
+                    .external
+                    .iter()
+                    .map(|stat| (clients.get(&stat.public_key).copied(), stat.last_received)),
+            );
+        for (node, at) in heard {
+            if let (Some(node), Some(secs)) = (node, at.and_then(unix_secs)) {
+                let seen = self.last_seen.entry(node).or_insert(0);
                 *seen = (*seen).max(secs);
+            }
+        }
+    }
+
+    /// This device's plain WireGuard members, by WireGuard key.
+    fn local_client_ids(&self) -> BTreeMap<[u8; 32], NodeId> {
+        let local = self.identity.node_id();
+        member_maps(self.networks.maps())
+            .flat_map(|map| map.clients().iter())
+            .filter(|(_, client)| client.gateway == local)
+            .map(|(id, client)| (client.key, *id))
+            .collect()
+    }
+
+    /// When to next check this device's plain WireGuard members, if it has any.
+    fn presence_deadline(&self) -> Option<Instant> {
+        let local = self.identity.node_id();
+        let serves = member_maps(self.networks.maps())
+            .any(|map| map.clients().values().any(|client| client.gateway == local));
+        (serves || !self.presence.announced.is_empty()).then_some(self.presence.due)
+    }
+
+    /// Tells the network which of this device's plain WireGuard members are online,
+    /// whenever that changes.
+    async fn announce_presence_if_due(&mut self) {
+        let now = Instant::now();
+        if self.presence_deadline().is_none_or(|due| due > now) {
+            return;
+        }
+        self.presence.due = now + PRESENCE_INTERVAL;
+        let Ok(stats) = self.dataplane.stats().await else {
+            return;
+        };
+        let local = self.identity.node_id();
+        let at = wall_instant();
+        let mut wanted: BTreeMap<NetworkId, Vec<(NodeId, Presence)>> = BTreeMap::new();
+        for (network, map) in member_maps_with_ids(self.networks.maps()) {
+            for (id, client) in map.clients().iter().filter(|(_, c)| c.gateway == local) {
+                let heard = stats
+                    .external
+                    .iter()
+                    .find(|stat| stat.public_key == client.key)
+                    .and_then(|stat| stat.last_received);
+                let presence = Presence {
+                    online: is_online(
+                        heard.map(|when| at.saturating_duration_since(when)),
+                        CLIENT_SILENCE,
+                    ),
+                    last_seen: heard
+                        .and_then(unix_secs)
+                        .or_else(|| self.last_seen.get(id).copied())
+                        .unwrap_or(0),
+                };
+                wanted.entry(network).or_default().push((*id, presence));
+            }
+        }
+        let networks: BTreeSet<NetworkId> = wanted
+            .keys()
+            .chain(self.presence.announced.keys())
+            .copied()
+            .collect();
+        for network in networks {
+            let entries = wanted.remove(&network).unwrap_or_default();
+            let unchanged = self.presence.announced.get(&network).is_some_and(|before| {
+                before.len() == entries.len()
+                    && before.iter().zip(&entries).all(|((a, x), (b, y))| {
+                        a == b && x.online == y.online && (x.online || x.last_seen == y.last_seen)
+                    })
+            });
+            if unchanged {
+                continue;
+            }
+            if let Err(error) = self.channel.announce_presence(network, entries.clone()) {
+                tracing::warn!(error = %Chain(&error), "could not announce which phones are online");
+                continue;
+            }
+            if entries.is_empty() {
+                self.presence.announced.remove(&network);
+            } else {
+                self.presence.announced.insert(network, entries);
             }
         }
     }
@@ -1865,6 +2190,49 @@ impl Default for Notes {
     }
 }
 
+/// Starts server mode when the config enables it.
+async fn start_server(
+    config: &Config,
+    identity: &DeviceIdentity,
+    relay_listen: SocketAddr,
+    connectivity: &Connectivity,
+    commands: &mpsc::Sender<Command>,
+) -> Result<Option<ServerMode>, NodeError> {
+    if !config.server.enabled {
+        return Ok(None);
+    }
+    let server = ServerMode::start(
+        identity,
+        Listeners::from_config(&config.server, relay_listen),
+        config.server.exit,
+        connectivity.quic_links(),
+        commands.clone(),
+    )
+    .await?;
+    Ok(Some(server))
+}
+
+/// Whether plain WireGuard members, such as phones, are online.
+#[derive(Debug)]
+struct Presences {
+    /// Other gateways' members, as each gateway said: member to (gateway, presence).
+    said: BTreeMap<(NetworkId, NodeId), (NodeId, Presence)>,
+    /// What this device last said about its own members, per network.
+    announced: BTreeMap<NetworkId, Vec<(NodeId, Presence)>>,
+    /// When to next check this device's own members.
+    due: Instant,
+}
+
+impl Presences {
+    fn new() -> Self {
+        Self {
+            said: BTreeMap::new(),
+            announced: BTreeMap::new(),
+            due: Instant::now(),
+        }
+    }
+}
+
 /// The addresses `host` resolves to, on `port`; an IP literal is itself.
 async fn resolve(host: &str, port: u16) -> Vec<SocketAddr> {
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -1970,7 +2338,24 @@ fn mesh_routes(map: &NetMap) -> Result<Vec<(IpPrefix, NodeId)>, NodeError> {
             .filter(|(_, owner)| map.peers().contains_key(*owner))
             .map(|(prefix, owner)| (*prefix, *owner)),
     );
+    for (prefix, gateway) in client_prefixes(map)? {
+        routes.push((prefix, gateway));
+    }
     Ok(routes)
+}
+
+/// Every plain WireGuard member's addresses with the kith peer that reaches it. Members
+/// behind the local device are left out: the gateway interface serves them.
+fn client_prefixes(map: &NetMap) -> Result<Vec<(IpPrefix, NodeId)>, NodeError> {
+    let mut prefixes = Vec::new();
+    for client in map.clients().values() {
+        if map.peers().contains_key(&client.gateway) {
+            for prefix in host_prefixes(client.peer.addresses)? {
+                prefixes.push((prefix, client.gateway));
+            }
+        }
+    }
+    Ok(prefixes)
 }
 
 fn host_prefixes(addresses: Addresses) -> Result<[IpPrefix; 2], NodeError> {
@@ -2003,6 +2388,13 @@ fn wall_instant() -> std::time::Instant {
 
 fn count<T>(items: impl Iterator<Item = T>) -> u32 {
     u32::try_from(items.count()).unwrap_or(u32::MAX)
+}
+
+fn earliest(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 async fn sleep_until(deadline: Option<Instant>) {

@@ -365,7 +365,6 @@ fn full_plan(all_dns: bool) -> Plan {
     plan.sources = vec!["100.70.0.2".parse().unwrap(), "fd7a::2".parse().unwrap()];
     plan.nat = Some(Nat {
         sources: vec!["100.64.0.0/10".parse().unwrap()],
-        into_tunnel: vec!["10.225.0.0/24".parse().unwrap()],
     });
     plan
 }
@@ -729,10 +728,7 @@ fn plan() -> impl Strategy<Value = Plan> {
         proptest::option::of(proptest::collection::vec(ep, 0..3)),
         proptest::option::of(dns),
         any::<bool>(),
-        proptest::option::of((
-            proptest::collection::vec(prefix(), 0..3),
-            proptest::collection::vec(prefix(), 0..2),
-        )),
+        proptest::option::of(proptest::collection::vec(prefix(), 0..3)),
         proptest::collection::vec(any::<[u8; 4]>().prop_map(IpAddr::from), 0..3),
     )
         .prop_map(|(name, routes, exit, dns, forwarding, nat, sources)| Plan {
@@ -741,10 +737,7 @@ fn plan() -> impl Strategy<Value = Plan> {
             exit_node: exit.map(|peer_endpoints| ExitNode { peer_endpoints }),
             dns,
             forwarding,
-            nat: nat.map(|(sources, into_tunnel)| Nat {
-                sources,
-                into_tunnel,
-            }),
+            nat: nat.map(|sources| Nat { sources }),
             sources,
         })
 }
@@ -882,48 +875,52 @@ fn writes_go_through_symlinks_and_keep_them() {
 }
 
 #[test]
-fn gateway_clients_are_masqueraded_into_the_mesh_with_or_without_an_exit() {
-    for platform in [Platform::Linux, Platform::MacOs] {
-        let applied = |plan: &Plan| {
-            let mut sys = Sys::new(
-                Fake {
-                    world: base_world(),
-                    ..Fake::default()
-                },
-                platform,
-                "/var/lib/kith/sys",
-            );
-            sys.apply(plan).unwrap();
-            let w = &sys.system().world;
-            let rules = w.nft.clone().or_else(|| w.pf_anchor.clone()).unwrap();
-            (rules, sys.system().log.clone())
-        };
-        let (both, _) = applied(&full_plan(false));
-        let (wan, tun) = match platform {
-            Platform::Linux => (
+fn an_exit_masquerades_the_mesh_out_of_the_default_route() {
+    for (platform, rules) in [
+        (
+            Platform::Linux,
+            [
                 "oifname \"eth0\" ip saddr 100.64.0.0/10 masquerade",
-                "oifname \"kith0\" ip saddr 10.225.0.0/24 masquerade",
-            ),
-            Platform::MacOs => (
+                "oifname \"eth0\" ip6 saddr fd7a::/48 masquerade",
+            ],
+        ),
+        (
+            Platform::MacOs,
+            [
                 "nat on en0 inet from 100.64.0.0/10 to any -> (en0)",
-                "nat on kith0 inet from 10.225.0.0/24 to any -> (kith0)",
-            ),
-        };
-        assert!(both.contains(wan) && both.contains(tun), "{both}");
-
-        let mut gateway_only = Plan::new(Interface::new("kith0").unwrap());
-        gateway_only.nat = Some(Nat {
-            sources: Vec::new(),
-            into_tunnel: vec!["10.225.0.0/24".parse().unwrap()],
-        });
-        let (rules, log) = applied(&gateway_only);
-        assert!(
-            rules.contains(tun) && !rules.contains("100.64.0.0/10"),
-            "{rules}"
+                "nat on en0 inet6 from fd7a::/48 to any -> (en0)",
+            ],
+        ),
+    ] {
+        let mut sys = Sys::new(
+            Fake {
+                world: base_world(),
+                ..Fake::default()
+            },
+            platform,
+            "/var/lib/kith/sys",
         );
+        let mut plan = full_plan(false);
+        plan.nat = Some(Nat {
+            sources: vec![
+                "100.64.0.0/10".parse().unwrap(),
+                "fd7a::/48".parse().unwrap(),
+            ],
+        });
+        sys.apply(&plan).unwrap();
+        let w = &sys.system().world;
+        let loaded = w.nft.clone().or_else(|| w.pf_anchor.clone()).unwrap();
+        for rule in rules {
+            assert!(
+                loaded.contains(rule),
+                "{platform:?} is missing `{rule}` in:\n{loaded}"
+            );
+        }
+        sys.revert(&plan).unwrap();
+        let w = &sys.system().world;
         assert!(
-            !log.iter().any(|cmd| cmd.contains("default")),
-            "looked up a default route it does not need: {log:?}"
+            w.nft.is_none() && w.pf_anchor.as_deref().is_none_or(str::is_empty),
+            "{platform:?} left NAT behind"
         );
     }
 }

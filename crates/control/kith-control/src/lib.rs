@@ -24,5 +24,7 @@ pub mod records;
 #[cfg(test)]
 mod tests;
 
-pub use netmap::{ControlError, NetMap, NetMapDiff, Peer, Warning, build_netmap};
+pub use netmap::{
+    Client, ControlError, NetMap, NetMapDiff, Peer, Warning, addresses_for_newcomer, build_netmap,
+};
 pub use networks::{Conflict, Networks};

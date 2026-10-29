@@ -9,6 +9,10 @@
 //! concurrent-admission merge can reorder members, and on a collision the later-sorted one
 //! moves, so callers must recompute addresses after every merge.
 //!
+//! Some members cannot follow a move, such as a phone whose address is written into its
+//! WireGuard config. [`allocate_pinned`] places their recorded addresses first and never
+//! moves them; the rest are placed around them.
+//!
 //! # Reserved addresses
 //!
 //! These are never assigned:
@@ -138,6 +142,13 @@ impl Space {
         }
     }
 
+    /// The assignable offset of `address`, if it is in the range and not reserved.
+    fn offset_of(&self, address: u128) -> Option<u128> {
+        let offset = address.checked_sub(self.base)?;
+        let index = offset.checked_sub(FIRST_ASSIGNABLE)?;
+        (index < self.assignable).then_some(offset)
+    }
+
     /// The address at `offset`. Offsets are below `2^host_bits`, so OR-ing into the
     /// network address cannot carry into the prefix.
     const fn address(&self, offset: u128) -> u128 {
@@ -169,16 +180,62 @@ pub fn allocate(
     v6: Ipv6Prefix,
     members_in_admission_order: &[NodeId],
 ) -> Result<BTreeMap<NodeId, Addresses>, AllocationError> {
+    let members: alloc::vec::Vec<(NodeId, Option<Addresses>)> = members_in_admission_order
+        .iter()
+        .map(|node| (*node, None))
+        .collect();
+    Ok(allocate_pinned(v4, v6, &members)?.assigned)
+}
+
+/// Addresses from [`allocate_pinned`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Allocation {
+    /// Every placed member's addresses.
+    pub assigned: BTreeMap<NodeId, Addresses>,
+    /// Pinned members left out: their address is outside the range, reserved, or pinned
+    /// by an earlier member.
+    pub rejected: alloc::vec::Vec<NodeId>,
+}
+
+/// Like [`allocate`], but a member with recorded addresses keeps them exactly. Pinned
+/// members are placed first, in the order given, and a pin that cannot be honoured
+/// leaves that member out rather than moving it. The rest are placed around them.
+pub fn allocate_pinned(
+    v4: Ipv4Prefix,
+    v6: Ipv6Prefix,
+    members_in_admission_order: &[(NodeId, Option<Addresses>)],
+) -> Result<Allocation, AllocationError> {
     let space_v4 = Space::v4(v4)?;
     let space_v6 = Space::v6(v6)?;
     let mut taken_v4 = BTreeSet::new();
     let mut taken_v6 = BTreeSet::new();
-    let mut assigned = BTreeMap::new();
-    for &node in members_in_admission_order {
-        if assigned.contains_key(&node) {
-            return Err(AllocationError::DuplicateMember(node));
+    let mut allocation = Allocation::default();
+    let mut seen = BTreeSet::new();
+    for (node, _) in members_in_admission_order {
+        if !seen.insert(*node) {
+            return Err(AllocationError::DuplicateMember(*node));
         }
-        let (seed_v4, seed_v6) = seeds(node);
+    }
+    for (node, pin) in members_in_admission_order {
+        let Some(pin) = pin else { continue };
+        let offsets = space_v4
+            .offset_of(u128::from(u32::from(pin.v4)))
+            .zip(space_v6.offset_of(u128::from(pin.v6)))
+            .filter(|(o4, o6)| !taken_v4.contains(o4) && !taken_v6.contains(o6));
+        match offsets {
+            Some((o4, o6)) => {
+                taken_v4.insert(o4);
+                taken_v6.insert(o6);
+                allocation.assigned.insert(*node, *pin);
+            }
+            None => allocation.rejected.push(*node),
+        }
+    }
+    for (node, pin) in members_in_admission_order {
+        if pin.is_some() {
+            continue;
+        }
+        let (seed_v4, seed_v6) = seeds(*node);
         let offset_v4 = space_v4.place(seed_v4, &taken_v4)?;
         let offset_v6 = space_v6.place(seed_v6, &taken_v6)?;
         taken_v4.insert(offset_v4);
@@ -187,9 +244,9 @@ pub fn allocate(
             v4: to_v4(space_v4.address(offset_v4)),
             v6: Ipv6Addr::from(space_v6.address(offset_v6)),
         };
-        assigned.insert(node, addresses);
+        allocation.assigned.insert(*node, addresses);
     }
-    Ok(assigned)
+    Ok(allocation)
 }
 
 /// The two candidate seeds: the first and second halves of the node's hash.
@@ -219,7 +276,7 @@ mod tests {
     use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NodeId};
     use proptest::prelude::*;
 
-    use super::{AllocationError, Family, allocate, resolver_address};
+    use super::{Addresses, AllocationError, Family, allocate, allocate_pinned, resolver_address};
 
     fn v4(text: &str) -> Ipv4Prefix {
         text.parse().unwrap()
@@ -359,6 +416,57 @@ mod tests {
                 let host6 = u128::from(addresses.v6) & 31;
                 prop_assert!(host6 >= 2);
             }
+        }
+    }
+
+    #[test]
+    fn pins_are_kept_exactly_and_bad_pins_are_left_out() {
+        let range4 = v4("100.64.0.0/24");
+        let range6 = v6("fd00:1::/64");
+        let pin = Addresses {
+            v4: "100.64.0.77".parse().unwrap(),
+            v6: "fd00:1::77".parse().unwrap(),
+        };
+        let reserved = Addresses {
+            v4: "100.64.0.1".parse().unwrap(),
+            ..pin
+        };
+        let outside = Addresses {
+            v4: "100.65.0.9".parse().unwrap(),
+            ..pin
+        };
+        let members = [
+            (node(1), None),
+            (node(2), Some(pin)),
+            (node(3), Some(pin)),
+            (node(4), Some(reserved)),
+            (node(5), Some(outside)),
+            (node(6), None),
+        ];
+        let got = allocate_pinned(range4, range6, &members).unwrap();
+        assert_eq!(got.assigned.get(&node(2)), Some(&pin));
+        assert_eq!(got.rejected, [node(3), node(4), node(5)]);
+        assert_eq!(got.assigned.len(), 3);
+        assert_eq!(got.assigned.values().filter(|a| a.v4 == pin.v4).count(), 1);
+    }
+
+    proptest! {
+        /// Pinning a new member where the allocator would put it never moves anyone.
+        #[test]
+        fn pinning_a_newcomer_where_it_lands_moves_no_one(count in 1_u8..60, extra in 60_u8..120) {
+            let range4 = v4("100.64.0.0/25");
+            let range6 = v6("fd00:1::/120");
+            let mut members: Vec<(NodeId, Option<Addresses>)> =
+                nodes(count).into_iter().map(|n| (n, None)).collect();
+            members.push((node(extra), None));
+            let before = allocate_pinned(range4, range6, &members).unwrap().assigned;
+            let landed = before[&node(extra)];
+            if let Some(last) = members.last_mut() {
+                last.1 = Some(landed);
+            }
+            let after = allocate_pinned(range4, range6, &members).unwrap();
+            prop_assert!(after.rejected.is_empty());
+            prop_assert_eq!(after.assigned, before);
         }
     }
 }

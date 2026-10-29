@@ -15,8 +15,8 @@ use tokio::time::timeout;
 use crate::engine::Engine;
 use crate::memory_tun::{MemoryTun, memory_tun};
 use crate::{
-    Dataplane, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface, ExternalPeer,
-    PeerSpec,
+    Dataplane, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface, ExternalMember,
+    ExternalPeer, PeerSpec,
 };
 
 const NETWORK: NetworkId = NetworkId::from_bytes([7; 32]);
@@ -342,6 +342,7 @@ async fn external_interfaces_interoperate_beside_the_mesh() {
             endpoint: Some(peer.udp),
             allowed_ips: vec![host(peer)],
             persistent_keepalive: Some(25),
+            member: None,
         }],
     };
     a.handle
@@ -370,6 +371,110 @@ async fn external_interfaces_interoperate_beside_the_mesh() {
     );
     assert!(peer.last_handshake.is_some());
     assert_eq!(stats.drops, DropCounters::default());
+}
+
+#[tokio::test]
+async fn a_phone_reaches_its_gateway_only_in_its_own_network_and_always_its_resolver() {
+    let mut gateway = spawn_node(12);
+    let phone = spawn_node(13);
+    let other = NetworkId::from_bytes([8; 32]);
+    let resolver = Ipv4Addr::new(100, 64, 0, 1);
+    let elsewhere = Ipv4Addr::new(100, 99, 0, 12);
+    gateway
+        .handle
+        .set_addresses(
+            NETWORK,
+            vec![(gateway.addresses.v4.into(), 16), (resolver.into(), 32)],
+        )
+        .await
+        .unwrap();
+    gateway
+        .handle
+        .set_addresses(other, vec![(elsewhere.into(), 16)])
+        .await
+        .unwrap();
+    let nobody = Policy::new(Vec::new()).unwrap();
+    let everyone = Policy::default_allow_all();
+    let both = members(&[&gateway, &phone]);
+    gateway
+        .handle
+        .set_filter(NETWORK, compile(&everyone, &both, gateway.id))
+        .await
+        .unwrap();
+    gateway
+        .handle
+        .set_filter(other, compile(&everyone, &both, gateway.id))
+        .await
+        .unwrap();
+
+    let (gateway_key, phone_key) = ([31; 32], [32; 32]);
+    let public = |secret| kith_wg::StaticIdentity::from_secret_bytes(secret).public_key();
+    let host = |v4: Ipv4Addr| IpPrefix::V4(Ipv4Prefix::new(v4, 32).unwrap());
+    let everything = IpPrefix::V4(Ipv4Prefix::new(Ipv4Addr::UNSPECIFIED, 0).unwrap());
+    phone
+        .handle
+        .set_external(ExternalInterface {
+            name: "wg0".into(),
+            private_key: phone_key,
+            addresses: vec![host(phone.addresses.v4)],
+            peers: vec![ExternalPeer {
+                public_key: public(gateway_key),
+                preshared_key: None,
+                endpoint: Some(gateway.udp),
+                allowed_ips: vec![everything],
+                persistent_keepalive: Some(25),
+                member: None,
+            }],
+        })
+        .await
+        .unwrap();
+    gateway
+        .handle
+        .set_external(ExternalInterface {
+            name: "kith-gateway".into(),
+            private_key: gateway_key,
+            addresses: Vec::new(),
+            peers: vec![ExternalPeer {
+                public_key: public(phone_key),
+                preshared_key: None,
+                endpoint: None,
+                allowed_ips: vec![host(phone.addresses.v4)],
+                persistent_keepalive: None,
+                member: Some(ExternalMember {
+                    network: NETWORK,
+                    policy: compile(&nobody, &both, phone.id),
+                    resolver: resolver.into(),
+                }),
+            }],
+        })
+        .await
+        .unwrap();
+
+    let to_gateway = udp_packet(&phone, &gateway, b"to its gateway");
+    phone.tun.inject(to_gateway.clone()).unwrap();
+    assert_eq!(next_packet(&mut gateway).await, to_gateway);
+
+    let across = udp_between(phone.addresses.v4, elsewhere, b"into another network");
+    phone.tun.inject(across).unwrap();
+    let dns = udp_between(phone.addresses.v4, resolver, b"dns");
+    phone.tun.inject(dns.clone()).unwrap();
+    assert_eq!(
+        next_packet(&mut gateway).await,
+        dns,
+        "the other network's address leaked through"
+    );
+    assert_eq!(gateway.handle.stats().await.unwrap().drops.policy, 1);
+
+    let mut unasked = udp_packet(&gateway, &phone, b"nobody may reach the phone");
+    unasked[20..22].copy_from_slice(&999_u16.to_be_bytes());
+    gateway.tun.inject(unasked).unwrap();
+    timeout(PATIENCE, async {
+        while gateway.handle.stats().await.unwrap().drops.policy < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the phone's filter let in a packet its policy refuses");
 }
 
 fn _dataplane_task_is_send(dataplane: Dataplane) -> impl Send {

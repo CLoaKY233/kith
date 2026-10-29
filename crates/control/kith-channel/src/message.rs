@@ -24,6 +24,15 @@ const READ_CHUNK: usize = 16 * 1024;
 
 pub(crate) type Entries = Vec<(NodeId, Vec<SocketAddr>)>;
 
+/// Whether a plain WireGuard member, such as a phone, is connected to its gateway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Presence {
+    /// Whether the gateway heard from it recently.
+    pub online: bool,
+    /// When the gateway last heard from it, in Unix seconds; 0 if never.
+    pub last_seen: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Message {
     Hello {
@@ -46,6 +55,10 @@ pub(crate) enum Message {
     Endpoints {
         network: NetworkId,
         entries: Entries,
+    },
+    Presence {
+        network: NetworkId,
+        entries: Vec<(NodeId, Presence)>,
     },
 }
 
@@ -95,6 +108,7 @@ impl Message {
                     .iter()
                     .try_for_each(|(_, addrs)| within(addrs.len(), MAX_ENDPOINT_ADDRS))
             }
+            Self::Presence { entries, .. } => within(entries.len(), MAX_ENDPOINT_NODES),
         }
     }
 }

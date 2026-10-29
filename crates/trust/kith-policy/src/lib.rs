@@ -24,7 +24,8 @@ mod ports;
 mod tag;
 
 pub use allocate::{
-    ALLOCATION_CONTEXT, Addresses, AllocationError, Family, allocate, resolver_address,
+    ALLOCATION_CONTEXT, Addresses, Allocation, AllocationError, Family, allocate, allocate_pinned,
+    resolver_address,
 };
 pub use compile::{CompiledFilter, FilterEntry, Member, Members, compile};
 pub use policy::{

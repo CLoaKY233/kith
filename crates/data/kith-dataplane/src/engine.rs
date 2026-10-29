@@ -20,7 +20,7 @@ use tracing::{debug, warn};
 
 use crate::api::{
     Command, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface,
-    ExternalPeerStats, PeerSpec, PeerStats, Stats, channels,
+    ExternalMember, ExternalPeerStats, PeerSpec, PeerStats, Stats, channels,
 };
 use crate::packet;
 use crate::timers::Timers;
@@ -70,11 +70,15 @@ struct State {
     timers: Timers<Key>,
     touched: Vec<Key>,
     local: BTreeSet<IpAddr>,
+    /// This device's addresses in each network.
+    local_in: BTreeMap<NetworkId, BTreeSet<IpAddr>>,
     /// The exit in use until `.2`, whose late internet replies are expected for a while.
     former_exit: Option<(NetworkId, NodeId, Duration)>,
     tun_out: PacketBatch,
     out: Output,
     scratch: Vec<u8>,
+    /// A packet a mesh member sent, copied out of `scratch` while it is routed.
+    forward: Vec<u8>,
 }
 
 struct PeerEntry {
@@ -100,7 +104,26 @@ struct ExternalEntry {
     allowed_ips: Vec<IpPrefix>,
     endpoint: Option<SocketAddr>,
     keepalive: Option<u16>,
+    /// For a mesh member, what guards it.
+    member: Option<Member>,
     touched: bool,
+}
+
+/// A plain WireGuard mesh member behind this device.
+struct Member {
+    network: NetworkId,
+    resolver: IpAddr,
+    filter: Filter,
+}
+
+impl Member {
+    fn new(spec: ExternalMember) -> Self {
+        Self {
+            network: spec.network,
+            resolver: spec.resolver,
+            filter: Filter::new(spec.policy),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -150,6 +173,7 @@ impl<T: TunDevice> Engine<T> {
                 timers: Timers::new(),
                 touched: Vec::with_capacity(kith_tun::BATCH_SIZE),
                 local: BTreeSet::new(),
+                local_in: BTreeMap::new(),
                 former_exit: None,
                 tun_out: tun.new_batch()?,
                 out: Output {
@@ -158,6 +182,7 @@ impl<T: TunDevice> Engine<T> {
                     drops: DropCounters::default(),
                 },
                 scratch: vec![0; required_output_len(MAX_PACKET_CAPACITY).max(MAX_SLOT_LEN)],
+                forward: Vec::with_capacity(MAX_PACKET_CAPACITY),
             },
             io: Io {
                 tun_in: tun.new_batch()?,
@@ -262,6 +287,11 @@ impl<T: TunDevice> Engine<T> {
             .values()
             .flatten()
             .map(|&(address, _)| address)
+            .collect();
+        self.state.local_in = self
+            .addresses
+            .iter()
+            .map(|(id, held)| (*id, held.iter().map(|&(address, _)| address).collect()))
             .collect();
         result
     }
@@ -533,6 +563,15 @@ impl State {
         for filter in self.filters.values() {
             absorb(&mut drops, filter.counters());
         }
+        for external in self.externals.values() {
+            for member in external
+                .peers
+                .values()
+                .filter_map(|entry| entry.member.as_ref())
+            {
+                absorb(&mut drops, member.filter.counters());
+            }
+        }
         Stats {
             peers,
             external,
@@ -557,7 +596,9 @@ impl State {
             if let Some((slot, id)) =
                 self.external_route(packet::source(packet), destination, mesh_rank)
             {
-                self.outbound_external(now, packet, slot, id);
+                if self.guard_member(now, packet, slot, id) {
+                    self.outbound_external(now, packet, slot, id);
+                }
                 continue;
             }
             let Some(route) = route else {
@@ -575,27 +616,94 @@ impl State {
             {
                 continue;
             }
-            let Some(entry) = self.peers.get_mut(&route.peer) else {
-                count(&mut self.out.drops.no_route);
-                continue;
-            };
-            let Some(peer) = self.device.peer_mut(entry.id) else {
-                count(&mut self.out.drops.no_route);
-                continue;
-            };
-            let sealed = match self.scratch.get_mut(..required_output_len(packet.len())) {
-                Some(out) => peer.encapsulate(now, packet, out),
-                None => Err(WgError::BufferTooSmall),
-            };
-            match sealed {
-                Ok(Encapsulated::Transport(len) | Encapsulated::HandshakeInitiation(len)) => {
-                    self.out
-                        .send(route.peer, entry.endpoint, self.scratch.get(..len));
-                }
-                Ok(Encapsulated::Queued) => {}
-                Err(_) => count(&mut self.out.drops.invalid),
+            self.seal_to_peer(now, packet, route.peer);
+        }
+    }
+
+    /// Encrypts `packet` for mesh peer `node` and sends it.
+    fn seal_to_peer(&mut self, now: Now, packet: &[u8], node: NodeId) {
+        let Some(entry) = self.peers.get_mut(&node) else {
+            count(&mut self.out.drops.no_route);
+            return;
+        };
+        let Some(peer) = self.device.peer_mut(entry.id) else {
+            count(&mut self.out.drops.no_route);
+            return;
+        };
+        let sealed = match self.scratch.get_mut(..required_output_len(packet.len())) {
+            Some(out) => peer.encapsulate(now, packet, out),
+            None => Err(WgError::BufferTooSmall),
+        };
+        match sealed {
+            Ok(Encapsulated::Transport(len) | Encapsulated::HandshakeInitiation(len)) => {
+                self.out.send(node, entry.endpoint, self.scratch.get(..len));
             }
-            touch(&mut self.touched, Key::Mesh(route.peer), &mut entry.touched);
+            Ok(Encapsulated::Queued) => {}
+            Err(_) => count(&mut self.out.drops.invalid),
+        }
+        touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
+    }
+
+    /// Whether `packet` may reach external peer `id`: always for an imported exit, and
+    /// for a mesh member only if its network's policy lets it in.
+    fn guard_member(&mut self, now: Now, packet: &[u8], slot: u64, id: PeerId) -> bool {
+        let member = self
+            .externals
+            .get_mut(&slot)
+            .and_then(|external| external.peers.get_mut(&id))
+            .and_then(|entry| entry.member.as_mut());
+        member.is_none_or(|member| member.filter.inbound(packet, now.monotonic) == Verdict::Accept)
+    }
+
+    /// Routes a packet a mesh member sent: to its network's resolver, to this device's
+    /// address in its own network (never in another one), to another member behind this
+    /// one, across the mesh, or to the OS for the internet. Its replies may come back
+    /// because its own filter tracks the flow.
+    fn route_from_member(&mut self, now: Now, packet: &[u8], network: NetworkId, resolver: IpAddr) {
+        let Some(destination) = packet::destination(packet) else {
+            count(&mut self.out.drops.malformed);
+            return;
+        };
+        if destination == resolver {
+            if self.tun_out.push(packet).is_err() {
+                count(&mut self.out.drops.overflow);
+            }
+            return;
+        }
+        let ours = self
+            .local_in
+            .get(&network)
+            .is_some_and(|held| held.contains(&destination));
+        if !ours && self.local.contains(&destination) {
+            count(&mut self.out.drops.policy);
+            return;
+        }
+        if ours {
+            let admitted = if let Some(filter) = self.filters.get_mut(&network) {
+                filter.inbound(packet, now.monotonic) == Verdict::Accept
+            } else {
+                count(&mut self.out.drops.policy);
+                false
+            };
+            if admitted && self.tun_out.push(packet).is_err() {
+                count(&mut self.out.drops.overflow);
+            }
+            return;
+        }
+        let route = self.router.route(destination);
+        let mesh_rank = route.map(|route| (route.prefix.prefix_len(), false));
+        if let Some((slot, id)) =
+            self.external_route(packet::source(packet), destination, mesh_rank)
+        {
+            if self.guard_member(now, packet, slot, id) {
+                self.outbound_external(now, packet, slot, id);
+            }
+            return;
+        }
+        if let Some(route) = route {
+            self.seal_to_peer(now, packet, route.peer);
+        } else if self.tun_out.push(packet).is_err() {
+            count(&mut self.out.drops.overflow);
         }
     }
 
@@ -656,6 +764,8 @@ impl State {
     fn receive_external(&mut self, now: Now, source: SocketAddr, datagram: &[u8]) {
         let mut address = [0; 18];
         let encoded = encode_address(source, &mut address);
+        let mut member_packet = None;
+        let mut handled = false;
         for (slot, external) in &mut self.externals {
             let output =
                 match external
@@ -689,6 +799,9 @@ impl State {
                                 .any(|prefix| prefix.contains(address))
                         }) {
                             count(&mut self.out.drops.source_not_allowed);
+                        } else if let Some(member) = entry.member.as_mut() {
+                            member.filter.outbound(packet, now.monotonic);
+                            member_packet = Some((member.network, member.resolver, len));
                         } else if self.tun_out.push(packet).is_err() {
                             count(&mut self.out.drops.overflow);
                         }
@@ -702,9 +815,21 @@ impl State {
                 Key::External(*slot, id),
                 &mut entry.touched,
             );
+            handled = true;
+            break;
+        }
+        if !handled {
+            count(&mut self.out.drops.invalid);
             return;
         }
-        count(&mut self.out.drops.invalid);
+        let Some((network, resolver, len)) = member_packet else {
+            return;
+        };
+        let mut packet = core::mem::take(&mut self.forward);
+        packet.clear();
+        packet.extend_from_slice(self.scratch.get(..len).unwrap_or_default());
+        self.route_from_member(now, &packet, network, resolver);
+        self.forward = packet;
     }
 
     fn set_external(&mut self, spec: ExternalInterface) -> Result<(), DataplaneError> {
@@ -740,6 +865,14 @@ impl State {
                 if peer.endpoint.is_some() {
                     entry.endpoint = peer.endpoint;
                 }
+                entry.member = match (entry.member.take(), peer.member) {
+                    (Some(mut kept), Some(spec)) if kept.network == spec.network => {
+                        kept.filter.set_policy(spec.policy);
+                        kept.resolver = spec.resolver;
+                        Some(kept)
+                    }
+                    (_, spec) => spec.map(Member::new),
+                };
                 continue;
             }
             let mut config = PeerConfig::new(public_key);
@@ -770,6 +903,7 @@ impl State {
                     allowed_ips: peer.allowed_ips,
                     endpoint: peer.endpoint,
                     keepalive: peer.persistent_keepalive,
+                    member: peer.member.map(Member::new),
                     touched: true,
                 },
             );
@@ -877,26 +1011,47 @@ impl State {
         } else {
             ExitRole::None
         };
+        let mut for_member = None;
         match output.result {
             Decapsulated::Packet(len) => {
-                if let Some(packet) = self.scratch.get(..len)
-                    && admits(
-                        entry,
-                        role,
-                        &mut self.filters,
-                        &mut self.out.drops,
-                        packet,
-                        now.monotonic,
-                    )
-                    && self.tun_out.push(packet).is_err()
-                {
-                    count(&mut self.out.drops.overflow);
+                if let Some(packet) = self.scratch.get(..len) {
+                    let member = packet::destination(packet)
+                        .and_then(|destination| member_route(&self.externals, destination));
+                    match member {
+                        Some(route) => {
+                            if owns_source(entry, role, &mut self.out.drops, packet) {
+                                for_member = Some((route, len));
+                            }
+                        }
+                        None => {
+                            if admits(
+                                entry,
+                                role,
+                                &mut self.filters,
+                                &mut self.out.drops,
+                                packet,
+                                now.monotonic,
+                            ) && self.tun_out.push(packet).is_err()
+                            {
+                                count(&mut self.out.drops.overflow);
+                            }
+                        }
+                    }
                 }
             }
             Decapsulated::Reply(len) => self.out.reply(via, self.scratch.get(..len)),
             Decapsulated::Nothing => {}
         }
         touch(&mut self.touched, Key::Mesh(node), &mut entry.touched);
+        if let Some(((slot, id), len)) = for_member {
+            let mut packet = core::mem::take(&mut self.forward);
+            packet.clear();
+            packet.extend_from_slice(self.scratch.get(..len).unwrap_or_default());
+            if self.guard_member(now, &packet, slot, id) {
+                self.outbound_external(now, &packet, slot, id);
+            }
+            self.forward = packet;
+        }
     }
 
     fn service(&mut self, now: Now) -> Option<Duration> {
@@ -1017,7 +1172,6 @@ fn absorb(drops: &mut DropCounters, filter: Counters) {
     drops.table_full = drops.table_full.saturating_add(filter.dropped_table_full);
 }
 
-/// Cryptokey routing (the peer may use this source address), then the network's filter.
 /// How a peer relates to the exit, for which sources its packets may carry.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExitRole {
@@ -1031,6 +1185,47 @@ enum ExitRole {
 /// How long internet replies from a former exit count as expected.
 const AFTER_EXIT_GRACE: Duration = Duration::from_secs(120);
 
+/// The member behind this device that `destination` belongs to, if any.
+fn member_route(externals: &BTreeMap<u64, External>, destination: IpAddr) -> Option<(u64, PeerId)> {
+    externals.iter().find_map(|(slot, external)| {
+        let (_, id) = external.routes.lookup(destination)?;
+        external
+            .peers
+            .get(id)
+            .is_some_and(|entry| entry.member.is_some())
+            .then_some((*slot, *id))
+    })
+}
+
+/// Cryptokey routing: whether the peer may send from the packet's source address.
+fn owns_source(entry: &PeerEntry, role: ExitRole, drops: &mut DropCounters, packet: &[u8]) -> bool {
+    let Some(source) = packet::source(packet) else {
+        count(&mut drops.malformed);
+        return false;
+    };
+    if role == ExitRole::Current
+        || entry
+            .allowed_ips
+            .iter()
+            .any(|prefix| prefix.contains(source))
+    {
+        return true;
+    }
+    if role == ExitRole::Former {
+        count(&mut drops.after_exit);
+        return false;
+    }
+    count(&mut drops.source_not_allowed);
+    debug!(
+        network = %entry.network.short(),
+        %source,
+        destination = ?packet::destination(packet),
+        "dropped a packet from an address its sender does not own"
+    );
+    false
+}
+
+/// Cryptokey routing (the peer may use this source address), then the network's filter.
 fn admits(
     entry: &PeerEntry,
     role: ExitRole,
@@ -1039,27 +1234,7 @@ fn admits(
     packet: &[u8],
     now: Duration,
 ) -> bool {
-    let Some(source) = packet::source(packet) else {
-        count(&mut drops.malformed);
-        return false;
-    };
-    if role != ExitRole::Current
-        && !entry
-            .allowed_ips
-            .iter()
-            .any(|prefix| prefix.contains(source))
-    {
-        if role == ExitRole::Former {
-            count(&mut drops.after_exit);
-            return false;
-        }
-        count(&mut drops.source_not_allowed);
-        debug!(
-            network = %entry.network.short(),
-            %source,
-            destination = ?packet::destination(packet),
-            "dropped a packet from an address its sender does not own"
-        );
+    if !owns_source(entry, role, drops, packet) {
         return false;
     }
     if let Some(filter) = filters.get_mut(&entry.network) {

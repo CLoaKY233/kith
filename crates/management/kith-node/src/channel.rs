@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kith_channel::{Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer};
+use kith_channel::{Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer, Presence};
 use kith_control::NetMap;
 use kith_control::records::Relay;
 use kith_identity::{BootstrapAddr, DeviceIdentity, InviteToken};
@@ -91,6 +91,14 @@ impl ChannelHandler for NodeHandler {
         entries: Vec<(NodeId, Vec<SocketAddr>)>,
     ) {
         self.report(ChannelEvent::Endpoints {
+            network,
+            from,
+            entries,
+        });
+    }
+
+    fn on_presence(&self, network: NetworkId, from: NodeId, entries: Vec<(NodeId, Presence)>) {
+        self.report(ChannelEvent::Presence {
             network,
             from,
             entries,
@@ -199,6 +207,15 @@ impl ChannelLayer {
         self.channel.notify_changed(network);
     }
 
+    /// Gossips which of this gateway's plain WireGuard members of `network` are online.
+    pub(crate) fn announce_presence(
+        &self,
+        network: NetworkId,
+        entries: Vec<(NodeId, Presence)>,
+    ) -> Result<(), NodeError> {
+        Ok(self.channel.send_presence(network, entries)?)
+    }
+
     /// Gossips endpoints for `network` to every connected member.
     pub(crate) fn gossip(
         &self,
@@ -299,7 +316,8 @@ pub(crate) fn now() -> Timestamp {
     Timestamp::from_millis(millis)
 }
 
-/// Chooses sync targets: every relay, then up to [`MAX_DIRECT_SESSIONS`] reachable peers.
+/// Chooses sync targets: every relay, every gateway of a plain WireGuard member (only it
+/// can say whether that member is online), then up to [`MAX_DIRECT_SESSIONS`] reachable peers.
 pub(crate) fn pick_targets(
     netmaps: &[&NetMap],
     relays: &[Relay],
@@ -329,6 +347,22 @@ pub(crate) fn pick_targets(
             continue;
         }
         targets.push(SyncTarget { node, addrs });
+    }
+    let gateways: BTreeSet<NodeId> = netmaps
+        .iter()
+        .flat_map(|netmap| netmap.clients().values().map(|client| client.gateway))
+        .filter(|gateway| members.contains(gateway))
+        .collect();
+    for gateway in gateways {
+        let Some(addrs) = endpoints.get(&gateway).filter(|addrs| !addrs.is_empty()) else {
+            continue;
+        };
+        if chosen.insert(gateway) {
+            targets.push(SyncTarget {
+                node: gateway,
+                addrs: addrs.clone(),
+            });
+        }
     }
     let direct = members
         .iter()

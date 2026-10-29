@@ -12,8 +12,8 @@ use tokio::io::AsyncWriteExt;
 use crate::codec::{decode, encode};
 use crate::message::ServerMessage;
 use crate::{
-    DnsRecord, ErrorCode, Event, MAX_FRAME_LEN, NetworkSummary, PathKind, PeerInfo, Request,
-    Response, Status, Warning,
+    DnsRecord, ErrorCode, Event, MAX_FRAME_LEN, NetworkSummary, PathKind, PeerInfo, Problem,
+    Request, Response, Status, Warning,
 };
 #[cfg(unix)]
 use crate::{IpcClient, IpcError, IpcServer, PROTOCOL_VERSION};
@@ -30,7 +30,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 7, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 8, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -40,7 +40,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 7, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 8, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -55,11 +55,12 @@ fn golden_bytes() {
         tx_bytes: 128,
         online: true,
         display_name: "D".to_owned(),
+        gateway: Some("e".to_owned()),
     }]));
-    let mut expected = vec![58, b'k', b't', 0x70, 7, 0, 6, 1];
+    let mut expected = vec![61, b'k', b't', 0x70, 8, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
-        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D',
+        1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1, b'e',
     ]);
     assert_eq!(encode(&peers).unwrap(), expected);
 }
@@ -140,13 +141,13 @@ fn request() -> impl Strategy<Value = Request> {
         (any::<bool>(), any::<bool>())
             .prop_map(|(exit, relay)| Request::ServerMode { exit, relay }),
         (text(), text()).prop_map(|(name, conf_text)| Request::ImportWireGuard { name, conf_text }),
-        (net(), text(), any::<bool>()).prop_map(|(network, device_name, exit)| {
-            Request::ExportWireGuard {
+        (net(), text(), proptest::collection::vec(text(), 0..3)).prop_map(
+            |(network, device_name, tags)| Request::ExportWireGuard {
                 network,
                 device_name,
-                exit,
+                tags,
             }
-        }),
+        ),
         Just(Request::Watch),
     ]
 }
@@ -155,15 +156,23 @@ fn status() -> impl Strategy<Value = Status> {
     (
         proptest::option::of(node()),
         proptest::collection::vec(
-            (net(), text(), any::<u32>(), any::<u32>(), any::<u32>()).prop_map(
-                |(id, name, peers_online, peers_total, relays)| NetworkSummary {
-                    id,
-                    name,
-                    peers_online,
-                    peers_total,
-                    relays,
-                },
-            ),
+            (
+                (net(), text(), any::<u32>(), any::<u32>(), any::<u32>()),
+                proptest::collection::vec(
+                    (text(), text()).prop_map(|(what, fix)| Problem { what, fix }),
+                    0..2,
+                ),
+            )
+                .prop_map(
+                    |((id, name, peers_online, peers_total, relays), problems)| NetworkSummary {
+                        id,
+                        name,
+                        peers_online,
+                        peers_total,
+                        relays,
+                        problems,
+                    },
+                ),
             0..3,
         ),
         any::<bool>(),
@@ -197,13 +206,13 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                 any::<u64>(),
                 any::<u64>(),
             ),
-            (any::<bool>(), text()),
+            (any::<bool>(), text(), proptest::option::of(text())),
         )
             .prop_map(
                 |(
                     (node, name, address, path),
                     (last_seen_secs, endpoint, rx_bytes, tx_bytes),
-                    (online, display_name),
+                    (online, display_name, gateway),
                 )| {
                     PeerInfo {
                         node,
@@ -217,6 +226,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                         tx_bytes,
                         online,
                         display_name,
+                        gateway,
                     }
                 },
             ),
@@ -250,7 +260,14 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
         Just(Response::ExitGrantSet),
         proptest::collection::vec(text(), 0..3).prop_map(|notes| Response::ServerModeSet { notes }),
         net().prop_map(|network| Response::Imported { network }),
-        text().prop_map(|conf_text| Response::WireGuardConfig { conf_text }),
+        (text(), text(), text(), proptest::option::of(text())).prop_map(
+            |(device, endpoint, mesh, everything)| Response::WireGuardConfig {
+                device,
+                endpoint,
+                mesh,
+                everything,
+            }
+        ),
         Just(Response::Watching),
         (code, text()).prop_map(|(code, message)| Response::Error { code, message }),
     ];

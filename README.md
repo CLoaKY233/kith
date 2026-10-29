@@ -11,7 +11,7 @@ kith is a WireGuard mesh VPN written in Rust. Devices join by invite link and ke
 - **Many networks at once.** Join several networks side by side, each with its own addresses, routes, policy and DNS, without them leaking into each other.
 - **Works on hostile networks.** When plain UDP is blocked or fingerprinted, kith falls back to obfuscated WireGuard and to QUIC or TLS on port 443.
 - **Small.** Built to fit routers: a single binary with a size budget under 5 MB.
-- **Plain WireGuard at the edges.** Import an existing wg-quick file, or export one for a device that cannot run kith.
+- **Phones with the WireGuard app.** A phone joins as a full member, with its own address, name and policy, through any kith device; scan a QR code and it is in. Existing wg-quick files import too.
 
 ## Quick start
 
@@ -36,9 +36,12 @@ kith exit off
 kith server --exit --relay
 kith relay advertise home vps vps.example.com:41642 --node vps   # admin, when the VPS is not one
 
-# Interoperate with plain WireGuard
+# Add a phone: scan a code in the WireGuard app (one for your devices, one for all traffic)
+kith wg export home phone --tag phone
+kith remove home phone                      # cut it off again
+
+# Use an existing WireGuard server as an exit
 kith wg import office ./wg0.conf
-kith wg export home phone > phone.conf
 ```
 
 Run `kith --help` or `kith <command> --help` for every option.

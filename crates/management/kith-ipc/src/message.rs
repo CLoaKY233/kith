@@ -124,12 +124,12 @@ pub enum Request {
     },
     /// Exports a WireGuard configuration for a device without kith.
     ExportWireGuard {
-        /// Network to export from.
+        /// The network to add the device to.
         network: NetworkId,
-        /// Name of the gateway device.
+        /// The name the device asks for.
         device_name: String,
-        /// Send all of the device's traffic through this one, not only mesh traffic.
-        exit: bool,
+        /// Its policy tags.
+        tags: Vec<String>,
     },
     /// Turns the connection into an [`Event`] stream.
     Watch,
@@ -220,8 +220,15 @@ pub enum Response {
     },
     /// Answers [`Request::ExportWireGuard`].
     WireGuardConfig {
-        /// The `wg-quick` configuration text.
-        conf_text: String,
+        /// The device's unique name in the network.
+        device: String,
+        /// Where the device connects to this one, as `host:port`.
+        endpoint: String,
+        /// A `wg-quick` config that sends only mesh traffic through kith.
+        mesh: String,
+        /// The same device's config that sends all its traffic through this one, when
+        /// this device is an exit.
+        everything: Option<String>,
     },
     /// Answers [`Request::Watch`]; events follow.
     Watching,
@@ -301,6 +308,17 @@ pub struct NetworkSummary {
     pub peers_total: u32,
     /// Relays advertised in the network.
     pub relays: u32,
+    /// What is wrong with the network's records now, each with how to fix it.
+    pub problems: Vec<Problem>,
+}
+
+/// Something wrong in a network, such as a phone that lost its address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Problem {
+    /// What is wrong.
+    pub what: String,
+    /// How to fix it.
+    pub fix: String,
 }
 
 /// One peer in [`Response::Peers`].
@@ -325,11 +343,14 @@ pub struct PeerInfo {
     pub rx_bytes: u64,
     /// Bytes sent to the peer.
     pub tx_bytes: u64,
-    /// Whether the peer is reachable now: a live control connection, or a WireGuard
-    /// handshake within the session lifetime. Everything that shows liveness uses this.
+    /// Whether the peer is reachable now: something authenticated arrived from it
+    /// recently (for a phone, at its gateway). Everything that shows liveness uses this.
     pub online: bool,
     /// The name the device asked for, when its unique `name` had to differ from it.
     pub display_name: String,
+    /// For a device on plain WireGuard, such as a phone, the unique name of the kith
+    /// device it connects through.
+    pub gateway: Option<String>,
 }
 
 /// How traffic reaches a peer.

@@ -19,7 +19,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 use tracing::{debug, warn};
 
 use crate::connection::{self, Command, Peer, shared_networks};
-use crate::message::{FrameReader, Message, write_message};
+use crate::message::{FrameReader, Message, Presence, write_message};
 use crate::{ChannelError, ChannelHandler};
 
 pub(crate) const ALPN: &[u8] = b"kith-control/1";
@@ -34,12 +34,23 @@ const MAX_INBOUND: usize = 1024;
 
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
+/// The latest frame of each kind of gossip, per network.
+type GossipFrames = BTreeMap<(NetworkId, Topic), Arc<[u8]>>;
+
+/// A kind of gossip; each network keeps the latest of each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Topic {
+    Endpoints,
+    Presence,
+}
+
 pub(crate) struct Hub<H> {
     pub(crate) handler: Arc<H>,
     identity: SigningKey,
     acceptor: TlsAcceptor,
     connections: Mutex<BTreeMap<u64, Registered>>,
-    endpoints: Mutex<BTreeMap<NetworkId, Arc<[u8]>>>,
+    /// The latest gossip of each kind per network, sent to members as they connect.
+    gossip: Mutex<GossipFrames>,
     next_id: AtomicU64,
 }
 
@@ -77,8 +88,24 @@ impl<H> Hub<H> {
         }
     }
 
-    pub(crate) fn latest_endpoints(&self, network: NetworkId) -> Option<Arc<[u8]>> {
-        lock(&self.endpoints).get(&network).cloned()
+    pub(crate) fn latest_gossip(&self, network: NetworkId) -> Vec<Arc<[u8]>> {
+        lock(&self.gossip)
+            .iter()
+            .filter(|((id, _), _)| *id == network)
+            .map(|(_, frame)| Arc::clone(frame))
+            .collect()
+    }
+
+    fn gossip(
+        &self,
+        network: NetworkId,
+        topic: Topic,
+        message: &Message,
+    ) -> Result<(), ChannelError> {
+        let frame: Arc<[u8]> = message.to_frame()?.into();
+        lock(&self.gossip).insert((network, topic), Arc::clone(&frame));
+        self.broadcast(&Command::Gossip(network, frame), None);
+        Ok(())
     }
 
     async fn dial(
@@ -134,7 +161,7 @@ impl<H: ChannelHandler> Channel<H> {
                 identity: SigningKey::from_seed(&identity.to_seed()),
                 acceptor,
                 connections: Mutex::new(BTreeMap::new()),
-                endpoints: Mutex::new(BTreeMap::new()),
+                gossip: Mutex::new(BTreeMap::new()),
                 next_id: AtomicU64::new(0),
             }),
         })
@@ -151,11 +178,25 @@ impl<H: ChannelHandler> Channel<H> {
         network: NetworkId,
         entries: Vec<(NodeId, Vec<SocketAddr>)>,
     ) -> Result<(), ChannelError> {
-        let frame: Arc<[u8]> = Message::Endpoints { network, entries }.to_frame()?.into();
-        lock(&self.hub.endpoints).insert(network, Arc::clone(&frame));
-        self.hub
-            .broadcast(&Command::Endpoints(network, frame), None);
-        Ok(())
+        self.hub.gossip(
+            network,
+            Topic::Endpoints,
+            &Message::Endpoints { network, entries },
+        )
+    }
+
+    /// Gossips which of the plain WireGuard members this node is the gateway for are
+    /// online, now and as members connect, until replaced.
+    pub fn send_presence(
+        &self,
+        network: NetworkId,
+        entries: Vec<(NodeId, Presence)>,
+    ) -> Result<(), ChannelError> {
+        self.hub.gossip(
+            network,
+            Topic::Presence,
+            &Message::Presence { network, entries },
+        )
     }
 
     /// Connected members and the address of each connection.
@@ -301,7 +342,8 @@ impl ChannelClient {
             Message::Hello { .. }
             | Message::JoinRequest { .. }
             | Message::Sync { .. }
-            | Message::Endpoints { .. } => return Err(ChannelError::UnexpectedMessage),
+            | Message::Endpoints { .. }
+            | Message::Presence { .. } => return Err(ChannelError::UnexpectedMessage),
         };
         let mut ledger = Ledger::new(SignedOp::from_bytes(&genesis)?)?;
         if ledger.network_id() != network {
@@ -319,7 +361,7 @@ impl ChannelClient {
                         write_message(&mut stream, &Message::Sync { network, bytes }).await?;
                     }
                 }
-                Message::Hello { .. } | Message::Endpoints { .. } => {}
+                Message::Hello { .. } | Message::Endpoints { .. } | Message::Presence { .. } => {}
                 Message::Sync { .. }
                 | Message::JoinRequest { .. }
                 | Message::JoinAccepted { .. }

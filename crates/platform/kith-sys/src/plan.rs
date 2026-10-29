@@ -77,9 +77,6 @@ pub struct Dns {
 /// Source NAT for forwarded mesh traffic.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Nat {
-    /// Mesh source ranges to masquerade out of the default route, to the internet.
+    /// Mesh source ranges to masquerade.
     pub sources: Vec<IpPrefix>,
-    /// Source ranges outside the mesh, such as phones on a WireGuard gateway, to
-    /// masquerade as this device when they leave through the tunnel into the mesh.
-    pub into_tunnel: Vec<IpPrefix>,
 }

@@ -23,7 +23,7 @@ mod tests;
 
 pub use api::{
     Dataplane, DataplaneConfig, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event,
-    ExternalInterface, ExternalPeer, ExternalPeerStats, PeerSpec, PeerStats, Stats,
+    ExternalInterface, ExternalMember, ExternalPeer, ExternalPeerStats, PeerSpec, PeerStats, Stats,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use memory_tun::MemoryTun;

@@ -16,12 +16,13 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::channel::ALPN;
 use crate::message::{FrameReader, Message};
-use crate::{Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer};
+use crate::{Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer, Presence};
 
 const NOW: u64 = 1_000_000;
 const HOUR: u64 = 3_600_000;
 
 type Gossip = (NetworkId, NodeId, Vec<(NodeId, Vec<SocketAddr>)>);
+type Seen = (NetworkId, NodeId, Vec<(NodeId, Presence)>);
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_seed(&[seed; 32])
@@ -31,6 +32,7 @@ struct Node {
     key: SigningKey,
     ledgers: Mutex<BTreeMap<NetworkId, Ledger>>,
     gossip: Mutex<Vec<Gossip>>,
+    presence: Mutex<Vec<Seen>>,
     joins: AtomicUsize,
 }
 
@@ -45,6 +47,7 @@ impl Node {
                     .collect(),
             ),
             gossip: Mutex::new(Vec::new()),
+            presence: Mutex::new(Vec::new()),
             joins: AtomicUsize::new(0),
         })
     }
@@ -104,6 +107,10 @@ impl ChannelHandler for Node {
         entries: Vec<(NodeId, Vec<SocketAddr>)>,
     ) {
         self.gossip.lock().unwrap().push((network, from, entries));
+    }
+
+    fn on_presence(&self, network: NetworkId, from: NodeId, entries: Vec<(NodeId, Presence)>) {
+        self.presence.lock().unwrap().push((network, from, entries));
     }
 
     fn on_ledger_changed(&self, _network: NetworkId) {}
@@ -289,6 +296,26 @@ async fn gossip_reaches_members_including_ones_that_connect_later() {
     server_channel
         .send_endpoints(network, from_server.clone())
         .unwrap();
+    let phone = Presence {
+        online: true,
+        last_seen: 1_700_000_000,
+    };
+    let present = vec![(key(9).node_id(), phone)];
+    server_channel
+        .send_presence(
+            network,
+            vec![(
+                key(9).node_id(),
+                Presence {
+                    online: false,
+                    last_seen: 0,
+                },
+            )],
+        )
+        .unwrap();
+    server_channel
+        .send_presence(network, present.clone())
+        .unwrap();
 
     let client_channel = Channel::new(&client_node.key, Arc::clone(&client_node)).unwrap();
     let _client = ChannelClient::connect(&client_channel, server.local_addr(), server_node.id())
@@ -298,6 +325,12 @@ async fn gossip_reaches_members_including_ones_that_connect_later() {
     eventually(
         "gossip from before the connection reaches the client",
         || client_node.gossip() == expected,
+    )
+    .await;
+    let seen = vec![(network, server_node.id(), present)];
+    eventually(
+        "only the latest presence reaches a member that connects later",
+        || *client_node.presence.lock().unwrap() == seen,
     )
     .await;
 

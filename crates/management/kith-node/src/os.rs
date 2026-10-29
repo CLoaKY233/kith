@@ -59,8 +59,6 @@ pub(crate) struct PlanInputs {
     pub(crate) serve_exit: bool,
     /// Extra routes, such as imported WireGuard exits.
     pub(crate) extra_routes: Vec<IpPrefix>,
-    /// Addresses of standard WireGuard clients, such as phones, served by this device.
-    pub(crate) gateway: Option<IpPrefix>,
 }
 
 /// Applies the OS plan derived from the network maps and reverts it on shutdown.
@@ -109,7 +107,6 @@ impl OsPlanner {
             }
         }
         routes.extend(mesh.iter().copied());
-        routes.extend(inputs.gateway);
         let exit_node = inputs.exit.map(|_| ExitNode {
             peer_endpoints: inputs.exit_endpoints.clone(),
         });
@@ -117,13 +114,8 @@ impl OsPlanner {
             all: dns.all || exit_node.is_some(),
             ..dns
         });
-        let nat = (inputs.serve_exit || inputs.gateway.is_some()).then(|| Nat {
-            sources: if inputs.serve_exit {
-                mesh.into_iter().chain(inputs.gateway).collect()
-            } else {
-                Vec::new()
-            },
-            into_tunnel: inputs.gateway.into_iter().collect(),
+        let nat = inputs.serve_exit.then(|| Nat {
+            sources: mesh.into_iter().collect(),
         });
         let exit_network = inputs.exit.map(|(network, _)| network);
         let mut members: Vec<_> = maps.iter().filter(|(_, map)| map.is_member()).collect();
@@ -138,7 +130,7 @@ impl OsPlanner {
             routes: routes.into_iter().collect(),
             exit_node,
             dns,
-            forwarding: inputs.serve_exit || routes_local_subnets || inputs.gateway.is_some(),
+            forwarding: inputs.serve_exit || routes_local_subnets,
             nat,
             sources,
         })
@@ -198,49 +190,5 @@ impl OsPlanner {
             self.sys.revert(&plan)?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use kith_control::Networks;
-    use kith_sys::{Interface, NoopSystem, Platform};
-    use kith_types::IpPrefix;
-
-    use super::{DynSystem, OsPlanner, PlanInputs};
-
-    #[test]
-    fn a_gateway_routes_forwards_and_masquerades_its_clients() {
-        let planner = OsPlanner::new(
-            DynSystem(Box::new(NoopSystem)),
-            Platform::Linux,
-            Interface::new("kith0").unwrap(),
-            &std::env::temp_dir(),
-        );
-        let range: IpPrefix = "10.225.0.0/24".parse().unwrap();
-        let none = planner
-            .plan(&Networks::new(), &PlanInputs::default())
-            .unwrap();
-        assert!(none.nat.is_none() && !none.forwarding && none.routes.is_empty());
-
-        let inputs = PlanInputs {
-            gateway: Some(range),
-            ..PlanInputs::default()
-        };
-        let gateway = planner.plan(&Networks::new(), &inputs).unwrap();
-        assert!(gateway.routes.contains(&range) && gateway.forwarding);
-        let nat = gateway.nat.unwrap();
-        assert_eq!(nat.into_tunnel, [range]);
-        assert!(
-            nat.sources.is_empty(),
-            "no exit, so nothing goes to the internet"
-        );
-
-        let exit = PlanInputs {
-            serve_exit: true,
-            ..inputs
-        };
-        let nat = planner.plan(&Networks::new(), &exit).unwrap().nat.unwrap();
-        assert!(nat.sources.contains(&range), "clients use the exit too");
     }
 }

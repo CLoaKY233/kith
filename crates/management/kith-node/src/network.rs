@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use kith_control::{NetMap, NetMapDiff, Networks, build_netmap, records};
 use kith_identity::{Bootstrap, DeviceIdentity, InviteToken};
 use kith_ledger::{JoinProof, Ledger, NetworkParams, OpBody, SignedOp};
-use kith_policy::Policy;
+use kith_policy::{Addresses, Policy};
 use kith_types::{Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, Timestamp};
 
 use crate::types::NodeError;
@@ -165,6 +165,44 @@ impl NetworkRuntime {
         self.with_ledger(|ledger| {
             let op = ledger
                 .draft(author, OpBody::RemoveDevice { device }, now)
+                .sign(identity.signing_key())?;
+            ledger.insert(op)?;
+            Ok(())
+        })?
+    }
+
+    /// The addresses a plain WireGuard device with public `key` would be given now.
+    pub(crate) fn client_addresses(&self, key: &[u8; 32]) -> Result<Addresses, NodeError> {
+        self.with_ledger(|ledger| {
+            Ok(kith_control::addresses_for_newcomer(
+                ledger.view(),
+                kith_ledger::client_id(key),
+            )?)
+        })?
+    }
+
+    /// Signs and inserts an `AddClient` op admitting a plain WireGuard device with public
+    /// `key` through `identity`'s device, at `addresses` (from [`client_addresses`](Self::client_addresses)).
+    pub(crate) fn add_client(
+        &mut self,
+        identity: &DeviceIdentity,
+        key: [u8; 32],
+        (name, tags): (String, Vec<String>),
+        addresses: Addresses,
+        now: Timestamp,
+    ) -> Result<(), NodeError> {
+        let author = identity.node_id();
+        self.with_ledger(|ledger| {
+            let body = OpBody::AddClient {
+                key,
+                gateway: author,
+                name,
+                tags,
+                v4: addresses.v4,
+                v6: addresses.v6,
+            };
+            let op = ledger
+                .draft(author, body, now)
                 .sign(identity.signing_key())?;
             ledger.insert(op)?;
             Ok(())

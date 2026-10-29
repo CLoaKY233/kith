@@ -14,8 +14,8 @@ use kith_types::{NodeId, OpId, Timestamp};
 
 use crate::limits::MAX_ADMINS;
 use crate::op::Kind;
-use crate::view::{Device, Invite, NetworkView};
-use crate::{OpBody, SignedOp};
+use crate::view::{Device, Invite, NetworkView, Via};
+use crate::{OpBody, SignedOp, client_id};
 
 /// A set of op indices, as a bitmap: `n` ops take `n / 8` bytes.
 struct OpSet(Vec<u64>);
@@ -169,6 +169,7 @@ impl Authority {
             | OpBody::CreateInvite { .. }
             | OpBody::RevokeInvite { .. }
             | OpBody::SetRecord { .. }
+            | OpBody::AddClient { .. }
             | OpBody::Join(_) => return None,
         }
         Some(next)
@@ -275,6 +276,7 @@ impl Chain {
                 | OpBody::CreateInvite { .. }
                 | OpBody::RevokeInvite { .. }
                 | OpBody::SetRecord { .. }
+                | OpBody::AddClient { .. }
                 | OpBody::Join(_) => None,
             })
             .collect();
@@ -379,6 +381,9 @@ impl<'a> StageB<'a> {
                 OpBody::AddDevice { device, .. } => {
                     self.adds.entry(*device).or_default().push(index);
                 }
+                OpBody::AddClient { key, .. } => {
+                    self.adds.entry(client_id(key)).or_default().push(index);
+                }
                 OpBody::RemoveDevice { device } => self
                     .device_removals
                     .entry(*device)
@@ -470,14 +475,32 @@ impl<'a> StageB<'a> {
             let Some((add, op)) = admitting.and_then(|add| Some((add, graph.get(add)?))) else {
                 continue;
             };
-            let (name, tags) = match &op.op().body {
-                OpBody::Genesis { founder_name, .. } => (founder_name.clone(), Vec::new()),
-                OpBody::AddDevice { name, tags, .. } => (name.clone(), tags.clone()),
+            let (name, tags, via) = match &op.op().body {
+                OpBody::Genesis { founder_name, .. } => (founder_name.clone(), Vec::new(), None),
+                OpBody::AddDevice { name, tags, .. } => (name.clone(), tags.clone(), None),
+                OpBody::AddClient {
+                    key,
+                    gateway,
+                    name,
+                    tags,
+                    v4,
+                    v6,
+                } => (
+                    name.clone(),
+                    tags.clone(),
+                    Some(Via {
+                        gateway: *gateway,
+                        key: *key,
+                        v4: *v4,
+                        v6: *v6,
+                    }),
+                ),
                 OpBody::Join(proof) => (
                     proof.name.clone(),
                     self.joined_tags
                         .get(&add)
                         .map_or_else(Vec::new, |tags| tags.to_vec()),
+                    None,
                 ),
                 OpBody::AddAdmin { .. }
                 | OpBody::RemoveAdmin { .. }
@@ -494,6 +517,7 @@ impl<'a> StageB<'a> {
                     tags,
                     admitted_by: op.id(),
                     admitted_at_lamport: op.op().lamport,
+                    via,
                 },
             );
         }

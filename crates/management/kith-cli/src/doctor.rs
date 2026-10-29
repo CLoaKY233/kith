@@ -45,6 +45,15 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
             Some("kith create <name>, or kith join <link>"),
         ));
     }
+    for network in &status.networks {
+        for problem in &network.problems {
+            found.push(Finding {
+                level: Level::Warn,
+                what: format!("{}: {}", network.name, problem.what),
+                fix: Some(problem.fix.clone()),
+            });
+        }
+    }
     for (network, peers) in status.networks.iter().zip(peers) {
         if peers.is_empty() {
             found.push(finding(
@@ -54,7 +63,7 @@ pub(crate) fn diagnose(status: &Status, peers: &[Vec<PeerInfo>]) -> Vec<Finding>
             ));
         }
         for peer in peers {
-            found.push(check_peer(network, peer));
+            found.push(check_peer(network, peer, peers));
         }
     }
     if let Some(exit) = &status.exit_node {
@@ -146,30 +155,43 @@ fn drop_finding(reason: &str, count: u64) -> Finding {
     finding(level, format!("{count} packets {what} ({reason})"), fix)
 }
 
-fn check_peer(network: &NetworkSummary, peer: &PeerInfo) -> Finding {
+fn check_peer(network: &NetworkSummary, peer: &PeerInfo, peers: &[PeerInfo]) -> Finding {
     let reason = peer.path_reason.as_deref().unwrap_or("no path information");
     let name = format!("{}/{}", network.name, peer.name);
+    let remove = format!(
+        "if it is gone for good, `kith remove {} {}`",
+        shell_word(&network.name),
+        shell_word(&peer.name)
+    );
+    if !peer.online {
+        let seen = match peer.last_seen_secs {
+            Some(secs) => format!("last seen {} ago", ago(secs)),
+            None => "never connected".to_owned(),
+        };
+        let fix = match &peer.gateway {
+            Some(gateway) if peers.iter().any(|p| &p.name == gateway && !p.online) => format!(
+                "it connects through {gateway}, which is offline too; start kith there first"
+            ),
+            Some(gateway) => format!(
+                "turn its tunnel on in the WireGuard app and check it has internet; it connects through {gateway}; {remove}"
+            ),
+            None if network.relays > 0 => format!(
+                "make sure kith is running on it and it has internet; it falls back to the relay when direct UDP is blocked; {remove}"
+            ),
+            None => format!(
+                "make sure kith is running on it and it has internet; behind a strict firewall it also needs a relay (`kith server --relay` on a public host); {remove}"
+            ),
+        };
+        return Finding {
+            level: Level::Warn,
+            what: format!("{name} is offline: {seen}"),
+            fix: Some(fix),
+        };
+    }
+    if let Some(gateway) = &peer.gateway {
+        return finding(Level::Ok, format!("{name}: through {gateway}"), None);
+    }
     match peer.path {
-        _ if !peer.online => {
-            let seen = match peer.last_seen_secs {
-                Some(secs) => format!("has not been seen for {}", ago(secs)),
-                None => "has never connected".to_owned(),
-            };
-            let cause = if network.relays > 0 {
-                "a relay is available, so a firewall is not what stops it"
-            } else {
-                "if it is behind a strict firewall, add a relay: `kith server --relay` on a public host"
-            };
-            Finding {
-                level: Level::Warn,
-                what: format!("{name} is offline: it {seen}"),
-                fix: Some(format!(
-                    "make sure kith runs on it ({cause}); if it is gone for good, `kith remove {} {}`",
-                    shell_word(&network.name),
-                    shell_word(&peer.name)
-                )),
-            }
-        }
         Some(PathKind::Direct) => finding(Level::Ok, format!("{name}: {reason}"), None),
         None => finding(Level::Info, format!("{name} is connecting: {reason}"), None),
         Some(_) => finding(

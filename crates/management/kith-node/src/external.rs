@@ -1,39 +1,42 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use kith_config::{Endpoint, WgPublicKey, WgQuickConfig};
 use kith_crypto::{AgreementSecret, Context, Hash};
 use kith_dataplane::{ExternalInterface, ExternalPeer};
+use kith_policy::Addresses;
 use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NetworkId};
 
-use crate::network::NetworkRuntime;
-use crate::state::{StateDir, corrupt_value, decode_varint, encode_varint};
+use crate::state::{StateDir, corrupt_value, decode_varint};
 use crate::types::NodeError;
 
 const GATEWAY_NAME: &str = "kith-gateway";
-const GATEWAY_RANGE: (Ipv4Addr, u8) = (Ipv4Addr::new(10, 225, 0, 0), 24);
 const MAX_IMPORT_NAME: usize = 64;
 const IMPORT_CONTEXT: Context = Context::new("kith-node external import network id v1");
 
-/// Standard WireGuard peers outside the mesh: imported exits and exported gateway clients.
+/// Standard WireGuard peers: imported exits, and the key plain WireGuard members, such as
+/// phones, connect to when this device is their gateway.
 #[derive(Debug, Default)]
 pub(crate) struct ExternalPeers {
     imported: BTreeMap<String, ExternalInterface>,
-    gateway: Option<Gateway>,
+    gateway: Option<AgreementSecret>,
 }
 
-#[derive(Debug)]
-struct Gateway {
-    secret: AgreementSecret,
-    range: Ipv4Prefix,
-    clients: BTreeMap<String, Client>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Client {
-    public_key: [u8; 32],
-    address: Ipv4Addr,
+/// What a plain WireGuard member's config holds.
+pub(crate) struct ClientConfig<'a> {
+    /// The member's private key. It is only ever written into the config.
+    pub(crate) secret: &'a AgreementSecret,
+    /// Its fixed mesh addresses.
+    pub(crate) addresses: Addresses,
+    /// The mesh DNS resolver.
+    pub(crate) dns: IpAddr,
+    /// The gateway's WireGuard public key.
+    pub(crate) gateway: [u8; 32],
+    /// Where the gateway is reached, as `host:port`.
+    pub(crate) endpoint: &'a str,
+    /// What the member sends through the gateway.
+    pub(crate) allowed_ips: &'a [IpPrefix],
 }
 
 impl ExternalPeers {
@@ -43,7 +46,7 @@ impl ExternalPeers {
             imported: BTreeMap::new(),
             gateway: state
                 .load_gateway()?
-                .map(|b| Gateway::decode(&b))
+                .map(|bytes| load_gateway_key(state, &bytes))
                 .transpose()?,
         };
         for (name, bytes) in state.load_imports()? {
@@ -97,6 +100,7 @@ impl ExternalPeers {
                 endpoint,
                 allowed_ips: peer.allowed_ips.clone(),
                 persistent_keepalive: peer.persistent_keepalive,
+                member: None,
             });
         }
         let addresses = config
@@ -116,94 +120,31 @@ impl ExternalPeers {
         Ok(network)
     }
 
-    /// Renders a wg-quick file for a gateway client of `runtime`'s network reached at `endpoint`, persisting the client.
-    pub(crate) fn export(
-        &mut self,
-        state: &StateDir,
-        runtime: &NetworkRuntime,
-        device_name: &str,
-        endpoint: &str,
-        exit: bool,
-    ) -> Result<String, NodeError> {
-        if device_name.is_empty() {
-            return Err(NodeError::InvalidArgument("empty device name".into()));
+    /// The gateway's public key, creating and saving the key on first use.
+    pub(crate) fn gateway_public_key(&mut self, state: &StateDir) -> Result<[u8; 32], NodeError> {
+        if let Some(secret) = &self.gateway {
+            return Ok(secret.public_key().to_bytes());
         }
-        if endpoint.contains(['\n', '\r']) {
-            return Err(NodeError::InvalidArgument("invalid endpoint".into()));
-        }
-        let gateway = match &mut self.gateway {
-            Some(gateway) => gateway,
-            None => self.gateway.insert(Gateway::new()?),
-        };
         let secret = AgreementSecret::generate().map_err(random_failed)?;
-        let address = gateway.allocate(device_name)?;
-        let previous = gateway.clients.insert(
-            device_name.to_owned(),
-            Client {
-                public_key: secret.public_key().to_bytes(),
-                address,
-            },
-        );
-        if let Err(error) = state.save_gateway(&gateway.encode()) {
-            match previous {
-                Some(client) => gateway.clients.insert(device_name.to_owned(), client),
-                None => gateway.clients.remove(device_name),
-            };
-            return Err(error);
-        }
-        let map = runtime.netmap();
-        let dns = map
-            .resolver()
-            .into_iter()
-            .filter(IpAddr::is_ipv4)
-            .map(|ip| ip.to_string())
-            .collect::<Vec<_>>();
-        let mut out = String::new();
-        let private = WgPublicKey(*secret.to_bytes());
-        let server = WgPublicKey(gateway.secret.public_key().to_bytes());
-        let render = (|| {
-            writeln!(out, "[Interface]")?;
-            writeln!(out, "PrivateKey = {private}")?;
-            writeln!(out, "Address = {address}/32")?;
-            if !dns.is_empty() {
-                writeln!(out, "DNS = {}", dns.join(", "))?;
-            }
-            writeln!(out)?;
-            writeln!(out, "[Peer]")?;
-            writeln!(out, "PublicKey = {server}")?;
-            writeln!(out, "Endpoint = {endpoint}")?;
-            if exit {
-                writeln!(out, "AllowedIPs = 0.0.0.0/0, ::/0")?;
-            } else {
-                writeln!(
-                    out,
-                    "AllowedIPs = {}, {}",
-                    IpPrefix::V4(map.ipv4_range()),
-                    IpPrefix::V4(gateway.range)
-                )?;
-            }
-            writeln!(out, "PersistentKeepalive = 25")
-        })();
-        render.map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
-        Ok(out)
+        state.save_gateway(secret.to_bytes().as_slice())?;
+        let public = secret.public_key().to_bytes();
+        self.gateway = Some(secret);
+        Ok(public)
     }
 
-    /// Dataplane external interfaces for every import and the gateway's exported clients.
-    pub(crate) fn interfaces(&self) -> Result<Vec<ExternalInterface>, NodeError> {
+    /// Dataplane external interfaces for every import, and for the gateway when it has
+    /// `clients`.
+    pub(crate) fn interfaces(&self, clients: Vec<ExternalPeer>) -> Vec<ExternalInterface> {
         let mut interfaces = self.imported.values().cloned().collect::<Vec<_>>();
-        if let Some(gateway) = &self.gateway {
-            interfaces.push(gateway.interface()?);
+        if let Some(secret) = self.gateway.as_ref().filter(|_| !clients.is_empty()) {
+            interfaces.push(ExternalInterface {
+                name: GATEWAY_NAME.to_owned(),
+                private_key: *secret.to_bytes(),
+                addresses: Vec::new(),
+                peers: clients,
+            });
         }
-        Ok(interfaces)
-    }
-
-    /// The addresses of exported clients, once there is one: the OS must route them
-    /// into the tunnel and masquerade what they send.
-    pub(crate) fn gateway_range(&self) -> Option<IpPrefix> {
-        self.gateway
-            .as_ref()
-            .filter(|gateway| !gateway.clients.is_empty())
-            .map(|gateway| IpPrefix::V4(gateway.range))
+        interfaces
     }
 
     /// Routes the OS must send into the tunnel for imported exits.
@@ -220,89 +161,64 @@ impl ExternalPeers {
     }
 }
 
-impl Gateway {
-    fn new() -> Result<Self, NodeError> {
-        Ok(Self {
-            secret: AgreementSecret::generate().map_err(random_failed)?,
-            range: Ipv4Prefix::new(GATEWAY_RANGE.0, GATEWAY_RANGE.1)
-                .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
-            clients: BTreeMap::new(),
-        })
+/// The saved gateway key. An older kith saved its exported devices after the key, outside
+/// the ledger; they cannot be kept, since devices now need fixed addresses every member
+/// agrees on, so they are named in the log and dropped from the file.
+fn load_gateway_key(state: &StateDir, bytes: &[u8]) -> Result<AgreementSecret, NodeError> {
+    let Some((secret, rest)) = bytes.split_first_chunk::<32>() else {
+        return Err(corrupt_value("external/@gateway", "invalid gateway state"));
+    };
+    if !rest.is_empty() {
+        let names = old_device_names(rest);
+        tracing::warn!(
+            devices = %names.join(", "),
+            "devices added by an older kith with `kith wg export` no longer connect; add each again with `kith wg export`"
+        );
+        state.save_gateway(secret)?;
     }
+    Ok(AgreementSecret::from_bytes(*secret))
+}
 
-    fn encode(&self) -> Vec<u8> {
-        let mut out = self.secret.to_bytes().to_vec();
-        for (name, client) in &self.clients {
-            encode_varint(&mut out, name.len());
-            out.extend_from_slice(name.as_bytes());
-            out.extend_from_slice(&client.public_key);
-            out.extend_from_slice(&client.address.octets());
-        }
-        out
+/// The names in an older kith's list of exported devices: each a length, the name, a
+/// 32-byte key and a 4-byte address.
+fn old_device_names(mut rest: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    while let Some(len) = decode_varint(&mut rest) {
+        let Some((name, tail)) = rest.split_at_checked(len) else {
+            break;
+        };
+        names.push(String::from_utf8_lossy(name).into_owned());
+        rest = tail.get(36..).unwrap_or_default();
     }
+    names
+}
 
-    fn decode(bytes: &[u8]) -> Result<Self, NodeError> {
-        let invalid = || corrupt_value("external/@gateway", "invalid gateway state");
-        let (secret, mut rest) = bytes.split_first_chunk::<32>().ok_or_else(invalid)?;
-        let mut gateway = Self::new()?;
-        gateway.secret = AgreementSecret::from_bytes(*secret);
-        while !rest.is_empty() {
-            let len = decode_varint(&mut rest).ok_or_else(invalid)?;
-            let (name, tail) = rest.split_at_checked(len).ok_or_else(invalid)?;
-            let (public_key, tail) = tail.split_first_chunk::<32>().ok_or_else(invalid)?;
-            let (address, tail) = tail.split_first_chunk::<4>().ok_or_else(invalid)?;
-            let name = core::str::from_utf8(name).map_err(|_| invalid())?;
-            gateway.clients.insert(
-                name.to_owned(),
-                Client {
-                    public_key: *public_key,
-                    address: Ipv4Addr::from(*address),
-                },
-            );
-            rest = tail;
-        }
-        Ok(gateway)
-    }
-
-    fn own_address(&self) -> Ipv4Addr {
-        Ipv4Addr::from(u32::from(self.range.addr()) | 1)
-    }
-
-    fn allocate(&self, device_name: &str) -> Result<Ipv4Addr, NodeError> {
-        if let Some(client) = self.clients.get(device_name) {
-            return Ok(client.address);
-        }
-        let base = u32::from(self.range.addr());
-        let size = 1_u32
-            .checked_shl(u32::from(Ipv4Prefix::WIDTH - self.range.prefix_len()))
-            .unwrap_or(0);
-        (2..size.saturating_sub(1))
-            .map(|offset| Ipv4Addr::from(base | offset))
-            .find(|candidate| self.clients.values().all(|c| c.address != *candidate))
-            .ok_or_else(|| NodeError::InvalidArgument("gateway address range is full".into()))
-    }
-
-    fn interface(&self) -> Result<ExternalInterface, NodeError> {
-        let peers = self
-            .clients
-            .values()
-            .map(|client| {
-                Ok(ExternalPeer {
-                    public_key: client.public_key,
-                    preshared_key: None,
-                    endpoint: None,
-                    allowed_ips: vec![host_prefix(IpAddr::V4(client.address))?],
-                    persistent_keepalive: None,
-                })
-            })
-            .collect::<Result<Vec<_>, NodeError>>()?;
-        Ok(ExternalInterface {
-            name: GATEWAY_NAME.to_owned(),
-            private_key: *self.secret.to_bytes(),
-            addresses: vec![host_prefix(IpAddr::V4(self.own_address()))?],
-            peers,
-        })
-    }
+/// A wg-quick file for a plain WireGuard member.
+pub(crate) fn render_client(config: &ClientConfig<'_>) -> Result<String, NodeError> {
+    let mut out = String::new();
+    let render = (|| {
+        writeln!(out, "[Interface]")?;
+        writeln!(
+            out,
+            "PrivateKey = {}",
+            WgPublicKey(*config.secret.to_bytes())
+        )?;
+        writeln!(
+            out,
+            "Address = {}/32, {}/128",
+            config.addresses.v4, config.addresses.v6
+        )?;
+        writeln!(out, "DNS = {}", config.dns)?;
+        writeln!(out)?;
+        writeln!(out, "[Peer]")?;
+        writeln!(out, "PublicKey = {}", WgPublicKey(config.gateway))?;
+        writeln!(out, "Endpoint = {}", config.endpoint)?;
+        let allowed: Vec<String> = config.allowed_ips.iter().map(ToString::to_string).collect();
+        writeln!(out, "AllowedIPs = {}", allowed.join(", "))?;
+        writeln!(out, "PersistentKeepalive = 25")
+    })();
+    render.map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
+    Ok(out)
 }
 
 fn render_import(interface: &ExternalInterface) -> Result<String, NodeError> {
@@ -355,4 +271,36 @@ async fn resolve(endpoint: &Endpoint) -> Result<SocketAddr, NodeError> {
 
 fn random_failed(error: kith_crypto::RandomError) -> NodeError {
     NodeError::Io(std::io::Error::other(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_gateway_key, old_device_names};
+    use crate::state::{StateDir, encode_varint};
+
+    #[test]
+    fn an_older_gateway_file_keeps_its_key_and_names_the_devices_it_drops() {
+        let state = StateDir::in_memory();
+        let mut old = vec![7; 32];
+        for name in ["phone", "tablet"] {
+            encode_varint(&mut old, name.len());
+            old.extend_from_slice(name.as_bytes());
+            old.extend_from_slice(&[1; 36]);
+        }
+        assert_eq!(
+            old_device_names(old.get(32..).unwrap()),
+            ["phone", "tablet"]
+        );
+        let key = load_gateway_key(&state, &old).unwrap();
+        assert_eq!(*key.to_bytes(), [7; 32]);
+        assert_eq!(
+            state.load_gateway().unwrap().unwrap(),
+            vec![7; 32],
+            "the old list is gone"
+        );
+        assert!(
+            load_gateway_key(&state, &[7; 31]).is_err(),
+            "a short file is corrupt"
+        );
+    }
 }

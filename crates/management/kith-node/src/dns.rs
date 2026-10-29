@@ -117,7 +117,13 @@ fn suffix_of(map: &NetMap) -> Option<DomainName> {
 
 fn device_records(map: &NetMap, suffix: &DomainName) -> Vec<(DomainName, Record)> {
     let mut records = Vec::new();
-    for peer in map.peers().values().chain(map.local_device()) {
+    let clients = map.clients().values().map(|client| &client.peer);
+    for peer in map
+        .peers()
+        .values()
+        .chain(map.local_device())
+        .chain(clients)
+    {
         let Ok(name) = suffix.child(&peer.label) else {
             tracing::warn!(device = peer.label, "device name is not a DNS label");
             continue;

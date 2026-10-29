@@ -90,6 +90,22 @@ pub struct ExternalPeer {
     pub allowed_ips: Vec<IpPrefix>,
     /// Persistent keepalive interval in seconds.
     pub persistent_keepalive: Option<u16>,
+    /// Set when the peer is a member of a mesh network, such as a phone: its traffic is
+    /// routed to the mesh directly, and what reaches it passes this policy, since it has
+    /// no filter of its own. `None` for an imported exit, whose traffic goes to the TUN.
+    pub member: Option<ExternalMember>,
+}
+
+/// The network a plain WireGuard member belongs to and the policy guarding it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalMember {
+    /// The member's network.
+    pub network: NetworkId,
+    /// What may reach the member.
+    pub policy: CompiledFilter,
+    /// The network's DNS resolver on this device. The member has no resolver of its
+    /// own, so its queries there pass whatever the policy says about this device.
+    pub resolver: IpAddr,
 }
 
 impl core::fmt::Debug for ExternalPeer {
@@ -103,6 +119,7 @@ impl core::fmt::Debug for ExternalPeer {
             .field("endpoint", &self.endpoint)
             .field("allowed_ips", &self.allowed_ips)
             .field("persistent_keepalive", &self.persistent_keepalive)
+            .field("member", &self.member)
             .finish_non_exhaustive()
     }
 }

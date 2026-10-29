@@ -16,6 +16,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::net::{Ipv4Addr, Ipv6Addr};
 
 use kith_crypto::{Context, Hash, Signature, SigningKey, VerifyingKey};
 use kith_types::{Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, OpId, Timestamp};
@@ -125,6 +126,32 @@ pub enum OpBody {
     },
     /// Admits a device that redeemed an invite. The op's author is the sponsor.
     Join(JoinProof),
+    /// Admin op: admits a device that runs plain WireGuard instead of kith, such as a
+    /// phone. It is a member like any other, reached through `gateway`, and its id is
+    /// [`client_id`] of `key`. Remove it with [`RemoveDevice`](Self::RemoveDevice).
+    AddClient {
+        /// Its WireGuard (X25519) public key.
+        key: [u8; 32],
+        /// The kith device it connects to.
+        gateway: NodeId,
+        /// The device's name, at most [`MAX_NAME_LEN`] bytes.
+        name: String,
+        /// Sorted, unique tags; see [`MAX_TAGS`] and [`MAX_TAG_LEN`].
+        tags: Vec<String>,
+        /// Its IPv4 address, fixed for good: it is written into the device's config.
+        v4: Ipv4Addr,
+        /// Its IPv6 address, fixed for good.
+        v6: Ipv6Addr,
+    },
+}
+
+/// The hash context that turns a WireGuard key into a member id.
+const CLIENT_ID_CONTEXT: Context = Context::new("kith 2026-10 wireguard client id v1");
+
+/// The member id of a plain WireGuard device with public `key`. It is a hash, so it is
+/// never anyone's signing key and the device can never author an op.
+pub fn client_id(key: &[u8; 32]) -> NodeId {
+    NodeId::from_bytes(Hash::of(CLIENT_ID_CONTEXT, key).to_bytes())
 }
 
 /// The authorization group an op body belongs to.
@@ -147,7 +174,8 @@ impl OpBody {
             | Self::RemoveDevice { .. }
             | Self::CreateInvite { .. }
             | Self::RevokeInvite { .. }
-            | Self::SetRecord { .. } => Kind::Admin,
+            | Self::SetRecord { .. }
+            | Self::AddClient { .. } => Kind::Admin,
             Self::Join(_) => Kind::Join,
         }
     }
@@ -219,6 +247,21 @@ impl OpBody {
             Self::Join(proof) => {
                 let network = network.ok_or(LedgerError::MissingNetwork)?;
                 proof.verify(network)
+            }
+            Self::AddClient {
+                key,
+                gateway,
+                name,
+                tags,
+                v4: _,
+                v6: _,
+            } => {
+                if key.iter().all(|byte| *byte == 0) {
+                    return Err(LedgerError::BadClientKey);
+                }
+                check_key(*gateway)?;
+                check_name(name)?;
+                check_tags(tags)
             }
         }
     }

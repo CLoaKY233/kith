@@ -3,6 +3,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::net::{Ipv4Addr, Ipv6Addr};
 
 use kith_crypto::VerifyingKey;
 use kith_types::{NetworkId, NodeId, OpId, Timestamp};
@@ -21,6 +22,21 @@ pub struct Device {
     pub admitted_by: OpId,
     /// The lamport clock of `admitted_by`.
     pub admitted_at_lamport: u64,
+    /// For a plain WireGuard device, how it is reached; `None` for a kith device.
+    pub via: Option<Via>,
+}
+
+/// How a plain WireGuard device, such as a phone, is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Via {
+    /// The kith device it connects to.
+    pub gateway: NodeId,
+    /// Its WireGuard public key.
+    pub key: [u8; 32],
+    /// Its IPv4 address, fixed when it was added.
+    pub v4: Ipv4Addr,
+    /// Its IPv6 address, fixed when it was added.
+    pub v6: Ipv6Addr,
 }
 
 /// An invite that can still admit devices.

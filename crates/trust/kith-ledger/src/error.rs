@@ -108,4 +108,7 @@ pub enum LedgerError {
     /// The orphan buffer is full; the op was dropped. Fetch its ancestors first.
     #[error("orphan buffer full, limit is {max}", max = crate::MAX_ORPHANS)]
     OrphanBufferFull,
+    /// A WireGuard client's public key is all zeros.
+    #[error("invalid WireGuard client key")]
+    BadClientKey,
 }

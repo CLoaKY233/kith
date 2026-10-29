@@ -173,15 +173,17 @@ fn every_command_parses_into_the_right_request() {
             Ok(Request::ExportWireGuard {
                 network: NET,
                 device_name: "router".into(),
-                exit: false,
+                tags: Vec::new(),
             }),
         ),
         (
-            vec!["wg", "export", "--exit", "home", "phone"],
+            vec![
+                "wg", "export", "--tag", "phone", "--tag", "kids", "--text", "home", "Pixel",
+            ],
             Ok(Request::ExportWireGuard {
                 network: NET,
-                device_name: "phone".into(),
-                exit: true,
+                device_name: "Pixel".into(),
+                tags: vec!["phone".into(), "kids".into()],
             }),
         ),
         (vec!["frobnicate"], Err(())),
@@ -245,9 +247,13 @@ fn fake_status() -> Status {
         networks: vec![NetworkSummary {
             id: NET,
             name: "home".into(),
-            peers_online: 1,
-            peers_total: 2,
+            peers_online: 2,
+            peers_total: 3,
             relays: 1,
+            problems: vec![kith_ipc::Problem {
+                what: "tablet has no address".into(),
+                fix: "remove it and add it again".into(),
+            }],
         }],
         exit: false,
         relay: true,
@@ -279,6 +285,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             tx_bytes: 512,
             online: true,
             display_name: "NAS".into(),
+            gateway: None,
         },
         PeerInfo {
             node: phone,
@@ -292,6 +299,21 @@ fn fake_peers() -> Vec<PeerInfo> {
             tx_bytes: 0,
             online: false,
             display_name: "Phone \"old\"".into(),
+            gateway: None,
+        },
+        PeerInfo {
+            node: NodeId::from_bytes([0xdd; 32]),
+            name: "pixel".into(),
+            address: "100.64.0.4".into(),
+            path: None,
+            path_reason: None,
+            last_seen_secs: Some(12),
+            endpoint: Some("203.0.113.9:51820".into()),
+            rx_bytes: 2048,
+            tx_bytes: 4096,
+            online: true,
+            display_name: "Pixel".into(),
+            gateway: Some("nas".into()),
         },
     ]
 }
@@ -325,14 +347,16 @@ async fn status_renders_what_the_daemon_reports() {
         "device 12121212 (relay)\n\
          internet traffic goes through home/nas\n\
          \n\
-         network home (aaaaaaaa)  1/2 online\n  \
-         NAME   ADDRESS     PATH     ENDPOINT            LAST SEEN  RX       TX     NODE\n  \
-         nas    100.64.0.2  direct   198.51.100.7:41641  4s ago     1.1 MiB  512 B  bbbbbbbb\n  \
-         phone  100.64.0.3  offline  -                   never      0 B      0 B    cccccccc\n\
+         network home (aaaaaaaa)  2/3 online\n  \
+         NAME   ADDRESS     PATH     ENDPOINT            LAST SEEN  RX       TX       NODE\n  \
+         nas    100.64.0.2  direct   198.51.100.7:41641  4s ago     1.1 MiB  512 B    bbbbbbbb\n  \
+         phone  100.64.0.3  offline  -                   never      0 B      0 B      cccccccc\n  \
+         pixel  100.64.0.4  via nas  203.0.113.9:51820   12s ago    2.0 KiB  4.0 KiB  dddddddd\n\
          \n\
          notes (run `kith doctor` for fixes):\n  \
          100.100.100.100/32 via utun37 overlaps kith's addresses (another VPN?)\n  \
          2 packets dropped: policy\n  \
+         home: tablet has no address\n  \
          30s ago: control channel: connection refused\n"
     );
     assert_eq!(
@@ -344,30 +368,38 @@ async fn status_renders_what_the_daemon_reports() {
                 r#""route_conflicts":["100.100.100.100/32 via utun37"],"drops":{{"policy":2}},"#,
                 r#""warnings":[{{"secs_ago":30,"message":"control channel: connection refused"}}],"#,
                 r#""networks":[{{"id":"{net}","#,
-                r#""name":"home","peers_online":1,"peers_total":2,"relays":1,"peers":["#,
+                r#""name":"home","peers_online":2,"peers_total":3,"relays":1,"#,
+                r#""problems":[{{"what":"tablet has no address","fix":"remove it and add it again"}}],"peers":["#,
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
                 r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
                 r#""endpoint":"198.51.100.7:41641","last_seen_secs":4,"#,
-                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS"}},"#,
+                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null}},"#,
                 r#"{{"node":"{phone}","name":"phone","address":"100.64.0.3","#,
                 r#""path":null,"path_reason":null,"#,
                 r#""endpoint":null,"last_seen_secs":null,"#,
-                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\""}}]}}]}}"#,
+                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null}},"#,
+                r#"{{"node":"{pixel}","name":"pixel","address":"100.64.0.4","path":null,"#,
+                r#""path_reason":null,"endpoint":"203.0.113.9:51820","last_seen_secs":12,"#,
+                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas"}}]}}]}}"#,
                 "\n",
             ),
             me = NodeId::from_bytes([0x12; 32]),
             net = NET,
             nas = NODE,
             phone = phone,
+            pixel = NodeId::from_bytes([0xdd; 32]),
         )
     );
     assert_eq!(
         run_against(&path, &["doctor"]).await,
         "ok    daemon is running on port 41641\n\
+         warn  home: tablet has no address\n      \
+         fix: remove it and add it again\n\
          ok    home/nas: direct to 198.51.100.7:41641 (12 ms)\n\
-         warn  home/phone is offline: it has never connected\n      \
-         fix: make sure kith runs on it (a relay is available, so a firewall is not what stops it); \
-         if it is gone for good, `kith remove home phone`\n\
+         warn  home/phone is offline: never connected\n      \
+         fix: make sure kith is running on it and it has internet; it falls back to the relay \
+         when direct UDP is blocked; if it is gone for good, `kith remove home phone`\n\
+         ok    home/pixel: through nas\n\
          ok    exit node home/nas is reachable\n\
          warn  100.100.100.100/32 via utun37 overlaps kith's addresses; kith peers there are unreachable\n      \
          fix: quit the other VPN (often Tailscale) while using kith\n\
@@ -447,15 +479,12 @@ fn liveness_alone_decides_offline_and_the_hint_knows_about_relays() {
         .find(|f| f.what.starts_with("home/phone"))
         .unwrap();
     assert_eq!(phone.level, Level::Warn);
-    assert_eq!(
-        phone.what,
-        "home/phone is offline: it has not been seen for 6 min"
-    );
+    assert_eq!(phone.what, "home/phone is offline: last seen 6 min ago");
     assert!(
         phone
             .fix
             .as_deref()
-            .is_some_and(|fix| fix.contains("add a relay")),
+            .is_some_and(|fix| fix.contains("needs a relay") && !fix.contains("firewall is not")),
         "{phone:?}"
     );
 
@@ -471,10 +500,99 @@ fn liveness_alone_decides_offline_and_the_hint_knows_about_relays() {
     peers[1].online = true;
     peers[1].path = None;
     peers[1].path_reason = Some("waiting for a handshake".into());
-    let found = diagnose(&status, &[peers]);
+    let found = diagnose(&status, &[peers.clone()]);
     assert!(
         found.iter().any(|f| f.level == Level::Info
             && f.what == "home/phone is connecting: waiting for a handshake"),
         "{found:?}"
     );
+
+    let fix_for = |peers: &[PeerInfo]| {
+        diagnose(&status, &[peers.to_vec()])
+            .into_iter()
+            .find(|f| f.what.starts_with("home/pixel"))
+            .and_then(|f| f.fix)
+            .unwrap_or_default()
+    };
+    peers[2].online = false;
+    assert!(
+        fix_for(&peers).contains("WireGuard app"),
+        "{}",
+        fix_for(&peers)
+    );
+    peers[0].online = false;
+    assert!(
+        fix_for(&peers).contains("nas, which is offline too"),
+        "{}",
+        fix_for(&peers)
+    );
+}
+
+#[test]
+fn adding_a_phone_shows_a_code_per_tunnel_or_the_files() {
+    let export = |text| {
+        Cmd::Wg(crate::cli::WgCmd::Export {
+            tags: Vec::new(),
+            text,
+            network: "home".into(),
+            device_name: "Pixel".into(),
+        })
+    };
+    let configs = |everything: Option<&str>| Response::WireGuardConfig {
+        device: "pixel".into(),
+        endpoint: "vpn.example.com:41641".into(),
+        mesh: "[Interface]\nPrivateKey = mesh\n".into(),
+        everything: everything.map(Into::into),
+    };
+    let shown = |cmd: &Cmd, response| {
+        let mut out = Vec::new();
+        crate::render::response(&mut out, cmd, response).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+
+    let both = shown(
+        &export(false),
+        configs(Some("[Interface]\nPrivateKey = all\n")),
+    );
+    assert!(
+        both.starts_with("added pixel to home; it connects to vpn.example.com:41641\n\n"),
+        "{both}"
+    );
+    assert!(both.contains("kith: your devices only") && both.contains("kith-everything:"));
+    assert_eq!(both.matches("\x1b[30;107m").count() % 2, 0);
+    assert!(both.contains("kith remove home pixel") && !both.contains("PrivateKey"));
+
+    let mesh_only = shown(&export(false), configs(None));
+    assert!(!mesh_only.contains("kith-everything") && mesh_only.contains("kith server --exit"));
+
+    let files = shown(
+        &export(true),
+        configs(Some("[Interface]\nPrivateKey = all\n")),
+    );
+    assert_eq!(
+        files,
+        "# kith: your devices only; other internet stays direct\n[Interface]\nPrivateKey = mesh\n\n\
+         # kith-everything: all of its traffic goes through this device\n[Interface]\nPrivateKey = all\n\n"
+    );
+}
+
+#[test]
+fn a_phone_is_warned_when_its_server_has_only_a_nearby_address() {
+    use crate::render::only_nearby;
+    for nearby in [
+        "192.168.1.5:41641",
+        "10.0.0.2:41641",
+        "100.70.1.1:41641",
+        "[fd00::1]:41641",
+        "[fe80::1]:41641",
+    ] {
+        assert!(only_nearby(nearby), "{nearby}");
+    }
+    for anywhere in [
+        "3.110.233.43:41641",
+        "[2406:da1a::1]:41641",
+        "vpn.example.com:41641",
+    ] {
+        assert!(!only_nearby(anywhere), "{anywhere}");
+    }
 }

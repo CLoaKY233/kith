@@ -134,29 +134,16 @@ pub(crate) fn apply<S: System>(sys: &mut Sys<S>, plan: &Plan) -> Result<(), Erro
     if plan.forwarding {
         sys.enable_sysctls(&["net.inet.ip.forwarding", "net.inet6.ip6.forwarding"])?;
     }
-    if let Some(nat) = plan
-        .nat
-        .as_ref()
-        .filter(|n| !n.sources.is_empty() || !n.into_tunnel.is_empty())
-    {
-        let wan = if nat.sources.is_empty() {
-            None
-        } else {
-            Some(Interface::new(&default_route(sys, false)?.1)?)
-        };
-        let masquerade = |out: &Interface, src: &IpPrefix| {
+    if let Some(nat) = plan.nat.as_ref().filter(|n| !n.sources.is_empty()) {
+        let wan = Interface::new(&default_route(sys, false)?.1)?;
+        let rules = lines(nat.sources.iter().map(|src| {
             let family = if matches!(src, IpPrefix::V6(_)) {
                 "inet6"
             } else {
                 "inet"
             };
-            format!("nat on {out} {family} from {src} to any -> ({out})")
-        };
-        let rules = lines(
-            wan.iter()
-                .flat_map(|wan| nat.sources.iter().map(|src| masquerade(wan, src)))
-                .chain(nat.into_tunnel.iter().map(|src| masquerade(dev, src))),
-        );
+            format!("nat on {wan} {family} from {src} to any -> ({wan})")
+        }));
         sys.run(
             Cmd::new("pfctl")
                 .args(["-a", ANCHOR, "-f", "-"])

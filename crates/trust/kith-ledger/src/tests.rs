@@ -1129,3 +1129,72 @@ proptest! {
         let _ignored = SignedOp::from_bytes(&bytes);
     }
 }
+
+fn add_client(wg_key: u8, gateway: u8, name: &str) -> OpBody {
+    OpBody::AddClient {
+        key: [wg_key; 32],
+        gateway: id(gateway),
+        name: String::from(name),
+        tags: vec![String::from("phone")],
+        v4: "100.64.0.9".parse().unwrap(),
+        v6: "fd7a:115c:a1e0::9".parse().unwrap(),
+    }
+}
+
+#[test]
+fn an_admin_adds_a_wireguard_client_that_is_removed_like_any_device() {
+    let mut ledger = network(&[], 1);
+    act(&mut ledger, &key(1), add_device(2, "member"));
+    let phone = crate::client_id(&[7; 32]);
+    assert_ne!(
+        phone,
+        NodeId::from_bytes([7; 32]),
+        "the id is not the raw key"
+    );
+
+    act(&mut ledger, &key(2), add_client(7, 1, "phone"));
+    assert!(
+        !ledger.view().is_member(&phone),
+        "a non-admin added a client"
+    );
+
+    act(&mut ledger, &key(1), add_client(7, 1, "phone"));
+    let device = ledger.view().devices().get(&phone).cloned().unwrap();
+    let via = device.via.unwrap();
+    assert_eq!((via.gateway, via.key), (id(1), [7; 32]));
+    assert_eq!(via.v4, "100.64.0.9".parse::<core::net::Ipv4Addr>().unwrap());
+    assert_eq!(device.tags, ["phone"]);
+    assert!(ledger.view().devices()[&id(2)].via.is_none());
+
+    act(&mut ledger, &key(1), OpBody::RemoveDevice { device: phone });
+    assert!(!ledger.view().is_member(&phone));
+    act(&mut ledger, &key(1), add_client(7, 1, "phone"));
+    assert!(
+        ledger.view().is_member(&phone),
+        "a removed client can be added again"
+    );
+
+    let mut copy = network(&[], 1);
+    for op in ledger.op_ids().filter_map(|id| ledger.get(id)) {
+        copy.insert(SignedOp::from_bytes(&op.to_bytes()).unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        copy.view(),
+        ledger.view(),
+        "clients survive the wire format"
+    );
+}
+
+#[test]
+fn a_client_key_of_zeros_is_refused() {
+    let ledger = network(&[], 1);
+    let mut body = add_client(0, 1, "phone");
+    if let OpBody::AddClient { key: wg_key, .. } = &mut body {
+        *wg_key = [0; 32];
+    }
+    assert_eq!(
+        ledger.draft(id(1), body, NOW).sign(&key(1)).unwrap_err(),
+        LedgerError::BadClientKey
+    );
+}

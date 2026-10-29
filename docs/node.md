@@ -74,7 +74,7 @@ don't decide: how devices find each other, join, and stay in sync.
 | `os` | Turns NetMaps into a `kith-sys` `Plan` (mesh routes, DNS, exit routing, forwarding and NAT for server mode); applies on change, reverts on shutdown | `kith-sys` |
 | `ipc` | IPC server; maps each `Request` to a loop command; broadcasts `Event`s to watchers. Authorization: root or the daemon's own uid may change state; anyone may read status | `kith-ipc` |
 | `server` | Server mode: relay server, STUN responder on the WireGuard port, exit-node NAT | `kith-relay`, `kith-stun` |
-| `external` | Standard WireGuard peers that aren't mesh members: imported exits (wg-quick) and exported gateway clients | `kith-config` wg-quick parser, dataplane external interfaces |
+| `external` | Standard WireGuard peers: imported exits (wg-quick), and the key that phones and other plain WireGuard members connect to when this device is their gateway | `kith-config` wg-quick parser, dataplane external interfaces |
 | `daemon` | The event loop: wires the above to the dataplane, handles shutdown (SIGINT/SIGTERM, reverts the OS plan) | everything |
 
 **Data flow on a ledger change.** An op arrives through sync, IPC or join. The runtime inserts it and persists it, then rebuilds its NetMap and diffs it. The diff updates three things:

@@ -7,7 +7,7 @@ use core::net::IpAddr;
 
 use kith_ledger::{Device, NetworkView};
 use kith_policy::{
-    Addresses, AllocationError, CompiledFilter, Member, Members, Policy, TagName, allocate,
+    Addresses, AllocationError, CompiledFilter, Member, Members, Policy, TagName, allocate_pinned,
     compile, resolver_address,
 };
 use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId};
@@ -52,6 +52,20 @@ pub enum Warning {
         /// The named device.
         device: NodeId,
     },
+    /// A plain WireGuard device's gateway is not a kith member. It is left out until the
+    /// gateway is back, so removing a gateway cuts off its devices.
+    ClientWithoutGateway {
+        /// The device.
+        client: NodeId,
+        /// The gateway it names.
+        gateway: NodeId,
+    },
+    /// A plain WireGuard device's fixed address is outside the network, reserved, or
+    /// already fixed for an earlier device. It is left out.
+    ClientAddressTaken {
+        /// The device.
+        client: NodeId,
+    },
 }
 
 /// A member device other than the local one.
@@ -68,6 +82,20 @@ pub struct Peer {
     pub addresses: Addresses,
 }
 
+/// A member that runs plain WireGuard, such as a phone, reached through a kith gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Client {
+    /// Its name, label, tags and fixed addresses.
+    pub peer: Peer,
+    /// The kith device it connects to.
+    pub gateway: NodeId,
+    /// Its WireGuard public key.
+    pub key: [u8; 32],
+    /// What may reach it, when the local device is its gateway: it has no filter of its
+    /// own, so the gateway applies the network's policy for it.
+    pub filter: Option<CompiledFilter>,
+}
+
 /// Everything the other planes need to know about one network, as seen by the local device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetMap {
@@ -79,6 +107,7 @@ pub struct NetMap {
     ipv4_range: Ipv4Prefix,
     ipv6_range: Ipv6Prefix,
     peers: BTreeMap<NodeId, Peer>,
+    clients: BTreeMap<NodeId, Client>,
     records: TypedRecords,
     filter: CompiledFilter,
     warnings: Vec<Warning>,
@@ -133,9 +162,15 @@ impl NetMap {
         self.ipv6_range
     }
 
-    /// Every member except the local device.
+    /// Every kith member except the local device. Plain WireGuard members are in
+    /// [`clients`](Self::clients).
     pub const fn peers(&self) -> &BTreeMap<NodeId, Peer> {
         &self.peers
+    }
+
+    /// Members that run plain WireGuard, each reached through its gateway.
+    pub const fn clients(&self) -> &BTreeMap<NodeId, Client> {
+        &self.clients
     }
 
     /// Subnet routes advertised by members: prefix → advertising device. May include the
@@ -179,6 +214,7 @@ impl NetMap {
             relays_changed: old.relays() != new.relays(),
             dns_changed: old.dns_records() != new.dns_records(),
             exit_nodes_changed: old.exit_nodes() != new.exit_nodes(),
+            clients_changed: old.clients != new.clients,
             ..NetMapDiff::default()
         };
         for (node, peer) in &new.peers {
@@ -212,6 +248,7 @@ impl NetMap {
             relays_changed: true,
             dns_changed: true,
             exit_nodes_changed: true,
+            clients_changed: true,
             ..NetMapDiff::default()
         }
     }
@@ -244,6 +281,8 @@ pub struct NetMapDiff {
     pub dns_changed: bool,
     /// Whether the exit nodes changed.
     pub exit_nodes_changed: bool,
+    /// Whether any plain WireGuard member was added, removed or changed.
+    pub clients_changed: bool,
 }
 
 impl NetMapDiff {
@@ -258,6 +297,7 @@ impl NetMapDiff {
             && !self.routes_changed
             && !self.relays_changed
             && !self.dns_changed
+            && !self.clients_changed
             && !self.exit_nodes_changed
     }
 
@@ -282,39 +322,60 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
     let mut warnings = Vec::new();
     let is_member = view.is_member(&local);
 
-    let (local_device, peers, records, filter) = if is_member {
-        let addresses = allocate(params.ipv4, params.ipv6, &admission_order(view))?;
-        let members: Members = view
-            .devices()
+    let (local_device, peers, clients, records, filter) = if is_member {
+        let allocation = allocate_pinned(params.ipv4, params.ipv6, &pinned_order(view.devices()))?;
+        let mut devices = reachable_devices(view, &mut warnings);
+        for client in allocation.rejected {
+            if devices.remove(&client).is_some() {
+                warnings.push(Warning::ClientAddressTaken { client });
+            }
+        }
+        let members: Members = devices
             .iter()
             .filter_map(|(node, device)| {
-                let addresses = *addresses.get(node)?;
+                let addresses = *allocation.assigned.get(node)?;
                 let tags = valid_tags(*node, device, &mut warnings);
                 Some((*node, Member { tags, addresses }))
             })
             .collect();
-        let labels = crate::names::assign(view.devices());
-        let mut peers: BTreeMap<NodeId, Peer> = members
-            .iter()
-            .filter_map(|(node, member)| {
-                let device = view.devices().get(node)?;
-                let peer = Peer {
-                    name: device.name.clone(),
-                    label: labels.get(node)?.clone(),
-                    tags: member.tags.clone(),
-                    addresses: member.addresses,
-                };
-                Some((*node, peer))
-            })
-            .collect();
+        let labels = crate::names::assign(&devices);
         let policy = policy(view, &mut warnings);
+        let mut peers = BTreeMap::new();
+        let mut clients = BTreeMap::new();
+        for (node, member) in members.iter() {
+            let (Some(device), Some(label)) = (devices.get(node), labels.get(node)) else {
+                continue;
+            };
+            let peer = Peer {
+                name: device.name.clone(),
+                label: label.clone(),
+                tags: member.tags.clone(),
+                addresses: member.addresses,
+            };
+            match device.via {
+                None => {
+                    peers.insert(*node, peer);
+                }
+                Some(via) => {
+                    let filter = (via.gateway == local).then(|| compile(&policy, &members, *node));
+                    let client = Client {
+                        peer,
+                        gateway: via.gateway,
+                        key: via.key,
+                        filter,
+                    };
+                    clients.insert(*node, client);
+                }
+            }
+        }
         let filter = compile(&policy, &members, local);
         let records = typed_records(view, &mut warnings);
         let local_device = peers.remove(&local);
-        (local_device, peers, records, filter)
+        (local_device, peers, clients, records, filter)
     } else {
         (
             None,
+            BTreeMap::new(),
             BTreeMap::new(),
             TypedRecords::default(),
             CompiledFilter::default(),
@@ -330,16 +391,73 @@ pub fn build_netmap(view: &NetworkView, local: NodeId) -> Result<NetMap, Control
         ipv4_range: params.ipv4,
         ipv6_range: params.ipv6,
         peers,
+        clients,
         records,
         filter,
         warnings,
     })
 }
 
+/// The addresses a new member `node` would get if admitted now, after everyone already
+/// in `view`. A plain WireGuard device is admitted with exactly these, fixed for good.
+/// Every member's fixed addresses stay reserved, even one whose gateway is gone, so it
+/// keeps them if the gateway comes back.
+pub fn addresses_for_newcomer(view: &NetworkView, node: NodeId) -> Result<Addresses, ControlError> {
+    let params = view.params();
+    let mut order = pinned_order(view.devices());
+    order.retain(|(member, _)| *member != node);
+    order.push((node, None));
+    let allocation = allocate_pinned(params.ipv4, params.ipv6, &order)?;
+    allocation
+        .assigned
+        .get(&node)
+        .copied()
+        .ok_or(ControlError::Allocation(AllocationError::DuplicateMember(
+            node,
+        )))
+}
+
+/// The members that can be reached: every kith device, and every plain WireGuard device
+/// whose gateway is a kith device.
+fn reachable_devices(view: &NetworkView, warnings: &mut Vec<Warning>) -> BTreeMap<NodeId, Device> {
+    let is_kith = |node: &NodeId| view.devices().get(node).is_some_and(|d| d.via.is_none());
+    view.devices()
+        .iter()
+        .filter(|(node, device)| match device.via {
+            None => true,
+            Some(via) if is_kith(&via.gateway) => true,
+            Some(via) => {
+                warnings.push(Warning::ClientWithoutGateway {
+                    client: **node,
+                    gateway: via.gateway,
+                });
+                false
+            }
+        })
+        .map(|(node, device)| (*node, device.clone()))
+        .collect()
+}
+
+/// Members in admission order, each with the addresses it was admitted with, if fixed.
+fn pinned_order(devices: &BTreeMap<NodeId, Device>) -> Vec<(NodeId, Option<Addresses>)> {
+    admission_order(devices)
+        .into_iter()
+        .map(|node| {
+            let pin = devices
+                .get(&node)
+                .and_then(|device| device.via)
+                .map(|via| Addresses {
+                    v4: via.v4,
+                    v6: via.v6,
+                });
+            (node, pin)
+        })
+        .collect()
+}
+
 /// Members in admission order: by the admitting op's lamport clock, then its id.
-fn admission_order(view: &NetworkView) -> Vec<NodeId> {
-    let mut order: Vec<(u64, kith_types::OpId, NodeId)> = view
-        .devices()
+fn admission_order(devices: &BTreeMap<NodeId, Device>) -> Vec<NodeId> {
+    let mut order: Vec<(u64, kith_types::OpId, NodeId)> = devices
         .iter()
         .map(|(node, device)| (device.admitted_at_lamport, device.admitted_by, *node))
         .collect();
@@ -389,7 +507,8 @@ fn typed_records(view: &NetworkView, warnings: &mut Vec<Warning>) -> TypedRecord
             }
             Some(Ok(record)) => record,
         };
-        if let Some(device) = record.device().filter(|device| !view.is_member(device)) {
+        let is_kith = |node: &NodeId| view.devices().get(node).is_some_and(|d| d.via.is_none());
+        if let Some(device) = record.device().filter(|device| !is_kith(device)) {
             let key = key.clone();
             warnings.push(Warning::RecordForNonMember { key, device });
             continue;

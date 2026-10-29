@@ -883,23 +883,39 @@ mod tests {
         shutdown([a, s]).await
     }
 
+    struct Exported {
+        device: String,
+        mesh: String,
+        everything: Option<String>,
+    }
+
     async fn export(
         node: &NodeHandle,
         network: NetworkId,
         name: &str,
-        exit: bool,
-    ) -> TestResult<String> {
+        tags: &[&str],
+    ) -> TestResult<Exported> {
         let response = node
             .request(Request::ExportWireGuard {
                 network,
                 device_name: name.into(),
-                exit,
+                tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
             })
             .await;
-        let Response::WireGuardConfig { conf_text } = response else {
+        let Response::WireGuardConfig {
+            device,
+            mesh,
+            everything,
+            ..
+        } = response
+        else {
             return Err(format!("export failed: {response:?}").into());
         };
-        Ok(conf_text)
+        Ok(Exported {
+            device,
+            mesh,
+            everything,
+        })
     }
 
     fn conf_value<'a>(conf: &'a str, key: &str) -> TestResult<&'a str> {
@@ -909,48 +925,97 @@ mod tests {
             .ok_or_else(|| format!("no {key} in {conf}").into())
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_phone_with_plain_wireguard_reaches_the_server_and_its_exit() -> TestResult {
-        let s = start_server(true, false, Some("localhost")).await?;
-        let a = start().await?;
-        let network = create(&s, "server").await?;
-        join(&s, &a, network, "alpha").await?;
-        let server: Ipv4Addr = peer(&a, network, "server").await?;
-
-        let mesh_only = export(&s, network, "phone", false).await?;
-        if !conf_value(&mesh_only, "Endpoint")?.starts_with("localhost:") {
-            return Err(format!("the export skips the public hostname: {mesh_only}").into());
-        }
-        if conf_value(&mesh_only, "AllowedIPs")?.contains("0.0.0.0/0") {
-            return Err(format!("a mesh-only export takes all traffic: {mesh_only}").into());
-        }
-        if export(&a, network, "phone", true).await.is_ok() {
-            return Err("a device that is not an exit exported an exit config".into());
-        }
-        let full = export(&s, network, "phone", true).await?;
-        if conf_value(&full, "AllowedIPs")? != "0.0.0.0/0, ::/0" {
-            return Err(format!("an exit export leaves traffic outside: {full}").into());
-        }
-        let phone: Ipv4Addr = conf_value(&full, "Address")?
-            .trim_end_matches("/32")
-            .parse()?;
-
+    /// Starts a node that is nothing but a plain WireGuard device using `conf`, as a phone is.
+    async fn phone_from(conf: &str) -> TestResult<NodeHandle> {
         let p = start().await?;
         let imported = p
             .request(Request::ImportWireGuard {
                 name: "phone".into(),
-                conf_text: full.replace("Endpoint = localhost:", "Endpoint = 127.0.0.1:"),
+                conf_text: conf.replace("Endpoint = localhost:", "Endpoint = 127.0.0.1:"),
             })
             .await;
         if !matches!(imported, Response::Imported { .. }) {
             return Err(format!("the phone config did not import: {imported:?}").into());
         }
-        deliver(&p, &s, &udp_packet(phone, server, b"phone to server")?)
+        Ok(p)
+    }
+
+    fn phone_policy(server: NodeId) -> TestResult<String> {
+        use kith_policy::{Policy, PortRange, PortSet, Protocol, Rule, Selector, TagName, Target};
+        let rule = Rule::new(
+            vec![Selector::Tag(TagName::new("phone")?)],
+            vec![Target::new(
+                Selector::Device(server),
+                Protocol::Any,
+                PortSet::ranges(vec![PortRange::new(1, 65535)?])?,
+            )?],
+        )?;
+        Ok(toml::to_string(&Policy::new(vec![rule])?)?)
+    }
+
+    /// Checks a new phone's two configs and returns its address and the all-traffic one.
+    fn checked_configs(exported: Exported) -> TestResult<(Ipv4Addr, String)> {
+        if exported.device != "phone" {
+            return Err(format!("the phone is called {}", exported.device).into());
+        }
+        if !conf_value(&exported.mesh, "Endpoint")?.starts_with("localhost:") {
+            return Err(format!("the config skips the public hostname: {}", exported.mesh).into());
+        }
+        let address = conf_value(&exported.mesh, "Address")?;
+        let phone: Ipv4Addr = address.split('/').next().unwrap_or_default().parse()?;
+        if !address.contains("/128")
+            || conf_value(&exported.mesh, "AllowedIPs")?.contains("0.0.0.0/0")
+        {
+            return Err(format!("the mesh config is wrong: {}", exported.mesh).into());
+        }
+        let everything = exported
+            .everything
+            .ok_or("an exit server gave no everything config")?;
+        if conf_value(&everything, "AllowedIPs")? != "0.0.0.0/0, ::/0"
+            || conf_value(&everything, "PrivateKey")? != conf_value(&exported.mesh, "PrivateKey")?
+        {
+            return Err(format!("the everything config is wrong: {everything}").into());
+        }
+        Ok((phone, everything))
+    }
+
+    async fn set_policy(node: &NodeHandle, network: NetworkId, policy_toml: String) -> TestResult {
+        let set = node
+            .request(Request::SetPolicy {
+                network,
+                policy_toml,
+            })
+            .await;
+        if set != Response::PolicySet {
+            return Err(format!("policy not set: {set:?}").into());
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_phone_on_plain_wireguard_is_a_full_member() -> TestResult {
+        let s = start_server(true, false, Some("localhost")).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server: Ipv4Addr = peer(&a, network, "server").await?;
+        let alpha: Ipv4Addr = peer(&s, network, "alpha").await?;
+        if export(&a, network, "Phone", &[]).await.is_ok() {
+            return Err("a member that is not an admin added a phone".into());
+        }
+
+        let (phone, everything) = checked_configs(export(&s, network, "Phone", &["phone"]).await?)?;
+
+        let p = phone_from(&everything).await?;
+        deliver(&p, &s, &udp_packet(phone, server, b"phone to its server")?)
             .await
-            .map_err(|e| format!("phone to server: {e}"))?;
-        deliver(&s, &p, &udp_packet(server, phone, b"server to phone")?)
+            .map_err(|e| format!("phone to its server: {e}"))?;
+        deliver(&p, &a, &udp_packet(phone, alpha, b"phone to alpha")?)
             .await
-            .map_err(|e| format!("server to phone: {e}"))?;
+            .map_err(|e| format!("phone to another device: {e}"))?;
+        deliver(&a, &p, &udp_packet(alpha, phone, b"alpha to phone")?)
+            .await
+            .map_err(|e| format!("another device to the phone: {e}"))?;
         deliver(
             &p,
             &s,
@@ -958,6 +1023,64 @@ mod tests {
         )
         .await
         .map_err(|e| format!("phone to the internet: {e}"))?;
+
+        let seen =
+            wait_for_peer(&a, network, "phone", Duration::from_secs(15), |p| p.online).await?;
+        if seen.gateway.as_deref() != Some("server") || seen.display_name != "Phone" {
+            return Err(format!("alpha sees the phone wrong: {seen:?}").into());
+        }
+        let dns = a.dns_addr().ok_or("no DNS server")?;
+        if resolve(dns, "phone.home.kith.internal").await? != phone {
+            return Err("the phone's name does not resolve".into());
+        }
+
+        let server_node = peer_info(&a, network, "server").await?.node;
+        let alpha_node = peer_info(&s, network, "alpha").await?.node;
+        set_policy(&s, network, phone_policy(server_node)?).await?;
+        let reply = udp_reply(server, phone, b"reply from the server")?;
+        deliver(&p, &s, &udp_packet(phone, server, b"allowed by policy")?).await?;
+        deliver(&s, &p, &reply)
+            .await
+            .map_err(|e| format!("a reply to the phone: {e}"))?;
+        never_delivered(
+            &a,
+            &p,
+            &udp_packet(alpha, phone, b"not allowed to the phone")?,
+        )
+        .await
+        .map_err(|e| format!("the server did not guard the phone: {e}"))?;
+        never_delivered(
+            &p,
+            &a,
+            &udp_packet(phone, alpha, b"not allowed from the phone")?,
+        )
+        .await
+        .map_err(|e| format!("alpha let the phone in: {e}"))?;
+
+        set_policy(&s, network, phone_policy(alpha_node)?).await?;
+        never_delivered(&p, &s, &udp_packet(phone, server, b"server is off limits")?)
+            .await
+            .map_err(|e| format!("the server let the phone in against policy: {e}"))?;
+        let resolver = Ipv4Addr::new(100, 64, 0, 1);
+        deliver(&p, &s, &udp_ports(phone, 4000, resolver, 53, b"dns query")?)
+            .await
+            .map_err(|e| {
+                format!("the phone's DNS was blocked by a policy that says nothing of it: {e}")
+            })?;
+
+        p.shutdown().await?;
+        wait_for_peer(&a, network, "phone", Duration::from_secs(80), |p| !p.online)
+            .await
+            .map_err(|e| format!("alpha never saw the phone go offline: {e}"))?;
+
+        let id = peer_info(&s, network, "phone").await?.node;
+        if remove(&s, network, id).await != Response::DeviceRemoved {
+            return Err("the phone could not be removed".into());
+        }
+        let p = phone_from(&everything).await?;
+        never_delivered(&p, &s, &udp_packet(phone, server, b"after removal")?)
+            .await
+            .map_err(|e| format!("a removed phone still got through: {e}"))?;
         shutdown([p, a, s]).await
     }
 }

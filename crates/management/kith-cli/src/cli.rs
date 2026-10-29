@@ -222,12 +222,15 @@ pub(crate) enum WgCmd {
         #[bpaf(positional("FILE"))]
         file: PathBuf,
     },
-    /// Print a wg-quick file for a device without kith, such as a phone
+    /// Add a device that runs the WireGuard app, such as a phone, and show its QR codes
     #[bpaf(command)]
     Export {
-        /// Send all of its internet traffic through this device (needs `kith server --exit`)
+        /// Give it a policy tag; repeat for more
+        #[bpaf(long("tag"), argument("TAG"))]
+        tags: Vec<String>,
+        /// Print the config files instead of QR codes
         #[bpaf(long)]
-        exit: bool,
+        text: bool,
         #[bpaf(positional("NETWORK"))]
         network: String,
         #[bpaf(positional("DEVICE-NAME"))]

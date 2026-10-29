@@ -406,6 +406,7 @@ fn device(name: &str, lamport: u64, op: u8) -> kith_ledger::Device {
         tags: Vec::new(),
         admitted_by: OpId::from_bytes([op; 32]),
         admitted_at_lamport: lamport,
+        via: None,
     }
 }
 
@@ -471,4 +472,144 @@ fn clashing_names_stay_unique_stable_and_agree_everywhere() {
     let labels = assign(&long);
     assert!(labels.values().all(|label| label.len() <= 63));
     assert_ne!(labels[&first], labels[&second]);
+}
+
+fn add_client(wg_key: u8, gateway: u8, name: &str, tags: &[&str], v4: &str) -> OpBody {
+    OpBody::AddClient {
+        key: [wg_key; 32],
+        gateway: id(gateway),
+        name: String::from(name),
+        tags: tags.iter().map(|tag| String::from(*tag)).collect(),
+        v4: v4.parse().unwrap(),
+        v6: alloc::format!("fd7a:115c:a1e0::{wg_key}").parse().unwrap(),
+    }
+}
+
+#[test]
+fn a_phone_is_a_member_with_its_own_address_name_and_policy() {
+    let mut ledger = network();
+    act(&mut ledger, 1, add_device(3, "phone", &["server"]));
+    act(
+        &mut ledger,
+        1,
+        add_client(7, 3, "Phone", &["phone"], "100.64.0.70"),
+    );
+    let phone = kith_ledger::client_id(&[7; 32]);
+    act(&mut ledger, 1, set_record(records::POLICY, ssh_policy()));
+
+    let laptop = build_netmap(ledger.view(), id(1)).unwrap();
+    assert!(
+        !laptop.peers().contains_key(&phone),
+        "a phone is not a kith peer"
+    );
+    let client = &laptop.clients()[&phone];
+    assert_eq!(client.gateway, id(3));
+    assert_eq!(client.peer.addresses.v4, Ipv4Addr::new(100, 64, 0, 70));
+    assert_eq!(client.peer.name, "Phone");
+    assert_eq!(
+        laptop.peers()[&id(3)].label,
+        "phone",
+        "the earlier device keeps the plain name"
+    );
+    assert!(
+        client.peer.label.starts_with("phone-"),
+        "{}",
+        client.peer.label
+    );
+    assert!(
+        client.filter.is_none(),
+        "only the gateway filters for the phone"
+    );
+
+    let server = build_netmap(ledger.view(), id(3)).unwrap();
+    let filter = server.clients()[&phone].filter.clone().unwrap();
+    let laptop_addr = IpAddr::V4(server.peers()[&id(1)].addresses.v4);
+    assert!(
+        !filter.allows(laptop_addr, PacketProtocol::Tcp, Some(22)),
+        "policy protects the phone"
+    );
+    let phone_addr = IpAddr::V4(client.peer.addresses.v4);
+    assert!(
+        server
+            .filter()
+            .allows(phone_addr, PacketProtocol::Tcp, Some(22)),
+        "the phone's own tags grant it access"
+    );
+}
+
+#[test]
+fn a_phone_needs_a_kith_gateway_and_a_free_address_and_owns_no_roles() {
+    let mut ledger = network();
+    act(&mut ledger, 1, add_device(3, "server", &[]));
+    act(
+        &mut ledger,
+        1,
+        add_client(7, 3, "phone", &[], "100.64.0.70"),
+    );
+    act(
+        &mut ledger,
+        1,
+        add_client(8, 3, "tablet", &[], "100.64.0.70"),
+    );
+    let phone = kith_ledger::client_id(&[7; 32]);
+    let tablet = kith_ledger::client_id(&[8; 32]);
+    act(
+        &mut ledger,
+        1,
+        add_client(9, 8, "watch", &[], "100.64.0.90"),
+    );
+    act(&mut ledger, 1, put(&Record::Exit(phone)));
+
+    let map = build_netmap(ledger.view(), id(1)).unwrap();
+    assert!(map.clients().contains_key(&phone));
+    assert!(
+        !map.clients().contains_key(&tablet),
+        "a taken address is never shared"
+    );
+    assert!(
+        map.warnings()
+            .contains(&Warning::ClientAddressTaken { client: tablet })
+    );
+    assert!(map.clients().len() == 1, "a phone cannot be a gateway");
+    assert!(map.exit_nodes().is_empty(), "a phone cannot be an exit");
+
+    act(&mut ledger, 1, OpBody::RemoveDevice { device: id(3) });
+    let map = build_netmap(ledger.view(), id(1)).unwrap();
+    assert!(
+        map.clients().is_empty(),
+        "removing the gateway cuts its phones off"
+    );
+    assert!(map.warnings().contains(&Warning::ClientWithoutGateway {
+        client: phone,
+        gateway: id(3)
+    }));
+}
+
+#[test]
+fn a_phone_cut_off_with_its_gateway_keeps_its_address_for_when_it_returns() {
+    let mut ledger = network();
+    act(&mut ledger, 1, add_device(3, "server", &[]));
+    act(
+        &mut ledger,
+        1,
+        add_client(7, 3, "phone", &[], "100.64.0.70"),
+    );
+    act(&mut ledger, 1, OpBody::RemoveDevice { device: id(3) });
+    act(
+        &mut ledger,
+        1,
+        add_client(8, 1, "tablet", &[], "100.64.0.70"),
+    );
+    let tablet = kith_ledger::client_id(&[8; 32]);
+    let map = build_netmap(ledger.view(), id(1)).unwrap();
+    assert!(map.clients().is_empty(), "{:?}", map.clients());
+    assert!(
+        map.warnings()
+            .contains(&Warning::ClientAddressTaken { client: tablet })
+    );
+
+    act(&mut ledger, 1, add_device(3, "server", &[]));
+    let map = build_netmap(ledger.view(), id(1)).unwrap();
+    let phone = &map.clients()[&kith_ledger::client_id(&[7; 32])];
+    assert_eq!(phone.peer.addresses.v4, Ipv4Addr::new(100, 64, 0, 70));
 }

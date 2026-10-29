@@ -1,6 +1,7 @@
 use core::net::SocketAddr;
 use core::time::Duration;
 
+use kith_channel::Presence;
 use kith_config::WgQuickConfig;
 use kith_identity::InviteToken;
 use kith_ipc::Response;
@@ -229,10 +230,10 @@ pub(crate) enum Action {
     ExportWireGuard {
         /// The network.
         network: NetworkId,
-        /// The client's name.
+        /// The name the device asks for.
         device_name: String,
-        /// Route all of the client's traffic through this device.
-        exit: bool,
+        /// Its policy tags.
+        tags: Vec<String>,
     },
 }
 
@@ -252,6 +253,15 @@ pub(crate) enum ChannelEvent {
         from: NodeId,
         /// Nodes and their claimed addresses.
         entries: Vec<(NodeId, Vec<SocketAddr>)>,
+    },
+    /// A gateway said which of its plain WireGuard members are online.
+    Presence {
+        /// The network.
+        network: NetworkId,
+        /// The gateway.
+        from: NodeId,
+        /// Its members and whether each is online.
+        entries: Vec<(NodeId, Presence)>,
     },
 }
 

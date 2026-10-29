@@ -210,22 +210,29 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             exit: *exit,
             relay: *relay,
         },
-        Cmd::Wg(WgCmd::Import { name, file }) => Request::ImportWireGuard {
-            name: name.clone(),
-            conf_text: read_wg(file)?,
-        },
-        Cmd::Wg(WgCmd::Export {
-            exit,
-            network,
-            device_name,
-        }) => Request::ExportWireGuard {
-            network: names.network(network)?,
-            device_name: device_name.clone(),
-            exit: *exit,
-        },
+        Cmd::Wg(wg) => wg_request(wg, names)?,
         Cmd::Watch | Cmd::Doctor | Cmd::Config(_) | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));
         }
+    })
+}
+
+fn wg_request(cmd: &WgCmd, names: &Names) -> Result<Request, CliError> {
+    Ok(match cmd {
+        WgCmd::Import { name, file } => Request::ImportWireGuard {
+            name: name.clone(),
+            conf_text: read_wg(file)?,
+        },
+        WgCmd::Export {
+            tags,
+            network,
+            device_name,
+            ..
+        } => Request::ExportWireGuard {
+            network: names.network(network)?,
+            device_name: device_name.clone(),
+            tags: tags.clone(),
+        },
     })
 }
 
