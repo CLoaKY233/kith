@@ -160,10 +160,29 @@ mod tests {
             }
             attempt += 1;
             match Node::start(options_fn(options)).await {
-                Err(error) if auto_port && attempt < 5 && error.to_string().contains("in use") => {}
+                Err(error) if auto_port && attempt < 5 && addr_in_use(&error) => {}
                 started => return Ok(started?),
             }
         }
+    }
+
+    /// Whether a port clash is the cause anywhere down `error`'s chain.
+    fn addr_in_use(error: &(dyn std::error::Error + 'static)) -> bool {
+        let mut cause = Some(error);
+        while let Some(error) = cause {
+            let io_clash = error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse);
+            let named_clash = matches!(
+                error.downcast_ref::<kith_node::NodeError>(),
+                Some(kith_node::NodeError::PortInUse { .. })
+            );
+            if io_clash || named_clash {
+                return true;
+            }
+            cause = error.source();
+        }
+        false
     }
 
     async fn peer_info(node: &NodeHandle, network: NetworkId, name: &str) -> TestResult<PeerInfo> {
@@ -773,6 +792,9 @@ mod tests {
         let message = error.to_string();
         if !message.contains(&format!("port {port}")) || !message.contains("listen_port") {
             return Err(format!("unhelpful error: {message}").into());
+        }
+        if !addr_in_use(&*error) {
+            return Err(format!("a port clash is not recognised as one: {error:?}").into());
         }
         Ok(())
     }
