@@ -144,6 +144,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
         },
         Request::Leave { network } => Action::Leave { network },
         Request::Peers { network } => Action::Peers { network },
+        Request::Records { network } => Action::Records { network },
         Request::SetRecord {
             network,
             name,
@@ -312,7 +313,11 @@ fn txt_strings(text: &str) -> Vec<String> {
 pub(crate) const fn is_read_only(request: &Request) -> bool {
     matches!(
         request,
-        Request::Hello { .. } | Request::Status | Request::Peers { .. } | Request::Watch
+        Request::Hello { .. }
+            | Request::Status
+            | Request::Peers { .. }
+            | Request::Records { .. }
+            | Request::Watch
     )
 }
 

@@ -135,6 +135,15 @@ pub(crate) enum Cmd {
 /// `kith dns …`.
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 pub(crate) enum DnsCmd {
+    /// List every name: each device's, then the ones set with `kith dns set`
+    #[bpaf(command)]
+    List {
+        /// Print JSON
+        json: bool,
+        /// The network (default: the only one)
+        #[bpaf(positional("NETWORK"))]
+        network: Option<String>,
+    },
     /// Create or replace a record
     #[bpaf(command)]
     Set {

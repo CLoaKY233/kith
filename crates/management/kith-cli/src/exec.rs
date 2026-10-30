@@ -157,6 +157,12 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
                 None => names.only_network()?,
             },
         },
+        Cmd::Dns(DnsCmd::List { network, .. }) => Request::Records {
+            network: match network {
+                Some(network) => names.network(network)?,
+                None => names.only_network()?,
+            },
+        },
         Cmd::Dns(DnsCmd::Set {
             network,
             name,

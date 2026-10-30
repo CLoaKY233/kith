@@ -51,6 +51,11 @@ pub enum Request {
         /// Network to list.
         network: NetworkId,
     },
+    /// Lists a network's DNS names: every device's and the custom records.
+    Records {
+        /// Network to list.
+        network: NetworkId,
+    },
     /// Creates or replaces a DNS record.
     SetRecord {
         /// Network owning the record.
@@ -156,6 +161,17 @@ pub enum DnsRecord {
     Txt(String),
 }
 
+/// One DNS name and its data, from [`Request::Records`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordInfo {
+    /// The full name, such as `nas.home.kith.internal`.
+    pub name: String,
+    /// The data.
+    pub record: DnsRecord,
+    /// Whether kith made it from a device's name, rather than an admin setting it.
+    pub device: bool,
+}
+
 /// The daemon's answer to one [`Request`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -191,6 +207,8 @@ pub enum Response {
     Left,
     /// Answers [`Request::Peers`].
     Peers(Vec<PeerInfo>),
+    /// Answers [`Request::Records`].
+    Records(Vec<RecordInfo>),
     /// Answers [`Request::SetRecord`].
     RecordSet,
     /// Answers [`Request::DeleteRecord`].

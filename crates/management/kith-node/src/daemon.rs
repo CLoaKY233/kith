@@ -682,6 +682,9 @@ impl Daemon {
             Action::Join { token, device_name } => self.join(&token, &device_name).await,
             Action::Leave { network } => self.leave(network).await,
             Action::Peers { network } => self.peers(network).await,
+            Action::Records { network } => Ok(Response::Records(crate::dns::record_list(
+                self.member_map(network)?,
+            ))),
             Action::SetRecord {
                 network,
                 key,

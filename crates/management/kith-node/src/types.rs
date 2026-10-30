@@ -148,6 +148,11 @@ pub(crate) enum Action {
         /// The network.
         network: NetworkId,
     },
+    /// List a network's DNS names.
+    Records {
+        /// The network.
+        network: NetworkId,
+    },
     /// Write a ledger record.
     SetRecord {
         /// The network.

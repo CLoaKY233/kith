@@ -468,6 +468,42 @@ mod tests {
                 return Err(format!("{name} resolved to {resolved}, expected {expected}").into());
             }
         }
+        let nas = Ipv4Addr::new(10, 0, 0, 9);
+        let set = a
+            .request(Request::SetRecord {
+                network,
+                name: "nas".into(),
+                record: kith_ipc::DnsRecord::A(nas),
+            })
+            .await;
+        if set != Response::RecordSet {
+            return Err(format!("record not set: {set:?}").into());
+        }
+        let mut listed = Vec::new();
+        for _ in 0..100 {
+            if let Response::Records(records) = c.request(Request::Records { network }).await {
+                listed = records;
+                if listed.iter().any(|r| !r.device) {
+                    break;
+                }
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        let has = |name: &str, record: kith_ipc::DnsRecord, device: bool| {
+            listed
+                .iter()
+                .any(|r| r.name == name && r.record == record && r.device == device)
+        };
+        if !has(
+            "gamma.home.kith.internal",
+            kith_ipc::DnsRecord::A(gamma),
+            true,
+        ) || !has("nas.home.kith.internal", kith_ipc::DnsRecord::A(nas), false)
+            || listed.iter().position(|r| !r.device) < listed.iter().rposition(|r| r.device)
+        {
+            return Err(format!("the name list is wrong: {listed:?}").into());
+        }
+
         let own = resolve(
             a.dns_addr().ok_or("no DNS server")?,
             "alpha.home.kith.internal",

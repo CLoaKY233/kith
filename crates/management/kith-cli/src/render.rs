@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use kith_ipc::{Event, IpcError, PathKind, PeerInfo, Response, Status};
+use kith_ipc::{DnsRecord, Event, IpcError, PathKind, PeerInfo, RecordInfo, Response, Status};
 
 use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
@@ -117,6 +117,62 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
         write_row(out, indent, row, &widths)?;
     }
     Ok(())
+}
+
+fn record_parts(record: &DnsRecord) -> (&'static str, String) {
+    match record {
+        DnsRecord::A(v4) => ("A", v4.to_string()),
+        DnsRecord::Aaaa(v6) => ("AAAA", v6.to_string()),
+        DnsRecord::Cname(target) => ("CNAME", target.clone()),
+        DnsRecord::Txt(text) => ("TXT", text.clone()),
+        _ => ("?", String::new()),
+    }
+}
+
+fn record_table(out: &mut impl Write, records: &[RecordInfo]) -> io::Result<()> {
+    const HEADER: [&str; 4] = ["NAME", "TYPE", "VALUE", "FROM"];
+    if records.is_empty() {
+        return writeln!(out, "no names yet");
+    }
+    let rows: Vec<[String; 4]> = records
+        .iter()
+        .map(|info| {
+            let (kind, value) = record_parts(&info.record);
+            let from = if info.device {
+                "device"
+            } else {
+                "kith dns set"
+            };
+            [info.name.clone(), kind.to_owned(), value, from.to_owned()]
+        })
+        .collect();
+    let mut widths = HEADER.map(str::len);
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    write_row(out, "", &HEADER, &widths)?;
+    for row in &rows {
+        write_row(out, "", row, &widths)?;
+    }
+    Ok(())
+}
+
+fn records_json(out: &mut impl Write, records: &[RecordInfo]) -> io::Result<()> {
+    write!(out, "[")?;
+    for (index, info) in records.iter().enumerate() {
+        if index > 0 {
+            write!(out, ",")?;
+        }
+        let (kind, value) = record_parts(&info.record);
+        write!(out, "{{\"name\":")?;
+        json_str(out, &info.name)?;
+        write!(out, ",\"type\":\"{kind}\",\"value\":")?;
+        json_str(out, &value)?;
+        write!(out, ",\"device\":{}}}", info.device)?;
+    }
+    write!(out, "]")
 }
 
 /// `kith status`, for people. `peers` runs parallel to `status.networks`.
@@ -498,6 +554,11 @@ pub(crate) fn response(
             writeln!(out)?;
         }
         (Cmd::Peers { .. }, Response::Peers(peers)) => peer_table(out, &peers, "")?,
+        (Cmd::Dns(DnsCmd::List { json: true, .. }), Response::Records(records)) => {
+            records_json(out, &records)?;
+            writeln!(out)?;
+        }
+        (Cmd::Dns(DnsCmd::List { .. }), Response::Records(records)) => record_table(out, &records)?,
         (Cmd::Dns(DnsCmd::Set { name, .. }), Response::RecordSet) => writeln!(out, "set {name}")?,
         (Cmd::Dns(DnsCmd::Rm { name, .. }), Response::RecordDeleted) => {
             writeln!(out, "removed {name}")?;

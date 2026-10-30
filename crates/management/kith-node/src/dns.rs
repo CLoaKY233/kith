@@ -68,6 +68,59 @@ impl Drop for DnsService {
     }
 }
 
+/// Every DNS name of `map`: its devices' first, then the custom records, each sorted.
+pub(crate) fn record_list(map: &NetMap) -> Vec<kith_ipc::RecordInfo> {
+    use kith_ipc::{DnsRecord, RecordInfo};
+    let Some(suffix) = suffix_of(map) else {
+        return Vec::new();
+    };
+    let clients = map.clients().values().map(|client| &client.peer);
+    let mut devices: Vec<RecordInfo> = map
+        .peers()
+        .values()
+        .chain(map.local_device())
+        .chain(clients)
+        .flat_map(|peer| {
+            let name = format!("{}.{}", peer.label, suffix.as_str());
+            [
+                DnsRecord::A(peer.addresses.v4),
+                DnsRecord::Aaaa(peer.addresses.v6),
+            ]
+            .map(|record| RecordInfo {
+                name: name.clone(),
+                record,
+                device: true,
+            })
+        })
+        .collect();
+    let mut custom: Vec<RecordInfo> = map
+        .dns_records()
+        .iter()
+        .flat_map(|set| {
+            let name = if set.name() == "@" {
+                suffix.as_str().to_owned()
+            } else {
+                format!("{}.{}", set.name(), suffix.as_str())
+            };
+            set.data().iter().map(move |data| RecordInfo {
+                name: name.clone(),
+                record: match data {
+                    DnsData::A(v4) => DnsRecord::A(*v4),
+                    DnsData::Aaaa(v6) => DnsRecord::Aaaa(*v6),
+                    DnsData::Cname(target) => DnsRecord::Cname(target.clone()),
+                    DnsData::Txt(parts) => DnsRecord::Txt(parts.concat()),
+                },
+                device: false,
+            })
+        })
+        .collect();
+    let order = |a: &RecordInfo, b: &RecordInfo| a.name.cmp(&b.name);
+    devices.sort_by(order);
+    custom.sort_by(order);
+    devices.extend(custom);
+    devices
+}
+
 /// Builds one zone from device names and `dns/` records of every network.
 pub(crate) fn build_zone(maps: &Networks) -> Result<Zone, NodeError> {
     let mut builder = ZoneBuilder::new();
