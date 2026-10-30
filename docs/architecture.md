@@ -231,7 +231,7 @@ That makes **36 workspace crates**. Later crates: `kith-transport-reality`, `kit
 | Logging | **tracing** + minimal `fmt` subscriber; trace/debug compiled out in the embedded profile | Size |
 | Testing | **proptest**, **insta**, **divan**, `kith-sim`, **miri** (nightly), **cargo-fuzz** | |
 
-Banned: `openssl`, `ring` (MIPS risk), `regex` in the daemon, and git or unknown-registry sources. All enforced by `cargo-deny`.
+Banned: `openssl`, `native-tls`, and git or unknown-registry sources, enforced by `cargo-deny`. `ring` comes in through rustls and quinn; MIPS builds use nightly with `build-std`.
 
 ---
 
