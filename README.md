@@ -1,71 +1,71 @@
 # kith
 
-Your own private network. No account, no cloud, works on any network, runs on anything.
+A WireGuard mesh VPN with no coordination server.
 
-kith is a WireGuard mesh VPN written in Rust. Devices join by invite link and keep a signed membership ledger among themselves, so there is no coordination server to sign up for, pay for or wait on.
+Devices join a network with an invite link and keep a signed membership ledger among themselves. There is no account to make and no server that has to stay up for the network to work: any member can let in a device that holds an invite, and the network carries on when any one machine is off.
 
-## How it differs from Tailscale
+## Install
 
-- **No account, no control server.** Membership is a signed ledger that devices sync with each other. A network keeps working, and keeps admitting devices, when any one machine is offline.
-- **Real DNS.** Custom A, AAAA, CNAME, SRV and TXT records, on a domain you choose.
-- **Many networks at once.** Join several networks side by side, each with its own addresses, routes, policy and DNS, without them leaking into each other.
-- **Works on hostile networks.** When plain UDP is blocked or fingerprinted, kith falls back to obfuscated WireGuard and to QUIC or TLS on port 443.
-- **Small.** Built to fit routers: a single binary with a size budget under 5 MB.
-- **Phones with the WireGuard app.** A phone joins as a full member, with its own address, name and policy, through any kith device; scan a QR code and it is in. Existing wg-quick files import too.
-
-## Quick start
+macOS and Linux:
 
 ```sh
-# Turn kith on (now and at every boot) or off; asks for your password once
-kith up
-kith down
+curl -fsSL https://raw.githubusercontent.com/CLoaKY233/kith/main/install.sh | sh
+```
 
-# Create a network and invite a second device
-kith create home
-kith invite home --expires 24h --uses 1     # prints a kith://join/... link
+It downloads the release for your system, checks it against the published SHA-256 sums, installs `/usr/local/bin/kith`, sets up the service (launchd or systemd) and turns kith on. Read the script first if you like; it is short.
 
-# On the other device
-kith join kith://join/...
+From source: `cargo build --release -p kith-cli`, then `sudo target/release/kith up`.
 
-kith status
-kith dns set home nas A 100.64.0.2
-kith exit allow home vps                    # admin: let peer "vps" act as an exit
-kith exit use home vps                      # route internet traffic through peer "vps"
+## Use
+
+```sh
+kith create home                        # a new network, with this device as its admin
+kith invite home --expires 1h --uses 1  # prints a kith://join/... link
+
+kith join kith://join/...               # on the other device
+kith status                             # who is online, and direct or relayed
+
+kith dns set home nas A 100.64.0.2      # nas.home.kith.internal
+kith dns list
+
+kith exit allow home vps                # admin: let the device "vps" be an exit
+kith exit use home vps                  # send internet traffic through it
 kith exit off
 
-# Turn a VPS into an always-on exit node and relay (advertised automatically if it is an admin)
-kith server --exit --relay
-kith relay advertise home vps vps.example.com:41642 --node vps   # admin, when the VPS is not one
+kith wg export home phone --tag phone   # add a phone: scan a code in the WireGuard app
+kith remove home phone
 
-# Add a phone: scan a code in the WireGuard app (one for your devices, one for all traffic)
-kith wg export home phone --tag phone
-kith remove home phone                      # cut it off again
-
-# Use an existing WireGuard server as an exit
-kith wg import office ./wg0.conf
+kith watch                              # follow changes as they happen
+kith down                               # off, and stays off after a restart
+kith up
 ```
 
-Run `kith --help` or `kith <command> --help` for every option.
+`kith --help` lists every command; `kith <command> --help` shows its options. To turn a VPS into an always-on exit and relay, see [docs/server.md](docs/server.md).
 
-## How it works
+## How it differs
 
-Each device has an Ed25519 identity. Networks are defined by a signed, causally ordered ledger of membership, policy and DNS operations, which members reconcile over an authenticated control channel. From the ledger each device derives its peer map, packet filter and DNS zone. Peers find each other with STUN and hole punching, and fall back to relays run by other members. Traffic is WireGuard.
+Tailscale, Headscale and NetBird have a coordination server that every device talks to: Tailscale's, or one you host. innernet also needs a server. Nebula has no control plane, but you run a certificate authority and "lighthouse" hosts.
 
-Protocol cores are sans-IO state machines, tested in a deterministic multi-node simulator. See [docs/architecture.md](docs/architecture.md) for the design and [docs/node.md](docs/node.md) for how the daemon fits together.
+kith has none of these. Each network is a ledger of signed operations (who is a member, the policy, DNS names, exits) that every device keeps a copy of and syncs with the others. Devices find each other with STUN and hole punching, and fall back to relays that members run. Other differences:
 
-To run an always-on relay and exit node on a VPS, see [docs/server.md](docs/server.md).
-
-## Build
-
-```sh
-cargo build --release -p kith-cli
-```
-
-The binary is `target/release/kith`.
+- **Several networks at once**, each with its own addresses, policy and DNS, kept apart.
+- **Phones as members.** The stock WireGuard app joins through an admin's kith device, with its own address, name and policy.
+- **DNS records** (A, AAAA, CNAME, TXT) under `<network>.kith.internal`, alongside a name for each device.
+- **Stealth transports** (obfuscated WireGuard, QUIC, WebSocket) for networks that block plain WireGuard.
+- **Small.** One static binary of about 5 MB that also runs on routers.
 
 ## Status
 
-Pre-alpha. Expect breaking changes to the CLI, wire formats and on-disk state. `kith` is a working name.
+Alpha. It works day to day across a Mac, a Linux server and phones, but expect rough edges and breaking changes to the CLI, wire formats and on-disk state.
+
+- iOS and Android use the plain WireGuard app through a kith device; there is no kith app yet, so kith does not show up in the system's VPN settings.
+- `kith up` and `kith down` work on macOS and Linux. On other systems, run `kith daemon` under your service manager.
+- A network has one admin; adding more from the CLI is not done yet.
+- No outside security audit. [docs/security.md](docs/security.md) covers the threat model and known gaps.
+
+## How it works
+
+Protocol cores are sans-IO state machines tested in a deterministic multi-node simulator, with all `unsafe` code in one crate. [docs/architecture.md](docs/architecture.md) has the design and [docs/node.md](docs/node.md) the daemon.
 
 ## License
 
