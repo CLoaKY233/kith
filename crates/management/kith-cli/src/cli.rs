@@ -109,7 +109,7 @@ pub(crate) enum Cmd {
     /// Import or export plain WireGuard configurations
     #[bpaf(command)]
     Wg(#[bpaf(external(wg_cmd))] WgCmd),
-    /// Stream daemon events
+    /// Show the current state, then each change as it happens
     #[bpaf(command)]
     Watch,
     /// Check what is wrong and say how to fix it

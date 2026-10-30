@@ -288,7 +288,7 @@ pub(crate) fn socket_path(opts: &Opts) -> Result<PathBuf, CliError> {
     }
 }
 
-async fn connect(path: &Path) -> Result<IpcClient, CliError> {
+pub(crate) async fn connect(path: &Path) -> Result<IpcClient, CliError> {
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only socket errors get a hint"
@@ -350,12 +350,8 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
     let mut client = connect(&socket_path(opts)?).await?;
     match &opts.cmd {
         Cmd::Watch => {
-            let mut events = client.watch().await?;
-            while let Some(event) = events.recv().await {
-                render::event(out, &event?)?;
-                out.flush()?;
-            }
-            return Ok(());
+            drop(client);
+            return crate::watch::run(&socket_path(opts)?, out).await;
         }
         Cmd::Status { json } => return status(&mut client, *json, out).await,
         Cmd::Create { .. }
@@ -466,7 +462,7 @@ async fn doctor(opts: &Opts, out: &mut impl Write) -> Result<(), CliError> {
     Ok(())
 }
 
-async fn fetch_status(client: &mut IpcClient) -> Result<kith_ipc::Status, CliError> {
+pub(crate) async fn fetch_status(client: &mut IpcClient) -> Result<kith_ipc::Status, CliError> {
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "any other answer is a protocol error"
@@ -477,7 +473,7 @@ async fn fetch_status(client: &mut IpcClient) -> Result<kith_ipc::Status, CliErr
     }
 }
 
-async fn fetch_peers(
+pub(crate) async fn fetch_peers(
     client: &mut IpcClient,
     network: NetworkId,
 ) -> Result<Vec<kith_ipc::PeerInfo>, CliError> {

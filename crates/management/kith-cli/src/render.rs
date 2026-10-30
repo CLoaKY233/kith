@@ -2,14 +2,14 @@
 
 use std::io::{self, Write};
 
-use kith_ipc::{DnsRecord, Event, IpcError, PathKind, PeerInfo, RecordInfo, Response, Status};
+use kith_ipc::{DnsRecord, IpcError, PathKind, PeerInfo, RecordInfo, Response, Status};
 
 use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
 
 /// The PATH column: offline comes from liveness, never from a missing path, and a device
 /// on plain WireGuard shows the kith device it goes through, unless it is this one.
-fn path_cell(peer: &PeerInfo) -> String {
+pub(crate) fn path_cell(peer: &PeerInfo) -> String {
     match (peer.online, &peer.gateway, peer.path) {
         (false, _, _) => "offline".to_owned(),
         (true, _, Some(path)) => path_name(Some(path)).to_owned(),
@@ -496,34 +496,6 @@ pub(crate) fn status_json(
         out.write_all(b"}")?;
     }
     out.write_all(b"]}\n")
-}
-
-/// One line per event for `kith watch`.
-pub(crate) fn event(out: &mut impl Write, event: &Event) -> io::Result<()> {
-    match event {
-        Event::PeerConnected {
-            network,
-            node,
-            path,
-        } => writeln!(
-            out,
-            "peer {} connected in {} ({})",
-            node.short(),
-            network.short(),
-            path_name(Some(*path))
-        ),
-        Event::PeerDisconnected { network, node } => {
-            writeln!(
-                out,
-                "peer {} disconnected from {}",
-                node.short(),
-                network.short()
-            )
-        }
-        Event::NetworkChanged { network } => writeln!(out, "network {} changed", network.short()),
-        Event::Warning { message } => writeln!(out, "warning: {message}"),
-        _ => writeln!(out, "unknown event"),
-    }
 }
 
 /// The answer to any single-exchange command.

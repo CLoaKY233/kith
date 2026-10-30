@@ -13,6 +13,7 @@ mod render;
 mod service;
 #[cfg(test)]
 mod tests;
+mod watch;
 
 use std::io::Write as _;
 use std::process::ExitCode;

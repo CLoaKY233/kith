@@ -620,3 +620,43 @@ fn peers_may_leave_out_the_network() {
         Ok(Cmd::Peers { network: Some(n), .. }) if n == "home"
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn watch_reports_each_change_once() {
+    use crate::watch::{Snapshot, changes};
+    let status = fake_status();
+    let peers = fake_peers();
+    let before = Snapshot::new(&status, std::slice::from_ref(&peers));
+    assert!(changes(&before, &before).is_empty(), "no change, no lines");
+
+    let mut later = status;
+    later.exit_node = None;
+    later.drops.insert("policy".into(), 5);
+    let mut moved = peers.clone();
+    moved[0].path = Some(PathKind::Relay);
+    moved[1].online = true;
+    moved[1].path = Some(PathKind::Direct);
+    moved[2].online = false;
+    moved.push(PeerInfo {
+        name: "ipad".into(),
+        ..peers[0].clone()
+    });
+    let after = Snapshot::new(&later, std::slice::from_ref(&moved));
+    assert_eq!(
+        changes(&before, &after),
+        [
+            "home/ipad joined (100.64.0.2)",
+            "home/nas now relay",
+            "home/phone online, direct",
+            "home/pixel offline",
+            "internet traffic no longer goes through an exit",
+            "3 packets dropped: policy",
+        ]
+    );
+
+    let mut gone = moved;
+    gone.retain(|peer| peer.name != "ipad");
+    let removed = Snapshot::new(&later, std::slice::from_ref(&gone));
+    assert_eq!(changes(&after, &removed), ["home/ipad removed"]);
+}
