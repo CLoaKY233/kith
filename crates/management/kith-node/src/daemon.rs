@@ -469,8 +469,10 @@ fn start_ipc(
         daemon_uid: kith_sys::effective_uid().unwrap_or(0),
         group: kith_sys::group_id(&config.daemon.operator_group),
     };
-    if let Some(gid) = operators.group {
-        server.share_with_group(gid)?;
+    if let Some(gid) = operators.group
+        && let Err(error) = server.share_with_group(gid)
+    {
+        tracing::warn!(%error, group = config.daemon.operator_group, "the operator group cannot use the socket; use sudo");
     }
     Ok(tokio::spawn(async move {
         if let Err(error) = ipc::serve(server, commands, events, operators).await {
