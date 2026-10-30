@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "kith-channel"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-ledger",
@@ -835,7 +835,7 @@ dependencies = [
 
 [[package]]
 name = "kith-cli"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bpaf",
  "kith-config",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "kith-config"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "data-encoding",
  "kith-types",
@@ -863,7 +863,7 @@ dependencies = [
 
 [[package]]
 name = "kith-control"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-ledger",
@@ -877,7 +877,7 @@ dependencies = [
 
 [[package]]
 name = "kith-crypto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "blake2 0.11.0",
  "blake3",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "kith-dataplane"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-filter",
@@ -916,7 +916,7 @@ dependencies = [
 
 [[package]]
 name = "kith-disco"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-pmtu",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "kith-dns"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "kith-naming",
@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "kith-filter"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-packet",
  "kith-policy",
@@ -950,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "kith-identity"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "data-encoding",
  "kith-crypto",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "kith-ipc"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-types",
  "kith-wire",
@@ -976,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "kith-ledger"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-types",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "kith-naming"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -996,7 +996,7 @@ dependencies = [
 
 [[package]]
 name = "kith-netmon"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "if-addrs",
  "kith-crypto",
@@ -1007,7 +1007,7 @@ dependencies = [
 
 [[package]]
 name = "kith-node"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-channel",
  "kith-config",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "kith-obfs"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "kith-packet"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -1061,14 +1061,14 @@ dependencies = [
 
 [[package]]
 name = "kith-pmtu"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "kith-policy"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-types",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "kith-relay"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-relay-proto",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "kith-relay-proto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-types",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "kith-router"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-types",
  "proptest",
@@ -1116,7 +1116,7 @@ dependencies = [
 
 [[package]]
 name = "kith-sim"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-disco",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "kith-store"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "kith-stun"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "kith-sync"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-ledger",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "kith-sys"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-types",
  "libc",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "kith-tls"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-crypto",
  "kith-types",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "kith-transport"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "kith-transport-quic"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "kith-crypto",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "kith-transport-udp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "kith-wire",
  "proptest",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "kith-transport-ws"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "data-encoding",
  "kith-crypto",
@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "kith-tun"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "kith-types"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "kith-wg"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "boringtun",
  "kith-crypto",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "kith-wire"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "postcard",
  "proptest",
@@ -2542,7 +2542,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "zerocopy"
