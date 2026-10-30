@@ -30,7 +30,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 9, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 10, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -40,7 +40,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 9, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 10, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -58,7 +58,7 @@ fn golden_bytes() {
         gateway: Some("e".to_owned()),
         path_mtu: Some(1216),
     }]));
-    let mut expected = vec![64, b'k', b't', 0x70, 9, 0, 6, 1];
+    let mut expected = vec![64, b'k', b't', 0x70, 10, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,

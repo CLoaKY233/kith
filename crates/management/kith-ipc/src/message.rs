@@ -51,11 +51,6 @@ pub enum Request {
         /// Network to list.
         network: NetworkId,
     },
-    /// Lists a network's DNS names: every device's and the custom records.
-    Records {
-        /// Network to list.
-        network: NetworkId,
-    },
     /// Creates or replaces a DNS record.
     SetRecord {
         /// Network owning the record.
@@ -145,6 +140,11 @@ pub enum Request {
         /// The device.
         node: NodeId,
     },
+    /// Lists a network's DNS names: every device's and the custom records.
+    Records {
+        /// Network to list.
+        network: NetworkId,
+    },
 }
 
 /// A typed DNS record.
@@ -207,8 +207,6 @@ pub enum Response {
     Left,
     /// Answers [`Request::Peers`].
     Peers(Vec<PeerInfo>),
-    /// Answers [`Request::Records`].
-    Records(Vec<RecordInfo>),
     /// Answers [`Request::SetRecord`].
     RecordSet,
     /// Answers [`Request::DeleteRecord`].
@@ -259,6 +257,8 @@ pub enum Response {
     },
     /// Answers [`Request::RemoveDevice`].
     DeviceRemoved,
+    /// Answers [`Request::Records`].
+    Records(Vec<RecordInfo>),
 }
 
 /// Why the daemon refused a request.
