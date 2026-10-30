@@ -61,7 +61,7 @@ jobs:
           strip_bin="$(find "$sysroot/lib/rustlib" -name llvm-strip -type f | head -n1)"
           if [ -n "$strip_bin" ]; then "$strip_bin" "$bin"; elif [ "$RUNNER_OS" = macOS ]; then strip "$bin"; fi
           mkdir -p "dist/$name"
-          cp "$bin" LICENSE.md "dist/$name/"
+          cp "$bin" LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "ARCHIVE=dist/$name.tar.gz" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

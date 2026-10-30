@@ -69,10 +69,8 @@ Protocol cores are sans-IO state machines tested in a deterministic multi-node s
 
 ## License
 
-kith is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+kith is free software under the [GNU Affero General Public License v3.0](LICENSE). You can use, study, change and share it. If you run a changed version as a service that others use over a network, you must offer them its source under the same license.
 
-- **Free** for any noncommercial use: personal use, including running it on your own devices and home network, hobby projects, study, research, and use by charities, schools and public bodies.
-- **Commercial use needs a license.** Using kith in or for a business, in production or internally, or building a product or service on it, including on a modified copy, requires a commercial license. Write to laysheth.dev@gmail.com.
-- **Credit is required.** Every copy, changed or not, must keep the `Required Notice:` line at the top of [LICENSE.md](LICENSE.md).
+Companies that want to use kith without the AGPL's terms, for example in a closed product or service, can buy a commercial license: write to laysheth.dev@gmail.com.
 
-Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the terms they come under.
+Copyright 2026 CLoaKY233. Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the terms they come under.
