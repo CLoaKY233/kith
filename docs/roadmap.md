@@ -6,6 +6,8 @@
 
 ## Next
 
+- **Show up as a VPN in macOS and iOS Settings.** Needs a signed app with a Network Extension (packet tunnel provider), an Apple Developer account and Apple's VPN entitlement. Gives an on/off toggle in Settings and the menu bar, and lets kith run on the iPhone and iPad as a full member instead of plain WireGuard.
+
 - **Interactive installer.** One command (`curl … | sh`, or `kith install`) for macOS and Linux: it detects the OS and architecture, downloads a release binary, installs the service (launchd, systemd, OpenWrt init), warns about clashing VPNs such as Tailscale, and walks through creating or joining a network. Needs published releases first.
 - **`kith dns list [network]`**, and every command that takes a network defaulting to the only one, as `kith peers` does. Show every record, who set it and its address.
 - **`kith watch` shows what happens.** Today it prints only connects, disconnects, network changes and warnings, so a quiet network shows nothing. Print its current state when it starts, then every change: peers and phones coming and going, path changes (direct or relayed), endpoint changes, exit node changes, DNS changes, invites used, and the packet drop counters as they grow.

@@ -399,6 +399,14 @@ mod tests {
         Err(format!("status failed: {response:?}").into())
     }
 
+    async fn dns_upstreams(node: &NodeHandle) -> TestResult<Vec<String>> {
+        let response = node.request(Request::Status).await;
+        if let Response::Status(status) = response {
+            return Ok(status.dns_upstreams);
+        }
+        Err(format!("status failed: {response:?}").into())
+    }
+
     async fn shutdown(nodes: impl IntoIterator<Item = NodeHandle>) -> TestResult {
         for node in nodes {
             node.shutdown().await?;
@@ -864,6 +872,11 @@ mod tests {
         if drops(&s).await?.contains_key("source_not_allowed") {
             return Err("foreign-source traffic still reached the exit node".into());
         }
+        if !dns_upstreams(&a).await?.iter().any(|u| u == "1.1.1.1:53") {
+            return Err(
+                "with an exit, names should resolve through it, not the local network".into(),
+            );
+        }
         deliver(&a, &s, &outbound)
             .await
             .map_err(|e| format!("exit on, out: {e}"))?;
@@ -881,6 +894,9 @@ mod tests {
             .map_err(|e| format!("after restart, back: {e}"))?;
 
         use_exit(&a, network, None).await?;
+        if dns_upstreams(&a).await?.iter().any(|u| u == "1.1.1.1:53") {
+            return Err("with the exit off, names should resolve as the OS does".into());
+        }
         let after_off = udp_packet(alpha, INTERNET, b"after exit off")?;
         never_delivered(&a, &s, &after_off)
             .await

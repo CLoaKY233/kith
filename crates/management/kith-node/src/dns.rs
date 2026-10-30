@@ -36,6 +36,11 @@ impl DnsService {
         })
     }
 
+    /// Replaces where names outside the mesh are forwarded.
+    pub(crate) fn set_upstreams(&self, upstreams: Vec<SocketAddr>) {
+        self.state.set_default_upstreams(upstreams);
+    }
+
     /// The bound address.
     pub(crate) const fn local_addr(&self) -> SocketAddr {
         self.local_addr

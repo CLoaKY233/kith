@@ -51,6 +51,19 @@ const MESH_SILENCE: core::time::Duration = core::time::Duration::from_secs(25);
 /// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent
 /// and still count as online.
 const CLIENT_SILENCE: core::time::Duration = core::time::Duration::from_secs(60);
+/// Public resolvers used through an exit node: Cloudflare and Google, IPv4 and IPv6.
+const EXIT_RESOLVERS: [SocketAddr; 4] = [
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53),
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
+    SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
+        53,
+    ),
+    SocketAddr::new(
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
+        53,
+    ),
+];
 /// How far a phone's last seen, as told to other devices, may fall behind.
 const PRESENCE_STALE: core::time::Duration = core::time::Duration::from_secs(30);
 /// How often traffic counters are read: to keep checking the paths of peers that are
@@ -294,6 +307,8 @@ pub(crate) struct Daemon {
     connectivity: Connectivity,
     dns: Option<DnsService>,
     dns_upstreams: Option<Vec<SocketAddr>>,
+    /// The resolvers the OS had when kith's DNS started, for when no exit is in use.
+    system_upstreams: Vec<SocketAddr>,
     addresses: BTreeMap<NetworkId, Vec<(IpAddr, u8)>>,
     commands: mpsc::Sender<Command>,
     os: OsPlanner,
@@ -535,6 +550,7 @@ impl Daemon {
             connectivity,
             dns,
             dns_upstreams,
+            system_upstreams: Vec::new(),
             addresses: BTreeMap::new(),
             commands,
             os,
@@ -1694,6 +1710,12 @@ impl Daemon {
         self.ensure_dns().await;
         if let Some(dns) = &self.dns {
             dns.update(self.networks.maps())?;
+            let upstreams = self.forwarding_upstreams();
+            if upstreams != self.notes.dns_forwarding {
+                tracing::debug!(?upstreams, "DNS upstreams");
+                dns.set_upstreams(upstreams.clone());
+                self.notes.dns_forwarding = upstreams;
+            }
         }
         self.push_external().await?;
         let maps = self.networks.maps();
@@ -1709,6 +1731,17 @@ impl Daemon {
         self.gossip()
     }
 
+    /// Where names outside the mesh go: the configured upstreams; else, while an exit is
+    /// in use, public resolvers reached through it, since the local network's resolver
+    /// would answer, and filter, as the local network; else the OS's own resolvers.
+    fn forwarding_upstreams(&self) -> Vec<SocketAddr> {
+        match &self.dns_upstreams {
+            Some(configured) if !configured.is_empty() => configured.clone(),
+            _ if self.exit.is_some() => EXIT_RESOLVERS.to_vec(),
+            _ => self.system_upstreams.clone(),
+        }
+    }
+
     async fn ensure_dns(&mut self) {
         let Some(upstreams) = self.dns_upstreams.as_ref().filter(|_| self.dns.is_none()) else {
             return;
@@ -1717,11 +1750,10 @@ impl Daemon {
             return;
         };
         let listen = SocketAddr::new(map.resolver()[0], 53);
-        let upstreams = if upstreams.is_empty() {
-            self.os.system_resolvers()
-        } else {
-            upstreams.clone()
-        };
+        if upstreams.is_empty() {
+            self.system_upstreams = self.os.system_resolvers();
+        }
+        let upstreams = self.forwarding_upstreams();
         if upstreams.is_empty() {
             tracing::warn!(
                 "no upstream DNS servers found; names outside the mesh will not resolve; set dns.fallback_upstreams"
