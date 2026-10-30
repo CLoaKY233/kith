@@ -660,3 +660,24 @@ fn watch_reports_each_change_once() {
     let removed = Snapshot::new(&later, std::slice::from_ref(&gone));
     assert_eq!(changes(&after, &removed), ["home/ipad removed"]);
 }
+
+#[test]
+fn up_writes_a_missing_service_once_and_points_it_at_this_binary() {
+    let dir = std::env::temp_dir().join(format!("kith-service-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("kith.service");
+    let template = "ExecStart=/usr/bin/kith daemon\n";
+    assert!(crate::service::install_service(&path, template, "/usr/bin/kith").unwrap());
+    let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(written, format!("ExecStart={} daemon\n", me.display()));
+
+    std::fs::write(&path, "edited by hand").unwrap();
+    assert!(!crate::service::install_service(&path, template, "/usr/bin/kith").unwrap());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "edited by hand",
+        "an existing service is left alone"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -11,6 +11,10 @@ use crate::exec::CliError;
 const LAUNCHD_LABEL: &str = "system/dev.kith.daemon";
 const LAUNCHD_PLIST: &str = "/Library/LaunchDaemons/dev.kith.daemon.plist";
 const SYSTEMD_UNIT: &str = "kith";
+const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/kith.service";
+/// The service definitions shipped in `packaging/`, written by `kith up` when missing.
+const LAUNCHD_TEMPLATE: &str = include_str!("../../../../packaging/launchd/dev.kith.daemon.plist");
+const SYSTEMD_TEMPLATE: &str = include_str!("../../../../packaging/systemd/kith.service");
 /// How long `kith up` waits for the daemon to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
 
@@ -20,12 +24,23 @@ pub(crate) fn up(socket: &Path, out: &mut impl Write) -> Result<(), CliError> {
         return rerun_as_root("up");
     }
     if cfg!(target_os = "macos") {
-        require_installed(Path::new(LAUNCHD_PLIST))?;
+        install_service(
+            Path::new(LAUNCHD_PLIST),
+            LAUNCHD_TEMPLATE,
+            "/usr/local/bin/kith",
+        )?;
         run("launchctl", &["enable", LAUNCHD_LABEL])?;
         if !succeeds("launchctl", &["print", LAUNCHD_LABEL]) {
             run("launchctl", &["bootstrap", "system", LAUNCHD_PLIST])?;
         }
     } else if cfg!(target_os = "linux") {
+        if install_service(
+            Path::new(SYSTEMD_UNIT_PATH),
+            SYSTEMD_TEMPLATE,
+            "/usr/bin/kith",
+        )? {
+            run("systemctl", &["daemon-reload"])?;
+        }
         run("systemctl", &["enable", "--now", SYSTEMD_UNIT])?;
     } else {
         return Err(unsupported());
@@ -93,15 +108,31 @@ fn rerun_as_root(command: &str) -> Result<(), CliError> {
     }
 }
 
-fn require_installed(path: &Path) -> Result<(), CliError> {
+/// Writes the service definition at `path` from `template`, pointing it at this binary
+/// instead of `placeholder`, unless one is there already. Returns whether it wrote one.
+pub(crate) fn install_service(
+    path: &Path,
+    template: &str,
+    placeholder: &str,
+) -> Result<bool, CliError> {
     if path.exists() {
-        Ok(())
-    } else {
-        Err(CliError(format!(
-            "the kith service is not installed ({} is missing)",
-            path.display()
-        )))
+        return Ok(false);
     }
+    let me = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|e| CliError(format!("cannot find the kith binary: {e}")))?;
+    let me = me
+        .to_str()
+        .filter(|me| !me.contains(['<', '>', '&', '"', '\'', ' ', '\n']))
+        .ok_or_else(|| {
+            CliError(format!(
+                "move kith to a path without spaces or symbols (it is at {})",
+                me.display()
+            ))
+        })?;
+    std::fs::write(path, template.replace(placeholder, me))
+        .map_err(|e| CliError(format!("cannot write {}: {e}", path.display())))?;
+    Ok(true)
 }
 
 fn unsupported() -> CliError {
