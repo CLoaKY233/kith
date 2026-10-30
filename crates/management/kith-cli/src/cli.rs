@@ -6,12 +6,23 @@ use bpaf::Bpaf;
 
 use crate::duration;
 
+const EXAMPLES: &str = "\
+Examples:
+  kith create home                        start a network on this device
+  kith invite home                        print a link; on the other device: kith join <link>
+  kith status                             who is online and how each device is reached
+  kith wg export home phone --tag phone   add a phone: scan the code in the WireGuard app
+  kith exit use home vps                  send all internet traffic through the device vps
+  kith exit off                           stop doing that
+  kith dns set home nas A 100.64.0.2      give an address a name: nas.home.kith.internal
+  kith down                               turn kith off until kith up";
+
 const DEFAULT_EXPIRY_SECS: u64 = 24 * 60 * 60;
 
 /// kith, a WireGuard mesh VPN. Start with `kith status`; `kith up` and `kith down` turn it
 /// on and off.
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
-#[bpaf(options, version)]
+#[bpaf(options, version, footer(EXAMPLES))]
 pub(crate) struct Opts {
     /// Daemon socket (default: from the config file)
     #[bpaf(long, env("KITH_SOCKET"), argument("PATH"))]
