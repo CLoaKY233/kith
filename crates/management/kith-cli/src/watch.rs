@@ -20,6 +20,9 @@ pub(crate) type NetworkNames = BTreeMap<NetworkId, String>;
 
 /// Prints the state, then each change as it happens, until the daemon stops.
 pub(crate) async fn watch(socket: &Path, out: &mut impl Write) -> Result<(), CliError> {
+    // Subscribe before reading the state, so nothing that happens in between is lost, and
+    // ask for no backlog: the state already covers it.
+    let (next, mut entries) = connect(socket).await?.journal(Some(u64::MAX)).await?;
     let mut client = connect(socket).await?;
     let status = fetch_status(&mut client).await?;
     let mut peers = Vec::with_capacity(status.networks.len());
@@ -32,7 +35,7 @@ pub(crate) async fn watch(socket: &Path, out: &mut impl Write) -> Result<(), Cli
         .iter()
         .map(|network| (network.id, network.name.clone()))
         .collect();
-    let (next, mut entries) = connect(socket).await?.journal(None).await?;
+    drop(client);
     writeln!(out, "\nwatching for changes; ctrl-c to stop")?;
     out.flush()?;
     while let Some(entry) = entries.recv().await {
@@ -43,8 +46,12 @@ pub(crate) async fn watch(socket: &Path, out: &mut impl Write) -> Result<(), Cli
         writeln!(out, "{}", line(&entry, &names, offset(entry.at_ms)))?;
         out.flush()?;
     }
-    writeln!(out, "kith stopped")?;
-    Ok(())
+    Err(stopped())
+}
+
+/// A follower's stream ended: the daemon went away, which a script should see as failure.
+fn stopped() -> CliError {
+    CliError("the daemon stopped".to_owned())
 }
 
 /// Prints the journal: what happened and the daemon's log, then, with `follow`, each new
@@ -71,19 +78,27 @@ pub(crate) async fn log(
             return Ok(());
         }
     }
-    Ok(())
+    Err(stopped())
 }
 
-/// Redraws traffic per peer every two seconds, busiest first, until interrupted.
-pub(crate) async fn top(socket: &Path, out: &mut impl Write) -> Result<(), CliError> {
+/// Redraws traffic per peer every two seconds, busiest first, until interrupted. When
+/// `live` is false, as when the output goes to a file or a pipe, prints the table once
+/// with no screen-clearing codes.
+pub(crate) async fn top(socket: &Path, live: bool, out: &mut impl Write) -> Result<(), CliError> {
     let names = network_names(socket).await?;
     let mut client = connect(socket).await?;
     let mut tick = tokio::time::interval(TOP_REFRESH);
+    // A slow answer delays the next redraw instead of causing a burst of them.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
         let Response::Traffic(series) = client.request(Request::Traffic).await? else {
             return Err(CliError("the daemon sent something else".to_owned()));
         };
+        if !live {
+            traffic_table(out, &series, &names)?;
+            return Ok(());
+        }
         // Clear the screen and go home, as `top` does.
         write!(out, "\x1b[H\x1b[2J")?;
         traffic_table(out, &series, &names)?;
@@ -158,12 +173,13 @@ pub(crate) fn traffic_table(
     Ok(())
 }
 
-/// One entry as a line: local time, then what happened.
+/// One entry as a line: local time, then what happened. Names and log messages can come
+/// from other devices, so the line is made safe for a terminal.
 pub(crate) fn line(entry: &Entry, names: &NetworkNames, utc_offset_secs: i64) -> String {
     format!(
         "{}  {}",
         clock(entry.at_ms, utc_offset_secs),
-        describe(&entry.kind, names)
+        render::printable(&describe(&entry.kind, names))
     )
 }
 
@@ -228,10 +244,12 @@ pub(crate) fn describe(kind: &EntryKind, names: &NetworkNames) -> String {
             target,
             message,
         } => format!("{level:<5} {target}: {message}"),
-        EntryKind::JoinRequested { network, name, .. } => format!(
-            "{} asks to join; kith approve or kith deny",
-            who(network, name)
-        ),
+        EntryKind::JoinRequested { network, name, .. } => {
+            let network = network_name(names, *network);
+            format!(
+                "{network}/{name} asks to join; kith approve {network} {name}, or kith deny {network} {name}"
+            )
+        }
         _ => "something the daemon knows and this kith does not; update kith".to_owned(),
     }
 }

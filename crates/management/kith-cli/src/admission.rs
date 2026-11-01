@@ -14,7 +14,7 @@ use kith_types::NetworkId;
 
 use crate::cli::AdmissionCmd;
 use crate::exec::{CliError, Names, connect, fetch_status, hostname};
-use crate::render::write_row;
+use crate::render::{printable, write_row};
 
 /// How often a waiting device asks again.
 const POLL: Duration = Duration::from_secs(3);
@@ -59,7 +59,12 @@ pub(crate) async fn run(
                 .await?
             {
                 Response::JoinApproved { device } => {
-                    writeln!(out, "approved {name}; it joins as {device}")?;
+                    writeln!(
+                        out,
+                        "approved {}; it joins as {}",
+                        printable(&name),
+                        printable(&device)
+                    )?;
                     Ok(())
                 }
                 other => unexpected(other),
@@ -69,7 +74,7 @@ pub(crate) async fn run(
             let (network, node, name) = find(&mut client, network, device).await?;
             match client.request(Request::DenyJoin { network, node }).await? {
                 Response::JoinRequestDenied => {
-                    writeln!(out, "denied {name}")?;
+                    writeln!(out, "denied {}", printable(&name))?;
                     Ok(())
                 }
                 other => unexpected(other),
@@ -110,10 +115,20 @@ async fn wait_for_answer(
             }
             Response::Joined { network, device } => {
                 let network = network_name.unwrap_or_else(|| network.to_string());
-                writeln!(out, "joined {network} as {device}")?;
+                writeln!(
+                    out,
+                    "joined {} as {}",
+                    printable(&network),
+                    printable(&device)
+                )?;
                 return Ok(());
             }
-            Response::JoinDenied { .. } => return Err(CliError("denied".to_owned())),
+            Response::JoinDenied { .. } => {
+                return Err(CliError(
+                    "an admin turned this device down; ask them, then run kith request again"
+                        .to_owned(),
+                ));
+            }
             other => return unexpected(other),
         }
     }
@@ -191,7 +206,7 @@ fn table(out: &mut impl Write, pending: &[PendingJoin], names: &Names) -> Result
     let mut widths = header.map(str::len);
     for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.len());
+            *width = (*width).max(cell.chars().count());
         }
     }
     write_row(out, "", &header, &widths)?;

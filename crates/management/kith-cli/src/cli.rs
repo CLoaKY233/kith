@@ -141,7 +141,7 @@ pub(crate) enum Cmd {
         /// Leave out the daemon's log lines
         events: bool,
     },
-    /// Show live traffic per peer, busiest first
+    /// Show live traffic per peer, busiest first (printed once when not on a terminal)
     #[bpaf(command)]
     Top,
     /// Check what is wrong and say how to fix it
@@ -298,6 +298,7 @@ pub(crate) enum AdmissionCmd {
     /// Print a code a new device can use to ask an admin to let it join
     #[bpaf(command("request-code"))]
     RequestCode {
+        /// The network: its name or id
         #[bpaf(positional("NETWORK"))]
         network: String,
     },
@@ -310,24 +311,26 @@ pub(crate) enum AdmissionCmd {
         #[bpaf(positional("CODE"))]
         code: String,
     },
-    /// List devices waiting to join
+    /// List devices waiting to join, in every network
     #[bpaf(command)]
     Requests,
     /// Let a waiting device join (admins only)
     #[bpaf(command)]
     Approve {
+        /// The network it asked to join: its name or id
         #[bpaf(positional("NETWORK"))]
         network: String,
-        /// The device's requested name or id
+        /// The device's requested name or id, from `kith requests`
         #[bpaf(positional("DEVICE"))]
         device: String,
     },
     /// Turn down a waiting device (admins only)
     #[bpaf(command)]
     Deny {
+        /// The network it asked to join: its name or id
         #[bpaf(positional("NETWORK"))]
         network: String,
-        /// The device's requested name or id
+        /// The device's requested name or id, from `kith requests`
         #[bpaf(positional("DEVICE"))]
         device: String,
     },

@@ -1,5 +1,6 @@
 //! Human and JSON output. JSON is hand-written to avoid a serializer dependency.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use kith_ipc::{
@@ -62,6 +63,29 @@ pub(crate) fn byte_size(bytes: u64) -> String {
     }
 }
 
+/// `text` safe to print on a terminal. Control characters, which could move the cursor or
+/// rewrite the screen, and bidirectional overrides, which could reorder what is shown,
+/// become U+FFFD. Names and messages can come from other devices, so none is printed raw.
+/// Each character maps to one character, so column widths still line up.
+pub(crate) fn printable(text: &str) -> Cow<'_, str> {
+    fn unsafe_char(c: char) -> bool {
+        c.is_control()
+            || matches!(
+                c,
+                '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+            )
+    }
+    if text.chars().any(unsafe_char) {
+        Cow::Owned(
+            text.chars()
+                .map(|c| if unsafe_char(c) { '\u{fffd}' } else { c })
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 pub(crate) fn write_row<S: AsRef<str>>(
     out: &mut impl Write,
     indent: &str,
@@ -71,10 +95,11 @@ pub(crate) fn write_row<S: AsRef<str>>(
     out.write_all(indent.as_bytes())?;
     let last = cells.len().saturating_sub(1);
     for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
+        let cell = printable(cell.as_ref());
         if i == last {
-            writeln!(out, "{}", cell.as_ref())?;
+            writeln!(out, "{cell}")?;
         } else {
-            write!(out, "{:width$}  ", cell.as_ref())?;
+            write!(out, "{cell:width$}  ")?;
         }
     }
     Ok(())
@@ -666,14 +691,17 @@ pub(crate) fn blocked_list(out: &mut impl Write, blocked: &[BlockedInfo]) -> io:
         let packets = if info.count == 1 { "packet" } else { "packets" };
         writeln!(
             out,
-            "{} -> {}  {what}  {} {packets}",
-            info.from_name, info.to_name, info.count
+            "{} -> {}  {}  {} {packets}",
+            printable(&info.from_name),
+            printable(&info.to_name),
+            printable(&what),
+            info.count
         )?;
         writeln!(out, "  rule:")?;
         for line in info.rule.lines() {
-            writeln!(out, "    {line}")?;
+            writeln!(out, "    {}", printable(line))?;
         }
-        writeln!(out, "  allow it: {}", allow_command(info))?;
+        writeln!(out, "  allow it: {}", printable(&allow_command(info)))?;
     }
     Ok(())
 }

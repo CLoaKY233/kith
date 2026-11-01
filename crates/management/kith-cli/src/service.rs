@@ -1,6 +1,7 @@
 //! `kith up` and `kith down`: start or stop the background service, and keep it that
 //! way across reboots. Asks for the password through sudo when not run as root.
 
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
@@ -21,7 +22,7 @@ const START_WAIT: Duration = Duration::from_secs(10);
 /// Starts the service and enables it at boot, waiting until `socket` appears.
 pub(crate) fn up(socket: &Path, out: &mut impl Write) -> Result<(), CliError> {
     if !is_root() {
-        return rerun_as_root("up");
+        return rerun_as_root(&root_args("up", Some(socket)));
     }
     if cfg!(target_os = "macos") {
         install_service(
@@ -56,7 +57,7 @@ pub(crate) fn up(socket: &Path, out: &mut impl Write) -> Result<(), CliError> {
 )]
 fn wait_for(socket: &Path) -> Result<(), CliError> {
     let started = Instant::now();
-    while !socket.exists() {
+    while !answers(socket) {
         if started.elapsed() > START_WAIT {
             return Err(CliError(
                 "the service started but the daemon is not answering; run `kith doctor`".into(),
@@ -67,10 +68,22 @@ fn wait_for(socket: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Whether a daemon accepts connections on `socket`. A socket file alone proves nothing:
+/// one left behind by a daemon that crashed is still there.
+#[cfg(unix)]
+pub(crate) fn answers(socket: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(socket).is_ok()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn answers(socket: &Path) -> bool {
+    socket.exists()
+}
+
 /// Stops the service and keeps it off across reboots, until `kith up`.
 pub(crate) fn down(out: &mut impl Write) -> Result<(), CliError> {
     if !is_root() {
-        return rerun_as_root("down");
+        return rerun_as_root(&root_args("down", None));
     }
     if cfg!(target_os = "macos") {
         run("launchctl", &["disable", LAUNCHD_LABEL])?;
@@ -93,18 +106,37 @@ fn is_root() -> bool {
     kith_sys::effective_uid() == Some(0)
 }
 
-fn rerun_as_root(command: &str) -> Result<(), CliError> {
+/// The arguments `kith` runs itself with under sudo. sudo drops `KITH_SOCKET`, and the
+/// root copy would read the socket from the config file, so the socket this run settled
+/// on is passed on explicitly.
+pub(crate) fn root_args(command: &str, socket: Option<&Path>) -> Vec<OsString> {
+    let mut args = Vec::with_capacity(3);
+    if let Some(socket) = socket {
+        let mut flag = OsString::from("--socket=");
+        flag.push(socket);
+        args.push(flag);
+    }
+    args.push(command.into());
+    args
+}
+
+fn rerun_as_root(args: &[OsString]) -> Result<(), CliError> {
     let me = std::env::current_exe()
         .map_err(|e| CliError(format!("cannot find the kith binary: {e}")))?;
     let status = Command::new("sudo")
+        .arg("--")
         .arg(me)
-        .arg(command)
+        .args(args)
         .status()
         .map_err(|e| CliError(format!("cannot run sudo: {e}")))?;
     if status.success() {
         Ok(())
     } else {
-        Err(CliError(format!("`sudo kith {command}` did not finish")))
+        let shown: Vec<_> = args.iter().map(|arg| arg.to_string_lossy()).collect();
+        Err(CliError(format!(
+            "`sudo kith {}` did not finish",
+            shown.join(" ")
+        )))
     }
 }
 
