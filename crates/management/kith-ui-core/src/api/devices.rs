@@ -12,8 +12,8 @@ use kith_types::{NetworkId, NodeId};
 use crate::Shared;
 use crate::api::records::{named, relative};
 use crate::api::{
-    Answer, ApiError, accepted, as_admin, daemon, history, network_id, node_id, settled, status_of,
-    summary,
+    Answer, ApiError, accepted, as_admin, daemon, forget, history, lock, network_id, node_id,
+    settled, status_of, summary,
 };
 use crate::ipc::Daemon;
 use crate::wire::{ApiErrorCode, RemoveIn, RenameIn};
@@ -83,10 +83,27 @@ async fn removed_at(daemon: &Daemon, network: NetworkId, node: NodeId) -> Option
     })
 }
 
-/// `POST /api/networks/:net/devices/:node/remove` (tier 2).
+/// Takes this device out of `network` once the OS confirms the person at this computer,
+/// and forgets the invites and phone configs this server held for it.
+async fn leave_network(shared: &Shared, daemon: &Daemon, network: NetworkId) -> Answer {
+    let status = status_of(daemon).await?;
+    let name = summary(&status, network)?.name.clone();
+    shared
+        .api
+        .confirm(&format!("take this device out of {name}"))
+        .await?;
+    let Response::Left = daemon.ask(Request::Leave { network }).await? else {
+        return Err(ApiError::unexpected());
+    };
+    forget(&shared.api, network);
+    Ok(accepted())
+}
+
+/// `POST /api/networks/:net/devices/:node/remove` (tier 2; tier 3 for this device).
 ///
 /// With `lost`, the names an admin pointed at the device go too. A device another admin
-/// removed first answers 409, so the page says so and that nothing was signed.
+/// removed first answers 409, so the page says so and that nothing was signed. Removing
+/// this device is leaving, so it waits for the OS like `leave`.
 pub(crate) async fn remove(
     State(shared): State<Arc<Shared>>,
     Path((net, node)): Path<(String, String)>,
@@ -95,6 +112,9 @@ pub(crate) async fn remove(
     let Json(input) = input?;
     let daemon = daemon(&shared)?;
     let (network, node) = (network_id(&net)?, node_id(&node)?);
+    if status_of(daemon).await?.node == Some(node) {
+        return leave_network(&shared, daemon, network).await;
+    }
     let names = if input.lost {
         names_of(daemon, network, node).await?
     } else {
@@ -111,6 +131,7 @@ pub(crate) async fn remove(
         }
         Err(error) => return Err(error),
     }
+    lock(&shared.api.phones).remove(&(network.to_string(), node.to_string()));
     for name in names {
         match daemon.ask(Request::DeleteRecord { network, name }).await {
             Ok(_) => {}
@@ -125,15 +146,5 @@ pub(crate) async fn remove(
 /// the OS confirms the person at this computer.
 pub(crate) async fn leave(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     let daemon = daemon(&shared)?;
-    let network = network_id(&net)?;
-    let status = status_of(daemon).await?;
-    let name = summary(&status, network)?.name.clone();
-    shared
-        .api
-        .confirm(&format!("take this device out of {name}"))
-        .await?;
-    let Response::Left = daemon.ask(Request::Leave { network }).await? else {
-        return Err(ApiError::unexpected());
-    };
-    Ok(accepted())
+    leave_network(&shared, daemon, network_id(&net)?).await
 }
