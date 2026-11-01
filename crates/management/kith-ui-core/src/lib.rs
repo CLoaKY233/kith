@@ -80,6 +80,8 @@ struct Shared {
     live: Arc<stream::Live>,
     /// Keeps `live` current; stops when the router is dropped.
     _follower: ipc::Follower,
+    /// What the write APIs keep between requests, and the tier-3 gate.
+    api: api::State,
 }
 
 /// The whole server: the API, the event stream and the page.
@@ -87,6 +89,11 @@ struct Shared {
 /// Call it inside a tokio runtime: it starts the task that follows the daemon or replays
 /// the fixture.
 pub fn router(config: Config) -> io::Result<Router> {
+    build(config, osauth::Gate::System)
+}
+
+/// [`router`], with tier-3 changes confirmed by `gate`.
+fn build(config: Config, gate: osauth::Gate) -> io::Result<Router> {
     let boot = match &config.source {
         Source::Fixture(fixture) => fixture.boot.clone(),
         Source::Daemon(_) => Token::random()?
@@ -107,6 +114,7 @@ pub fn router(config: Config) -> io::Result<Router> {
         boot,
         live,
         _follower: follower,
+        api: api::State::new(gate),
     });
     let networks = Router::new()
         .route("/peers", get(api::peers::list))
@@ -123,6 +131,7 @@ pub fn router(config: Config) -> io::Result<Router> {
         .route("/phones/{node}/config", post(api::phones::config))
         .route("/joins/{node}/approve", post(api::joins::approve))
         .route("/joins/{node}/deny", post(api::joins::deny))
+        .route("/request-code", get(api::joins::request_code))
         .route("/devices/{node}/rename", post(api::devices::rename))
         .route("/devices/{node}/remove", post(api::devices::remove))
         .route("/leave", post(api::devices::leave));

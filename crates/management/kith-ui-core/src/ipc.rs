@@ -11,11 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use kith_ipc::{
-    Entry, ErrorCode, IpcClient, IpcError, LinkReport, NetworkSummary, Request, Response, Status,
-    TrafficSeries,
-};
-use kith_types::NodeId;
+use kith_ipc::{Entry, ErrorCode, IpcClient, IpcError, Request, Response, Status, TrafficSeries};
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
@@ -23,7 +19,7 @@ use tokio::time::MissedTickBehavior;
 use crate::Source as Config;
 use crate::api::ApiError;
 use crate::stream::Live;
-use crate::wire::{ApiErrorCode, Boot, Fixture, LinkTick, RateBand, Tick, TrafficTick};
+use crate::wire::{ApiErrorCode, Boot, Fixture, LinkTick, Tick, TrafficTick};
 use crate::{Shared, api, fixture, json, now_ms};
 
 /// How often numbers are read.
@@ -34,10 +30,6 @@ const RETRY: Duration = Duration::from_secs(1);
 const HISTORY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Samples per device in the boot snapshot: five minutes at one every two seconds.
 const TAIL: usize = 150;
-/// Below this many bytes per second a link is idle.
-const LIGHT_FROM: u64 = 1_000;
-/// Above this many bytes per second a link is busy.
-const BUSY_ABOVE: u64 = 1_000_000;
 
 /// The daemon behind its socket.
 #[derive(Debug)]
@@ -226,40 +218,6 @@ async fn run(socket: &Path, live: &Live, mut entries: Entries) {
     }
 }
 
-/// How busy a link is, for members, who never see another device's exact rate.
-fn band(bytes_per_sec: u64) -> RateBand {
-    if bytes_per_sec < LIGHT_FROM {
-        RateBand::Idle
-    } else if bytes_per_sec <= BUSY_ABOVE {
-        RateBand::Light
-    } else {
-        RateBand::Busy
-    }
-}
-
-/// One network's link reports as tick links. In a network where this device is a member,
-/// links between other devices carry a [`RateBand`] instead of their rate.
-fn links(network: &NetworkSummary, own: Option<NodeId>, reports: &[LinkReport]) -> Vec<LinkTick> {
-    reports
-        .iter()
-        .flat_map(|report| {
-            let exact = network.admin || own == Some(report.node);
-            report.links.iter().map(move |link| LinkTick {
-                network: network.id.to_string(),
-                from: report.node.to_string(),
-                to: link.peer.to_string(),
-                path: link.path,
-                relay: link.relay.map(|relay| relay.to_string()),
-                rtt_ms: link.rtt_ms,
-                loss: None,
-                rate: exact.then_some(link.bytes_per_sec),
-                rate_band: (!exact).then(|| band(link.bytes_per_sec)),
-                age_secs: report.age_secs,
-            })
-        })
-        .collect()
-}
-
 /// Counters and links now, and the traffic history the daemon keeps.
 async fn read_tick(client: &mut IpcClient) -> Result<(Tick, Vec<TrafficSeries>), IpcError> {
     let Response::Traffic(series) = client.request(Request::Traffic).await? else {
@@ -301,7 +259,7 @@ async fn read_links(client: &mut IpcClient, status: &Status) -> Result<Vec<LinkT
         else {
             return Err(IpcError::Unexpected);
         };
-        all.extend(links(network, status.node, &reports));
+        all.extend(api::status::links(network, &reports, status.node));
     }
     Ok(all)
 }
@@ -321,61 +279,4 @@ pub(crate) async fn snapshot(shared: &Shared) -> Result<Boot, ApiError> {
         snapshot.last_tick = Some(tick);
     }
     Ok(snapshot)
-}
-
-#[cfg(test)]
-mod tests {
-    use kith_ipc::{LinkInfo, PathKind};
-    use kith_types::NetworkId;
-
-    use super::*;
-
-    #[test]
-    fn members_see_bands_for_links_between_other_devices() {
-        let own = NodeId::from_bytes([1; 32]);
-        let other = NodeId::from_bytes([2; 32]);
-        let report = |node, bytes_per_sec| LinkReport {
-            node,
-            name: String::new(),
-            age_secs: 0,
-            links: vec![LinkInfo {
-                peer: NodeId::from_bytes([3; 32]),
-                peer_name: String::new(),
-                path: PathKind::Direct,
-                relay: None,
-                rtt_ms: Some(20),
-                bytes_per_sec,
-            }],
-        };
-        let mut network = NetworkSummary {
-            id: NetworkId::from_bytes([9; 32]),
-            name: "home".into(),
-            peers_online: 0,
-            peers_total: 0,
-            relays: 0,
-            problems: Vec::new(),
-            admin: false,
-        };
-        let reports = [report(own, 5_000), report(other, 2_000_000)];
-        let shown: Vec<_> = links(&network, Some(own), &reports)
-            .into_iter()
-            .map(|link| (link.rate, link.rate_band))
-            .collect();
-        assert_eq!(shown, [(Some(5_000), None), (None, Some(RateBand::Busy))]);
-        network.admin = true;
-        assert!(
-            links(&network, Some(own), &reports)
-                .iter()
-                .all(|link| link.rate.is_some() && link.rate_band.is_none())
-        );
-        assert_eq!(
-            [band(999), band(1_000), band(1_000_000), band(1_000_001)],
-            [
-                RateBand::Idle,
-                RateBand::Light,
-                RateBand::Light,
-                RateBand::Busy
-            ]
-        );
-    }
 }
