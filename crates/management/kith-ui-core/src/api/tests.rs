@@ -230,6 +230,9 @@ impl World {
                 everything: None,
             },
             Ipc::AllowBlocked { .. } => Reply::BlockedAllowed,
+            Ipc::CreateInvite { .. } => Reply::Invite {
+                invite_link: "kith://join/abc".into(),
+            },
             Ipc::Leave { .. } => Reply::Left,
             Ipc::RequestCode { .. } => Reply::RequestCode {
                 code: "kith://request/abc".into(),
@@ -540,7 +543,37 @@ async fn a_name_changes_only_from_what_the_page_saw() -> TestResult {
 
     let (code, _) = page
         .post(
-            &net("/records/storage.home.kith.internal/delete"),
+            &net("/records"),
+            json!({ "name": " Storage.home.kith.internal. ", "type": "A", "value": "100.64.0.9", "based_on": "100.64.0.2" }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, _) = page
+        .post(
+            &net("/records"),
+            json!({ "name": "web.home.kith.internal", "type": "TXT", "value": "hi", "based_on": null }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        page.changes(),
+        [
+            Ipc::SetRecord {
+                network: NET,
+                name: "storage".into(),
+                record: DnsRecord::A([100, 64, 0, 9].into()),
+            },
+            Ipc::SetRecord {
+                network: NET,
+                name: "web".into(),
+                record: DnsRecord::Txt("hi".into()),
+            },
+        ]
+    );
+
+    let (code, _) = page
+        .post(
+            &net("/records/STORAGE.home.kith.internal/delete"),
             json!({}),
         )
         .await?;
@@ -670,6 +703,73 @@ async fn tier_three_changes_wait_for_the_os_and_nothing_happens_without_it() -> 
     let (code, _) = confirmed.post(&net("/leave"), json!({})).await?;
     assert_eq!(code, StatusCode::OK);
     assert!(confirmed.changes().contains(&Ipc::Leave { network: NET }));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn removing_this_device_is_leaving_and_forgets_what_was_held() -> TestResult {
+    let remove_me = net(&format!("/devices/{ME}/remove"));
+    let mut refused = Page::open(World::new(true), Gate::Fixed(Err(OsAuthError::Denied))).await?;
+    let (code, _) = refused.post(&remove_me, json!({ "lost": false })).await?;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    assert_eq!(refused.changes(), []);
+
+    let mut page = Page::open(World::new(true), Gate::Fixed(Ok(()))).await?;
+    page.post(&net("/phones"), json!({ "name": "phone", "tags": [] }))
+        .await?;
+    let (code, _) = page
+        .post(
+            &net(&format!("/devices/{PHONE}/remove")),
+            json!({ "lost": false }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, _) = page
+        .post(
+            &net(&format!("/phones/{PHONE}/config")),
+            json!({ "everything": false }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+
+    page.post(&net("/invites"), json!({ "expires_secs": 600, "uses": 1 }))
+        .await?;
+    page.changes();
+    let (code, _) = page.post(&remove_me, json!({ "lost": true })).await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(page.changes(), [Ipc::Leave { network: NET }]);
+    let (_, invites) = page.get(&net("/invites")).await?;
+    assert_eq!(invites, json!([]));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invites_are_bounded_before_anything_is_signed() -> TestResult {
+    let mut page = Page::open(World::new(true), Gate::System).await?;
+    for bad in [
+        json!({ "expires_secs": 0, "uses": null }),
+        json!({ "expires_secs": u64::MAX, "uses": null }),
+        json!({ "expires_secs": 600, "uses": 0 }),
+        json!({ "expires_secs": 600, "uses": 70_000 }),
+    ] {
+        let (code, _) = page.post(&net("/invites"), bad).await?;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(page.changes(), []);
+
+    let (code, invite) = page
+        .post(&net("/invites"), json!({ "expires_secs": 600, "uses": 2 }))
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (_, listed) = page
+        .get(&format!(
+            "/api/networks/{}/invites",
+            NET.to_string().to_uppercase()
+        ))
+        .await?;
+    assert_eq!(listed, json!([invite]));
+    let (code, _) = page.get("/api/networks/home/invites").await?;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
     Ok(())
 }
 

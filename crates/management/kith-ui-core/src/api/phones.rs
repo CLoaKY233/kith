@@ -12,11 +12,15 @@ use axum::extract::{Path, State};
 use kith_ipc::{Request, Response};
 use serde_json::json;
 
-use crate::Shared;
 use crate::api::{
-    Answer, ApiError, HeldPhone, as_admin, daemon, lock, network_id, qr_svg, summary,
+    Answer, ApiError, HeldPhone, as_admin, daemon, lock, network_id, node_id, qr_svg, summary,
 };
 use crate::wire::{PhoneConfig, PhoneConfigIn, PhoneCreated, PhoneIn};
+use crate::{Shared, now_ms};
+
+/// The most phone configs held at once; past it the oldest is dropped, and that phone
+/// has to be made again to show its config.
+const MAX_HELD: usize = 64;
 
 /// `POST /api/networks/:net/phones`.
 pub(crate) async fn create(
@@ -54,7 +58,24 @@ pub(crate) async fn create(
         gateway: phone.gateway.clone().unwrap_or_default(),
         everything_available: everything.is_some(),
     };
-    lock(&shared.api.phones).insert((net, created.node.clone()), HeldPhone { mesh, everything });
+    let held = HeldPhone {
+        mesh,
+        everything,
+        made_ms: now_ms(),
+    };
+    let mut phones = lock(&shared.api.phones);
+    phones.insert((network.to_string(), created.node.clone()), held);
+    while phones.len() > MAX_HELD {
+        let Some(oldest) = phones
+            .iter()
+            .min_by_key(|(_, held)| held.made_ms)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        phones.remove(&oldest);
+    }
+    drop(phones);
     Ok(Json(json!(created)))
 }
 
@@ -67,8 +88,10 @@ pub(crate) async fn config(
 ) -> Answer {
     let Json(input) = input?;
     let daemon = daemon(&shared)?;
+    let network = network_id(&net)?;
+    let key = (network.to_string(), node_id(&node)?.to_string());
     let held = lock(&shared.api.phones)
-        .get(&(net.clone(), node.clone()))
+        .get(&key)
         .cloned()
         .ok_or_else(|| {
             ApiError::not_found(
@@ -82,10 +105,10 @@ pub(crate) async fn config(
         held.mesh
     };
     let status = crate::api::status_of(daemon).await?;
-    let network = summary(&status, network_id(&net)?)?.name.clone();
+    let name = summary(&status, network)?.name.clone();
     shared
         .api
-        .confirm(&format!("show the private key of a new phone in {network}"))
+        .confirm(&format!("show the private key of a new phone in {name}"))
         .await?;
     Ok(Json(json!(PhoneConfig {
         qr_svg: qr_svg(&config),
