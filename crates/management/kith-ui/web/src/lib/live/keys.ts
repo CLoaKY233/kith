@@ -16,4 +16,6 @@ export const tintKey = {
   exit: 'exit',
   /** A Needs-you item that just arrived, by its id. */
   need: (id: string): string => `need/${id}`,
+  /** A name in the Names table that was added, changed or removed, by its full name. */
+  record: (network: string, name: string): string => `rec/${network}/${name}`,
 } as const;

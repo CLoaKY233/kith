@@ -6,9 +6,12 @@ access to gets a plain row instead: admins see `Allow` (tier 2, an AlertDialog),
 `Ask an admin`.
 
 Switching is optimistic: the radio moves at once and the row reads `Switching…`. When the
-server accepts, the line under the list reads `Your internet now goes through vps.`; when it
-fails, the radio moves back and the line says why. Arrow keys move focus only; Space or Enter
-picks, so walking the list never switches exits by accident.
+server accepts, the line under the list reads `Your internet now goes through vps.`; while
+the OS asks for confirmation the row says so, and the line waits for the daemon to report the
+change. When it fails, the radio moves back and the line says why. One switch at a time: the
+other options are disabled until it settles. Arrow keys move focus only; Space or Enter
+picks, so walking the list never switches exits by accident (the group says so to screen
+readers).
 
 Used by the Exits screen, the header's ExitChip popover and ⌘K `Use exit…`.
 Props:
@@ -17,6 +20,7 @@ Props:
 <script lang="ts">
   import { untrack } from 'svelte';
   import { announce } from '../announce';
+  import { errorText } from '../api';
   import { copy } from '../copy';
   import { rtt } from '../format';
   import { actions, live } from '../live/store.svelte';
@@ -26,7 +30,6 @@ Props:
   import AlertDialog from '../ui/AlertDialog.svelte';
   import Button from '../ui/Button.svelte';
   import CopyField from '../ui/CopyField.svelte';
-  import Sheet from '../ui/Sheet.svelte';
   import AskAdminSheet from './AskAdminSheet.svelte';
 
   let { net }: { net: string } = $props();
@@ -83,11 +86,22 @@ Props:
   // §8.6: exit choice is optimistic. `pick` holds the choice until the daemon reports it.
   let pick = $state<Pick | null>(null);
   let switching = $state(false);
+  /** The server took the switch and the OS is asking to confirm it. */
+  let awaiting = $state(false);
   let note = $state<Note | null>(null);
   let attempt = 0;
 
   const selectedKey = $derived(pick?.key ?? truthKey);
 
+  $effect(() => {
+    // Confirmed on this computer: the daemon now reports the pick.
+    if (!awaiting || pick === null || truthKey !== pick.key) return;
+    const text = pick.name === null ? copy.exits.doneNone : copy.exits.done(pick.name);
+    awaiting = false;
+    switching = false;
+    note = { tone: 'done', text, key: pick.key };
+    announce(text);
+  });
   $effect(() => {
     if (pick !== null && !switching && truthKey === pick.key) pick = null;
   });
@@ -131,44 +145,51 @@ Props:
 
   const currentName = $derived(inUse?.name ?? null);
 
-  function failure(handle: ActionHandle<Outcome>, target: string | null, still: string | null): string {
-    if (handle.state === 'conflict' && handle.conflict) {
-      return copy.error.conflict(handle.conflict.resolved_by);
-    }
+  /**
+   * §7.8 step 4. An exit that can't be reached (the daemon answers not_found for it) gets
+   * the reachability sentence; any other cause is the §12.5 text. Either way the line ends
+   * with what is still in use, read when the answer arrives.
+   */
+  function failure(handle: ActionHandle<Outcome>, target: string | null): string {
+    const still = currentName;
     const error = handle.error;
-    switch (error?.code) {
-      case 'permission_denied':
-        return copy.error.permissionDenied;
-      case 'daemon_down':
-        return copy.conn.staleActions;
-      case 'not_implemented':
-        return copy.error.notImplemented;
-      default:
-        if (target === null) return copy.error.internal(error?.message ?? '');
-        return still === null ? copy.exits.failedNone(target) : copy.exits.failed(target, still);
+    if (target !== null && error?.code === 'not_found') {
+      return still === null ? copy.exits.failedNone(target) : copy.exits.failed(target, still);
     }
+    const cause =
+      handle.state === 'conflict' && handle.conflict
+        ? copy.error.conflict(handle.conflict.resolved_by)
+        : error
+          ? errorText(error, { subject: target ?? undefined })
+          : copy.error.internal('');
+    return copy.exits.failedOther(target, cause, still);
   }
 
   function choose(key: string, node: string | null, name: string | null): void {
-    if (frozen || netId === null) return;
-    if (key === selectedKey && !switching) return;
-    const still = currentName;
+    if (frozen || netId === null || switching) return;
+    if (key === selectedKey) return;
     attempt += 1;
     const mine = attempt;
     pick = { key, name };
     switching = true;
+    awaiting = false;
     note = null;
     const handle = actions.useExit(netId, node);
     void handle.done.then((h) => {
       if (mine !== attempt) return;
+      if (h.state === 'awaiting_os_auth') {
+        // Nothing has changed yet: the row says what it waits for (§8.6).
+        awaiting = true;
+        return;
+      }
       switching = false;
-      if (h.state === 'accepted' || h.state === 'awaiting_os_auth') {
+      if (h.state === 'accepted' || h.state === 'seen') {
         const text = name === null ? copy.exits.doneNone : copy.exits.done(name);
         note = { tone: 'done', text, key };
         announce(text);
       } else {
         pick = null;
-        const text = failure(h, name, still);
+        const text = failure(h, name);
         note = { tone: 'failed', text, key: null };
         announce(text);
       }
@@ -177,10 +198,11 @@ Props:
 
   function label(option: { key: string; node: string | null; name: string | null }): string {
     const moving = switching && pick?.key === option.key;
+    const doing = awaiting ? copy.action.awaitingOsAuth : copy.exits.switching;
     if (option.node === null || option.name === null) {
-      return moving ? copy.exits.option(copy.exits.noneShort, copy.exits.switching) : copy.exits.none;
+      return moving ? copy.exits.option(copy.exits.noneShort, doing) : copy.exits.none;
     }
-    if (moving) return copy.exits.option(option.name, copy.exits.switching);
+    if (moving) return copy.exits.option(option.name, doing);
     if (option.key === truthKey && pick === null) {
       if (live.status?.exit_state === 'offline_blocked') return copy.header.exitOfflineBlocked(option.name);
       if (live.status?.exit_state === 'offline_direct') return copy.header.exitOfflineDirect(option.name);
@@ -310,18 +332,29 @@ Props:
 
   const headingId = $props.id();
   const reasonId = `${headingId}-reason`;
+  const noteId = `${headingId}-note`;
+  const hintId = `${headingId}-hint`;
+  const describedBy = $derived(
+    [hintId, frozen ? reasonId : '', !frozen && note?.tone === 'failed' ? noteId : '']
+      .filter(Boolean)
+      .join(' '),
+  );
+
+  /** `You don't have access to ` and `.`, around a name that must not break. */
+  const [noAccessBefore = '', noAccessAfter = ''] = copy.exits.noAccess('\u0000').split('\u0000');
 </script>
 
 <div class="picker">
   <h2 class="t-heading" id={headingId}>{copy.exits.heading}</h2>
 
   {#if ready}
+    <span class="sr-only" id={hintId}>{copy.exits.switchHint}</span>
     <div
       bind:this={group}
       class="options"
       role="radiogroup"
       aria-labelledby={headingId}
-      aria-describedby={frozen ? reasonId : undefined}
+      aria-describedby={describedBy}
     >
       {#each options as option, index (option.key)}
         {@const checked = option.key === selectedKey}
@@ -330,7 +363,7 @@ Props:
           class:tint={checked && live.changed.has('exit')}
           role="radio"
           aria-checked={checked}
-          aria-disabled={frozen ? 'true' : undefined}
+          aria-disabled={frozen || (switching && !checked) ? 'true' : undefined}
           tabindex={option.key === tabKey ? 0 : -1}
           data-key={option.key}
           onclick={() => choose(option.key, option.node, option.name)}
@@ -342,14 +375,23 @@ Props:
         </div>
       {/each}
     </div>
+  {/if}
 
+  {#if frozen}
+    <p class="reason" id={reasonId}>{copy.conn.staleActions}</p>
+  {:else if note}
+    <p class="note" class:failed={note.tone === 'failed'} id={noteId}>{note.text}</p>
+  {/if}
+
+  {#if ready}
     {#if locked.length > 0}
       <ul class="locked">
         {#each locked as exit (exit.node)}
           {@const grant = grants[exit.node]}
           <li class="lock">
+            <span class="mark" aria-hidden="true"></span>
             <div class="lock-text">
-              <span>{copy.exits.noAccess(exit.name)}</span>
+              <span>{noAccessBefore}<span class="nowrap">{exit.name}</span>{noAccessAfter}</span>
               {#if grant}
                 <span
                   class="status"
@@ -389,12 +431,6 @@ Props:
       <p class="note failed">{copy.error.internal(loadFailure.message)}</p>
     {/if}
   {/if}
-
-  {#if frozen}
-    <p class="reason" id={reasonId}>{copy.conn.staleActions}</p>
-  {:else if note}
-    <p class="note" class:failed={note.tone === 'failed'}>{note.text}</p>
-  {/if}
 </div>
 
 {#if allowing && network}
@@ -411,9 +447,7 @@ Props:
   </AlertDialog>
 {/if}
 
-<Sheet bind:open={askOpen} title={copy.askAdmin.title} closeLabel={copy.action.close}>
-  <AskAdminSheet {net} request={askRequest} />
-</Sheet>
+<AskAdminSheet bind:open={askOpen} {net} request={askRequest} />
 
 <style>
   .picker {
@@ -486,16 +520,24 @@ Props:
   }
   .lock {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: var(--s-3);
     min-height: var(--row);
     padding: 0 var(--s-3);
     color: var(--ink-3);
   }
+  .lock > .mark {
+    border-color: var(--ink-4);
+    background: transparent;
+  }
   .lock-text {
     display: grid;
     min-width: 0;
+  }
+  .nowrap {
+    white-space: nowrap;
   }
   .status {
     font: var(--t-small);

@@ -2,14 +2,16 @@
 @component
 Exits (spec §6.7). This device's choice at the top (ExitPicker), then, for admins, every
 exit on the network: who has access, who is using it now and its live rate. An exit that
-may be used offers `Stop offering…`; one that may not offers `Allow as exit…`. Both are
-tier 2: an AlertDialog with the consequences, and the button names the exit.
+may be used offers `Stop offering…`; one that may not offers `Allow as exit…` and reads
+`Not allowed yet`. Both are tier 2: an AlertDialog with the consequences, and the button
+names the exit. This device is `This device` in the lists, first. `Allow device…` (§6.7)
+waits for the API: an exit grant is network-wide today.
 Props:
   - net: string, the network's id or name (as in the URL).
 -->
 <script lang="ts">
   import { announce } from '../lib/announce';
-  import { copy, DOT } from '../lib/copy';
+  import { copy } from '../lib/copy';
   import ExitPicker from '../lib/kith/ExitPicker.svelte';
   import Rate from '../lib/kith/Rate.svelte';
   import { actions, live } from '../lib/live/store.svelte';
@@ -36,6 +38,16 @@ Props:
   const netId = $derived(network?.id ?? null);
   const admin = $derived(network?.admin ?? false);
   const self = $derived(live.status?.node ?? null);
+  const selfName = $derived(
+    live.status?.memberships.find((m) => m.network === netId)?.name ?? null,
+  );
+  const peers = $derived(netId ? Object.values(live.peers[netId] ?? {}) : []);
+
+  /** Device names with this device first, as `This device`. */
+  function people(names: readonly string[]): string[] {
+    if (selfName === null || !names.includes(selfName)) return [...names];
+    return [copy.exits.selfFirst, ...names.filter((n) => n !== selfName)];
+  }
   const rows = $derived(
     [...(netId ? (live.exits[netId] ?? []) : [])].sort((a, b) => a.name.localeCompare(b.name)),
   );
@@ -62,13 +74,24 @@ Props:
     return frozen ? 'stale' : 'online';
   }
 
-  /** Bytes per second through the exit: every reported link to it, else this device's own. */
+  /**
+   * Bytes per second through the exit: the links to it from the devices using it now.
+   * Nobody using it reads `—`; other traffic to the device is not exit traffic.
+   */
   function rate(exit: ExitView): number | null {
+    if (exit.in_use_by.length === 0) return null;
+    const users = new Set(
+      exit.in_use_by.map((name) =>
+        name === selfName ? self : (peers.find((p) => p.name === name)?.node ?? null),
+      ),
+    );
     let sum: number | null = null;
     for (const link of netId ? (live.links[netId] ?? []) : []) {
-      if (link.to === exit.node && link.rate !== null) sum = (sum ?? 0) + link.rate;
+      if (link.to === exit.node && users.has(link.from) && link.rate !== null) {
+        sum = (sum ?? 0) + link.rate;
+      }
     }
-    if (sum !== null) return sum;
+    if (sum !== null || self === null || !users.has(self)) return sum;
     const own = netId ? live.numbers[`${netId}/${exit.node}`] : undefined;
     return own ? own.rx + own.tx : null;
   }
@@ -141,8 +164,6 @@ Props:
 </script>
 
 <section class="screen">
-  <h1 class="t-title">{copy.nav.exits}</h1>
-
   {#if network}
     <div class="sections">
       <section>
@@ -162,12 +183,12 @@ Props:
             </div>
             {#each rows as exit (exit.node)}
               {@const grant = grants[exit.node]}
-              <div class="row" role="row">
+              <div class="row" class:locked={!exit.allowed} role="row">
                 <span class="who" role="cell">
                   <span class="line">
                     <StatusDot state={dot(exit)} />
                     <span class="name">{exit.name}</span>
-                    <span class="word">{DOT}{online(exit) ? copy.status.online : copy.status.offline}</span>
+                    <span class="sr-only">{online(exit) ? copy.status.online : copy.status.offline}</span>
                   </span>
                   {#if grant}
                     <span
@@ -180,12 +201,22 @@ Props:
                 </span>
                 <span class="access" role="cell">
                   <span class="cell-label">{copy.exits.access}</span>
-                  <span>{exit.access.length === 0 ? copy.exits.everyone : copy.exits.list(exit.access)}</span>
+                  {#if !exit.allowed}
+                    <span class="quiet">{copy.exits.notAllowed}</span>
+                  {:else}
+                    <span>
+                      {exit.access.length === 0
+                        ? copy.exits.everyone
+                        : copy.exits.list(people(exit.access))}
+                    </span>
+                  {/if}
                 </span>
                 <span class="use" role="cell">
                   <span class="cell-label">{copy.exits.inUse}</span>
                   <span class:quiet={exit.in_use_by.length === 0}>
-                    {exit.in_use_by.length === 0 ? copy.exits.nobody : copy.exits.list(exit.in_use_by)}
+                    {exit.in_use_by.length === 0
+                      ? copy.exits.nobody
+                      : copy.exits.list(people(exit.in_use_by))}
                   </span>
                 </span>
                 <span class="num" role="cell"><Rate value={rate(exit)} stale={frozen} /></span>
@@ -220,7 +251,7 @@ Props:
     description={change.allowed
       ? copy.exits.allowBody(change.exit.name, network.name)
       : change.exit.in_use_by.length > 0
-        ? copy.exits.stopUsers(change.exit.in_use_by, change.exit.name)
+        ? copy.exits.stopUsers(people(change.exit.in_use_by), change.exit.name)
         : copy.exits.stopNobody(change.exit.name)}
     cancelLabel={copy.action.cancel}
     confirmLabel={change.allowed
@@ -291,9 +322,8 @@ Props:
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .word {
+  .locked .name {
     color: var(--ink-3);
-    white-space: nowrap;
   }
   .status {
     font: var(--t-small);

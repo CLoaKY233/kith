@@ -386,12 +386,16 @@ export const copy = {
   /** §6.6 Names. */
   names: {
     add: 'Add name',
+    askAdd: 'Ask an admin to add a name…',
+    replace: 'Replace name',
     name: 'Name',
     value: 'Points to',
     more: 'More',
     type: 'Type',
     txt: 'Text record',
     target: (value: string): string => `→ ${value}`,
+    /** The arrow before a target, set apart so it stays in the body face. */
+    arrow: '→ ',
     setBy: (who: string): string => `set by ${who}`,
     setByColumn: 'Set by',
     empty: (network: string): string =>
@@ -408,6 +412,9 @@ export const copy = {
       `Use an address like 100.64.0.4 or a name like nas.${network}.`,
     replaces: (name: string, target: string): string =>
       `${name} points to ${target} now. Adding it again replaces that.`,
+    replacesText: (name: string, value: string): string =>
+      `${name} holds ${quoted(value)} now. Saving replaces it.`,
+    tryAgain: 'Try again',
     deviceName: (name: string): string =>
       `${name} is a device's own name. Choose another.`,
     copyName: (name: string): string => `Copy ${name}`,
@@ -440,6 +447,15 @@ export const copy = {
       `Couldn't switch: ${exit} isn't reachable right now. You're still using ${current}.`,
     failedNone: (exit: string): string =>
       `Couldn't switch: ${exit} isn't reachable right now. You're still using this device's own connection.`,
+    /** A failure that is not about reachability: the §12.5 cause, then what is still in use. */
+    failedOther: (exit: string | null, cause: string, current: string | null): string =>
+      `Couldn't switch${exit === null ? '' : ` to ${exit}`}: ${cause} You're still using ${
+        current ?? "this device's own connection"
+      }.`,
+    notAllowed: 'Not allowed yet',
+    /** This device in a list of devices, which it leads. */
+    selfFirst: 'This device',
+    switchHint: 'Press Space to switch.',
     noExitYet: 'No exit yet. Set one up in Exits →',
     empty: 'No device offers itself as an exit yet. On the one that should, run:',
     offerCommand: 'kith server --exit',
