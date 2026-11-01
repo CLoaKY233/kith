@@ -27,6 +27,11 @@ kith invite home --expires 1h --uses 1  # prints a kith://join/... link
 kith join kith://join/...               # on the other device
 kith status                             # who is online, and direct or relayed
 
+kith request-code home                  # or, without an invite: a kith://request/... code
+kith request kith://request/...         # on the new device; waits for an admin
+kith requests                           # admin: who is waiting, and from where
+kith approve home laptop                # admin: let it in
+
 kith dns set home nas A 100.64.0.2      # nas.home.kith.internal
 kith dns list
 
@@ -37,6 +42,10 @@ kith exit off
 kith wg export home phone --tag phone   # add a phone: scan a code in the WireGuard app
 kith remove home phone
 
+kith blocked home                       # connections the policy refused
+kith allow home phone nas tcp 22        # admin: allow one of them
+
+kith map                                # how each device reaches the others
 kith watch                              # follow changes as they happen
 kith down                               # off, and stays off after a restart
 kith up
@@ -46,7 +55,9 @@ kith up
 
 ### Web UI
 
-`kith ui` opens a live view of your networks in the browser: devices, their connections, traffic and recent events. It runs on your own device, listens on 127.0.0.1 only, and talks to the local kith service; nothing is hosted elsewhere.
+`kith ui` opens your networks in the browser: devices, their connections, traffic and recent events, live. Admins can also let waiting devices in, make invites, add phones, set DNS names and exits, and allow blocked connections. Showing a phone's private key or leaving a network asks the OS to confirm it is you.
+
+It runs on your own device, listens on 127.0.0.1 only, and talks to the local kith service; nothing is hosted elsewhere. The link it opens works once, and the session lasts until you stop `kith-ui`. [docs/security.md](docs/security.md#the-web-page) has the details.
 
 It is a separate binary, `kith-ui`, for macOS and for Linux on x86_64 and aarch64. The installer asks whether to add it when run in a terminal; with `curl | sh`, set `KITH_UI=1`:
 
