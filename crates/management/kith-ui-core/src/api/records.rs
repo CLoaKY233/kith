@@ -10,7 +10,7 @@ use kith_ipc::{DnsRecord, RecordInfo, Request, Response};
 use kith_types::NetworkId;
 use serde_json::json;
 
-use crate::api::status::suffix;
+use crate::api::status::{recorded_network, suffix};
 use crate::api::{
     Answer, ApiError, accepted, as_admin, daemon, network_id, settled, status_of, summary,
 };
@@ -76,9 +76,12 @@ pub(crate) fn relative(name: &str, suffix: &str) -> String {
 /// `GET /api/networks/:net/records`.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     match &shared.source {
-        Source::Fixture(fixture) => Ok(Json(json!(
-            fixture.records.get(&net).cloned().unwrap_or_default()
-        ))),
+        Source::Fixture(fixture) => {
+            recorded_network(fixture, &net)?;
+            Ok(Json(json!(
+                fixture.records.get(&net).cloned().unwrap_or_default()
+            )))
+        }
         Source::Daemon(daemon) => {
             let network = network_id(&net)?;
             let Response::Records(records) = daemon.ask(Request::Records { network }).await? else {

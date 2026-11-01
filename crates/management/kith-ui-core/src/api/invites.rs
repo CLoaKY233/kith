@@ -11,6 +11,7 @@ use axum::extract::{Path, State};
 use kith_ipc::{Request, Response};
 use serde_json::json;
 
+use crate::api::status::recorded_network;
 use crate::api::{Answer, ApiError, as_admin, daemon, lock, network_id, qr_svg};
 use crate::ipc::Source;
 use crate::session::Token;
@@ -23,13 +24,23 @@ const ID_LEN: usize = 8;
 /// `GET /api/networks/:net/invites`: open invites, newest first.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     let invites = match &shared.source {
-        Source::Fixture(fixture) => fixture.invites.get(&net).cloned().unwrap_or_default(),
+        Source::Fixture(fixture) => {
+            recorded_network(fixture, &net)?;
+            fixture.invites.get(&net).cloned().unwrap_or_default()
+        }
         Source::Daemon(_) => {
+            let key = network_id(&net)?.to_string();
             let now = now_ms();
             let mut made = lock(&shared.api.invites);
-            let open = made.entry(net).or_default();
+            let Some(open) = made.get_mut(&key) else {
+                return Ok(Json(json!([])));
+            };
             open.retain(|invite| invite.expires_at_ms > now);
-            open.iter().rev().cloned().collect()
+            let newest_first: Vec<Invite> = open.iter().rev().cloned().collect();
+            if open.is_empty() {
+                made.remove(&key);
+            }
+            newest_first
         }
     };
     Ok(Json(json!(invites)))
@@ -67,7 +78,7 @@ pub(crate) async fn create(
         used_by: Vec::new(),
     };
     lock(&shared.api.invites)
-        .entry(net)
+        .entry(network.to_string())
         .or_default()
         .push(invite.clone());
     Ok(Json(json!(invite)))

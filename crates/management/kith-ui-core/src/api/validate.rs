@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::Json;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Query, State};
 use kith_ipc::{Request, Response};
 use serde::Deserialize;
@@ -31,9 +32,20 @@ pub(crate) struct NameQuery {
     name: String,
 }
 
-/// The name as it would be stored: lowercase, spaces as hyphens, trimmed.
+/// The name as it would be stored: lowercase, trimmed, each run of spaces and hyphens
+/// one hyphen, as the daemon turns a name into its label.
 fn normalize(name: &str) -> String {
-    name.trim().to_lowercase().replace(' ', "-")
+    let mut label = String::with_capacity(name.len());
+    for ch in name.trim().chars().flat_map(char::to_lowercase) {
+        if ch.is_whitespace() || ch == '-' {
+            if !label.ends_with('-') {
+                label.push('-');
+            }
+        } else {
+            label.push(ch);
+        }
+    }
+    label
 }
 
 fn problem(name: &str) -> Option<NameProblem> {
@@ -67,8 +79,9 @@ fn suggest(name: &str, taken: &BTreeSet<String>) -> Option<String> {
         .find(|candidate| !taken.contains(candidate))
 }
 
-/// The names in use where `name` would go, from a recording.
-fn recorded(fixture: &Fixture, net: Option<&str>) -> BTreeSet<String> {
+/// The names in use where `name` would go, from a recording; 404 for a network it does
+/// not hold.
+fn recorded(fixture: &Fixture, net: Option<&str>) -> Result<BTreeSet<String>, ApiError> {
     let networks = fixture
         .status
         .status
@@ -79,10 +92,10 @@ fn recorded(fixture: &Fixture, net: Option<&str>) -> BTreeSet<String> {
     let field =
         |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
     let Some(net) = net else {
-        return networks
+        return Ok(networks
             .iter()
             .filter_map(|network| field(network, "name"))
-            .collect();
+            .collect());
     };
     let Some(id) = networks
         .iter()
@@ -92,7 +105,7 @@ fn recorded(fixture: &Fixture, net: Option<&str>) -> BTreeSet<String> {
         })
         .and_then(|network| field(network, "id"))
     else {
-        return BTreeSet::new();
+        return Err(unknown_network());
     };
     let devices = fixture
         .peers
@@ -106,11 +119,15 @@ fn recorded(fixture: &Fixture, net: Option<&str>) -> BTreeSet<String> {
         .iter()
         .filter(|membership| membership.network == id)
         .map(|membership| membership.name.clone());
-    devices
+    Ok(devices
         .iter()
         .filter_map(|peer| field(peer, "name"))
         .chain(me)
-        .collect()
+        .collect())
+}
+
+fn unknown_network() -> ApiError {
+    ApiError::not_found("this device is not in that network")
 }
 
 /// The names in use where `name` would go, from the daemon.
@@ -131,7 +148,7 @@ async fn in_use(daemon: &Daemon, net: Option<&str>) -> Result<BTreeSet<String>, 
         .iter()
         .find(|summary| summary.id.to_string() == net || summary.name == net)
     else {
-        return Ok(BTreeSet::new());
+        return Err(unknown_network());
     };
     let Response::Peers(peers) = client
         .request(Request::Peers {
@@ -151,8 +168,9 @@ async fn in_use(daemon: &Daemon, net: Option<&str>) -> Result<BTreeSet<String>, 
 /// `GET /api/validate/name`.
 pub(crate) async fn name(
     State(shared): State<Arc<Shared>>,
-    Query(query): Query<NameQuery>,
+    query: Result<Query<NameQuery>, QueryRejection>,
 ) -> Answer {
+    let Query(query) = query.map_err(|rejection| ApiError::bad(rejection.body_text()))?;
     let name = normalize(&query.name);
     if let Some(problem) = problem(&name) {
         return Ok(Json(json!(NameCheck {
@@ -163,7 +181,7 @@ pub(crate) async fn name(
     }
     let net = query.net.as_deref().filter(|net| !net.is_empty());
     let taken = match &shared.source {
-        Source::Fixture(fixture) => recorded(fixture, net),
+        Source::Fixture(fixture) => recorded(fixture, net)?,
         Source::Daemon(daemon) => in_use(daemon, net).await?,
     };
     let check = if taken.contains(&name) {
@@ -189,6 +207,7 @@ mod tests {
     #[test]
     fn names_follow_dns_label_rules() {
         assert_eq!(normalize(" Dev Box "), "dev-box");
+        assert_eq!(normalize("my -- Laptop"), "my-laptop");
         assert_eq!(problem("dev-box"), None);
         assert_eq!(problem(""), Some(NameProblem::Empty));
         assert_eq!(problem("-box"), Some(NameProblem::HyphenAtEdge));

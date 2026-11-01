@@ -10,7 +10,7 @@ use kith_types::{NetworkId, NodeId};
 use serde_json::json;
 
 use crate::api::codes::check_code;
-use crate::api::status::JOIN_LIFETIME_MS;
+use crate::api::status::{JOIN_LIFETIME_MS, recorded_network};
 use crate::api::{
     Answer, ApiError, accepted, as_admin, daemon, history, network_id, node_id, settled, status_of,
 };
@@ -120,16 +120,10 @@ pub(crate) async fn request_code(
 ) -> Answer {
     let code = match &shared.source {
         Source::Fixture(fixture) => {
-            let name = fixture
-                .status
-                .status
-                .get("networks")
-                .and_then(|networks| networks.as_array())
-                .into_iter()
-                .flatten()
-                .find(|network| network.get("id").and_then(|id| id.as_str()) == Some(&net))
-                .and_then(|network| network.get("name")?.as_str())
-                .ok_or_else(|| ApiError::not_found("this device is not in that network"))?;
+            let name = recorded_network(fixture, &net)?
+                .get("name")
+                .and_then(|name| name.as_str())
+                .unwrap_or_default();
             format!("kith://request/{name}-recorded")
         }
         Source::Daemon(daemon) => {

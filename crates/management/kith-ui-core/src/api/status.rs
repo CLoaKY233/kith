@@ -11,14 +11,14 @@ use kith_ipc::{
     RecordInfo, Request, Response, Status, TrafficSeries,
 };
 use kith_types::NodeId;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::api::codes::{check_code, key_fpr};
-use crate::api::{Answer, ApiError};
+use crate::api::{Answer, ApiError, network_id};
 use crate::ipc::{Daemon, Source};
 use crate::wire::{
-    BlockedGroup, Boot, Claimed, ExitState, Host, JoinRequest, LinkTick, Membership, Pending,
-    RateBand, Role, Seen, StatusView, Tick, TrafficTick, Versions,
+    BlockedGroup, Boot, Claimed, ExitState, Fixture, Host, JoinRequest, LinkTick, Membership,
+    Pending, RateBand, Role, Seen, StatusView, Tick, TrafficTick, Versions,
 };
 use crate::{Shared, json, now_ms};
 
@@ -67,6 +67,24 @@ pub(crate) async fn snapshot(shared: &Shared) -> Result<Boot, ApiError> {
         Source::Fixture(fixture) => Ok(crate::fixture::boot(fixture)),
         Source::Daemon(daemon) => daemon_boot(shared, daemon).await,
     }
+}
+
+/// The recorded network `net` names: 400 when it is not a network id, 404 when the
+/// recording does not hold it, as the daemon would answer.
+pub(crate) fn recorded_network<'fixture>(
+    fixture: &'fixture Fixture,
+    net: &str,
+) -> Result<&'fixture Value, ApiError> {
+    network_id(net)?;
+    fixture
+        .status
+        .status
+        .get("networks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|network| network.get("id").and_then(Value::as_str) == Some(net))
+        .ok_or_else(|| ApiError::not_found("this device is not in that network"))
 }
 
 /// The computer's name, as `hostname` gives it without the domain, and its OS.
