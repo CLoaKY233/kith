@@ -15,17 +15,21 @@ const WINDOW: u32 = 24;
 /// and the signed-out page.
 const MARKERS: [&str; 2] = ["<!--kith:boot-->", "<!--kith:signed-out-->"];
 
-/// Every file under `dir`, skipping dotfiles such as `.DS_Store` so they never ship.
+/// Every file under `dir`, skipping dotfiles such as `.DS_Store` so they never ship, and
+/// symlinks, which could pull in files from outside `web/dist` or loop forever.
 fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_symlink()
+            || path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
         {
             continue;
         }
-        if path.is_dir() {
+        if kind.is_dir() {
             collect(&path, files)?;
         } else {
             files.push(path);
@@ -34,12 +38,14 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Root-relative paths the page loads through `src="/..."` or `href="/..."`.
+/// Root-relative paths the page loads through `src="/..."` or `href="/..."`, without any
+/// query or fragment, which name the same file.
 fn references(html: &str) -> Vec<&str> {
     ["src=\"/", "href=\"/"]
         .iter()
         .flat_map(|attribute| html.split(attribute).skip(1))
         .filter_map(|rest| rest.split('"').next())
+        .filter_map(|path| path.split(['?', '#']).next())
         .filter(|path| !path.is_empty() && !path.starts_with('/'))
         .collect()
 }

@@ -132,6 +132,7 @@ mod tests {
             .iter()
             .flat_map(|attribute| html.split(attribute).skip(1))
             .filter_map(|rest| rest.split('"').next())
+            .filter_map(|path| path.split(['?', '#']).next())
             .filter(|path| !path.is_empty() && !path.starts_with('/'))
             .collect()
     }
