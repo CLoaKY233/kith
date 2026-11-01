@@ -29,9 +29,12 @@ use crate::wire::{ApiErrorCode, SessionIn};
 const COOKIE_PREFIX: &str = "kith_ui_";
 /// How long a link token stays good.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(120);
-/// What every answer allows the page to load.
+/// What every answer allows the page to load. `base-uri` and `form-action` do not fall
+/// back to `default-src`, so they are named: an injected `<base>` or form must not send
+/// the page's requests or fields elsewhere.
 const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
-script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
+script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; \
+form-action 'self'; frame-ancestors 'none'";
 
 /// A 32-byte random secret: the link token or a session secret.
 #[derive(Clone)]
@@ -199,11 +202,34 @@ fn same_origin_fetch(headers: &HeaderMap) -> bool {
 
 /// Why `request` may not go further, if it may not.
 fn refusal(shared: &Shared, request: &Request) -> Option<ApiError> {
-    let headers = request.headers();
+    refuse(
+        shared.port,
+        &shared.dev_origins,
+        &shared.sessions,
+        request.method(),
+        request.uri().path(),
+        request.headers(),
+    )
+}
+
+/// Why a request may not go further, if it may not.
+///
+/// Every other server on `127.0.0.1` is the same site as this one, so a page it serves
+/// gets our cookie attached to its requests, `SameSite=Strict` or not. Every API request
+/// therefore has to show it came from this server's own page, reads included: they reach
+/// the daemon too.
+fn refuse(
+    port: u16,
+    dev_origins: &[String],
+    sessions: &Sessions,
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+) -> Option<ApiError> {
     let host_ok = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|host| is_local(host, shared.port, false));
+        .is_some_and(|host| is_local(host, port, false));
     if !host_ok {
         return Some(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -211,24 +237,22 @@ fn refusal(shared: &Shared, request: &Request) -> Option<ApiError> {
             "wrong Host header",
         ));
     }
-    let path = request.uri().path();
-    let writes = !matches!(*request.method(), Method::GET | Method::HEAD);
+    let api = path.starts_with("/api/");
+    let writes = !matches!(*method, Method::GET | Method::HEAD);
     let from_page = match headers.get(header::ORIGIN) {
         Some(origin) => origin.to_str().is_ok_and(|origin| {
-            is_local(origin, shared.port, true)
-                || shared.dev_origins.iter().any(|dev| dev == origin)
+            is_local(origin, port, true) || dev_origins.iter().any(|dev| dev == origin)
         }),
         None => !writes && same_origin_fetch(headers),
     };
-    if (writes || path == "/api/events") && !from_page {
+    if (writes || api) && !from_page {
         return Some(ApiError::new(
             StatusCode::FORBIDDEN,
             ApiErrorCode::Forbidden,
             "requests must come from the kith page",
         ));
     }
-    let open = path == "/api/session" || !path.starts_with("/api/");
-    if !open && !shared.sessions.admits(headers) {
+    if api && path != "/api/session" && !sessions.admits(headers) {
         return Some(ApiError::new(
             StatusCode::UNAUTHORIZED,
             ApiErrorCode::Unauthorized,
@@ -265,6 +289,7 @@ fn secure(headers: &mut HeaderMap, api: bool) {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -358,6 +383,76 @@ mod tests {
         assert!(!site("cross-site"));
         assert!(!site("none"));
         assert!(same_origin_fetch(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn only_this_page_reaches_the_api() -> io::Result<()> {
+        let token = Token::random()?;
+        let hex = token.hex();
+        let sessions = Sessions::new(token, 41680);
+        let secret = sessions
+            .start(&hex, Instant::now())
+            .map_err(|_| io::Error::other("refused"))?;
+        let dev = ["http://localhost:5173".to_owned()];
+        let status = |method: Method, path: &str, extra: &[(&str, &str)]| -> io::Result<u16> {
+            let mut headers = cookies(&format!("kith_ui_41680={}", secret.hex()))?;
+            headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:41680"));
+            for (name, value) in extra {
+                headers.insert(
+                    header::HeaderName::from_bytes(name.as_bytes()).map_err(io::Error::other)?,
+                    HeaderValue::from_str(value).map_err(io::Error::other)?,
+                );
+            }
+            Ok(refuse(41680, &dev, &sessions, &method, path, &headers)
+                .map_or(200, |refused| refused.into_response().status().as_u16()))
+        };
+        let page = [("sec-fetch-site", "same-origin")];
+        assert_eq!(status(Method::GET, "/api/status", &page)?, 200);
+        assert_eq!(
+            status(Method::GET, "/api/status", &[])?,
+            200,
+            "not a browser"
+        );
+        assert_eq!(
+            status(
+                Method::GET,
+                "/api/status",
+                &[("host", "kith.evil.test:41680")]
+            )?,
+            403,
+            "DNS rebinding"
+        );
+        for site in ["same-site", "cross-site", "none"] {
+            assert_eq!(
+                status(Method::GET, "/api/status", &[("sec-fetch-site", site)])?,
+                403,
+                "a GET from {site}"
+            );
+        }
+        assert_eq!(
+            status(Method::GET, "/", &[("sec-fetch-site", "cross-site")])?,
+            200,
+            "the page shell opens from a link"
+        );
+        let post = |origin: &'static str| status(Method::POST, "/api/exit", &[("origin", origin)]);
+        assert_eq!(post("http://127.0.0.1:41680")?, 200);
+        assert_eq!(post("http://localhost:5173")?, 200);
+        assert_eq!(post("http://127.0.0.1:8080")?, 403, "another server here");
+        assert_eq!(post("null")?, 403);
+        assert_eq!(status(Method::POST, "/api/exit", &page)?, 403, "no Origin");
+        let mut bare = HeaderMap::new();
+        bare.insert(header::HOST, HeaderValue::from_static("localhost:41680"));
+        bare.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://localhost:41680"),
+        );
+        let without_cookie = |path: &str| {
+            refuse(41680, &dev, &sessions, &Method::POST, path, &bare)
+                .map(|refused| refused.into_response().status().as_u16())
+        };
+        assert_eq!(without_cookie("/api/session"), None);
+        assert_eq!(without_cookie("/api/exit"), Some(401));
+        Ok(())
     }
 
     #[test]

@@ -33,7 +33,8 @@ mod tests {
     const ORIGIN: &str = "http://127.0.0.1:41680";
     const VITE: &str = "http://localhost:5173";
     const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
-script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
+script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; \
+form-action 'self'; frame-ancestors 'none'";
     /// The fixture's boot id and last journal seq.
     const FIXTURE_BOOT: &str = "9f2c1a7e5b3d4c60";
     const FIXTURE_SEQ: u64 = 230;
@@ -378,6 +379,7 @@ script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
             assert_eq!(headers[header::CONTENT_SECURITY_POLICY], CSP, "{path}");
             assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{path}");
             assert_eq!(headers[header::REFERRER_POLICY], "no-referrer", "{path}");
+            assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{path}");
             if path.starts_with("/api/") {
                 assert_eq!(headers[header::CACHE_CONTROL], "no-store", "{path}");
             }
