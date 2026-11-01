@@ -24,7 +24,7 @@ use crate::copy;
 use crate::deeplink::join_code;
 use crate::icon::{self, IconState};
 use crate::model::{self, Menu, Reach};
-use crate::notify::{self, Gate, Notice, RecentUse};
+use crate::notify::{self, Gate, Notice, RecentUse, Waiting};
 use crate::page::{self, Bound, Page};
 use crate::timing::{DAEMON_STOPPED_NOTIFY_MS, WINDOW_SHOW_FALLBACK};
 use crate::tokens::{BG_DARK, BG_LIGHT, Rgb};
@@ -81,8 +81,10 @@ struct State {
     window: Option<Open>,
     /// Counts windows opened, for unique labels.
     opened: u64,
-    /// A window is being opened; another request only waits for it.
+    /// A window is being opened.
     opening: bool,
+    /// The latest request made while a window was being opened, carried out once it is.
+    queued: Option<(Option<String>, Option<String>)>,
 }
 
 /// The shell, shared by the tray, the window, the watcher and the notifications.
@@ -91,6 +93,8 @@ pub(crate) struct Shell {
     app: AppHandle,
     origin: Origin,
     state: Mutex<State>,
+    /// The notifications waiting for the person.
+    waiting: Waiting,
 }
 
 impl Shell {
@@ -191,12 +195,20 @@ impl Shell {
         }
     }
 
-    /// Shows `notice`; `Review` opens its page.
+    /// Shows `notice`; `Review` opens its page. Past [`notify::MAX_WAITING`] waiting at
+    /// once, it shows without `Review`.
     fn notify(self: &Arc<Self>, notice: Notice) {
         let shell = Arc::clone(self);
         let identifier = self.app.config().identifier.clone();
+        let place = self.waiting.claim();
         std::thread::spawn(move || {
-            if notify::show_and_wait(&identifier, &notice) {
+            let Some(place) = place else {
+                notify::show_only(&identifier, &notice);
+                return;
+            };
+            let reviewed = notify::show_and_wait(&identifier, &notice);
+            drop(place);
+            if reviewed {
                 shell.open(Some(notice.target), None);
             }
         });
@@ -304,6 +316,14 @@ impl Shell {
         let generation = {
             let mut state = self.state();
             if state.opening {
+                if join.is_some()
+                    || state
+                        .queued
+                        .as_ref()
+                        .is_none_or(|(_, queued)| queued.is_none())
+                {
+                    state.queued = Some((path, join));
+                }
                 return;
             }
             state.opening = true;
@@ -314,10 +334,16 @@ impl Shell {
         tauri::async_runtime::spawn(async move {
             let path = path.unwrap_or_else(|| "/".to_owned());
             let opened = shell.build_window(generation, &path, join.as_deref()).await;
-            let mut state = shell.state();
-            state.opening = false;
-            if let Some(open) = opened {
-                state.window = Some(open);
+            let queued = {
+                let mut state = shell.state();
+                state.opening = false;
+                if let Some(open) = opened {
+                    state.window = Some(open);
+                }
+                state.queued.take()
+            };
+            if let Some((path, join)) = queued {
+                shell.open(path, join);
             }
         });
     }
@@ -388,7 +414,13 @@ impl Shell {
                     let _no_browser = opener::open(link);
                 });
             }
-            "kith" => self.deep_link(url.as_str()),
+            "kith" => {
+                // Not from inside the web view's navigation callback, which reopening the
+                // window would destroy under it.
+                let shell = Arc::clone(self);
+                let link = url.to_string();
+                tauri::async_runtime::spawn(async move { shell.deep_link(&link) });
+            }
             _ => {}
         }
     }
@@ -495,6 +527,7 @@ pub(crate) fn setup(app: &mut tauri::App, origin: Origin) -> tauri::Result<()> {
         app: app.handle().clone(),
         origin,
         state: Mutex::new(State::default()),
+        waiting: Waiting::default(),
     });
     app.manage(Arc::clone(&shell));
 
@@ -543,12 +576,18 @@ pub(crate) fn setup(app: &mut tauri::App, origin: Origin) -> tauri::Result<()> {
 /// A second launch: deep links reach [`Shell::deep_link`] through the deep-link plugin;
 /// a plain launch shows the window.
 pub(crate) fn second_launch(app: &AppHandle, argv: &[String]) {
-    if argv.iter().any(|arg| arg.starts_with("kith://")) {
+    if argv.iter().any(|arg| is_link(arg)) {
         return;
     }
     if let Some(shell) = app.try_state::<Arc<Shell>>() {
         shell.open(None, None);
     }
+}
+
+/// Whether a launch argument is a `kith://` link, in any case, as QR codes carry them.
+fn is_link(arg: &str) -> bool {
+    arg.get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("kith://"))
 }
 
 /// Keeps the shell in the tray when its window closes, and shows the window when the app
@@ -579,4 +618,18 @@ pub(crate) fn now_ms() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_link_in_any_case_is_left_to_the_deep_link_plugin() {
+        assert!(is_link("kith://join/mfrggzdf"));
+        assert!(is_link("KITH://JOIN/MFRGGZDF"));
+        assert!(!is_link("--fixture"));
+        assert!(!is_link("kith:"));
+        assert!(!is_link("kïth://join/a"));
+    }
 }
