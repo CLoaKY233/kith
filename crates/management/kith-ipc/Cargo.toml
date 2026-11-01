@@ -15,6 +15,11 @@ kith-wire.workspace = true
 serde = { workspace = true, features = ["alloc", "derive", "std"] }
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+# TypeScript declarations of the types the kith page reads, for `kith-ui-core`.
+ts = ["dep:ts-rs"]
 
 [dev-dependencies]
 proptest.workspace = true

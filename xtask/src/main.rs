@@ -5,6 +5,8 @@
 //! - `core-crates`: print the sans-IO core crates (those marked `#![no_std]`).
 //! - `size`: build `kith` with the `embedded` profile and enforce the size budget: 5 MB
 //!   for router and device targets, 6 MB for x86-64.
+//! - `ui-types`: write the page's TypeScript types, `kith-ui/web/src/lib/types.gen.ts`,
+//!   from the Rust ones. A test in `kith-ui-core` fails while the file is stale.
 
 #![forbid(unsafe_code)]
 
@@ -44,7 +46,8 @@ commands:
   no-std          build every core crate for a bare-metal target
   core-crates     print the sans-IO core crates, one per line
   size [--target T] [--max-bytes N] [--zigbuild]
-                  build `kith` (embedded profile) and enforce the size budget";
+                  build `kith` (embedded profile) and enforce the size budget
+  ui-types        write kith-ui/web/src/lib/types.gen.ts from the Rust types";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -54,6 +57,7 @@ fn main() -> ExitCode {
         Some("no-std") => no_std(),
         Some("core-crates") => print_core_crates(),
         Some("size") => size(rest),
+        Some("ui-types") => ui_types(),
         Some("help" | "--help" | "-h") | None => {
             say(USAGE);
             Ok(())
@@ -179,6 +183,25 @@ fn ci() -> Result<(), Error> {
     run("cargo-machete", &["--with-metadata", "."])?;
     say("\nall checks passed");
     Ok(())
+}
+
+/// Regenerates the page's TypeScript types through the freshness test, which writes the
+/// file instead of checking it when `KITH_UI_WRITE_TYPES` is set.
+fn ui_types() -> Result<(), Error> {
+    run_with_env(
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "kith-ui-core",
+            "--features",
+            "ts",
+            "--lib",
+            "--",
+            "ts::tests::types_gen_ts_is_current",
+        ],
+        &[("KITH_UI_WRITE_TYPES", "1")],
+    )
 }
 
 /// Finds the core crates: every `crates/*/*` whose `src/lib.rs` declares `#![no_std]`.

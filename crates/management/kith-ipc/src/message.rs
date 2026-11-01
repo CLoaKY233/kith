@@ -362,8 +362,10 @@ pub enum Response {
 
 /// One device's report of the peers it reaches, from [`Response::Topology`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LinkReport {
     /// The reporting device.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub node: NodeId,
     /// Its name in the network.
     pub name: String,
@@ -375,8 +377,10 @@ pub struct LinkReport {
 
 /// One peer in a [`LinkReport`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct LinkInfo {
     /// The peer reached.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub peer: NodeId,
     /// Its name in the network, or its short id if the reporter knows a peer this device
     /// does not.
@@ -384,6 +388,7 @@ pub struct LinkInfo {
     /// The path in use.
     pub path: PathKind,
     /// The relay carrying the traffic, when relayed.
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub relay: Option<NodeId>,
     /// The measured round-trip time in milliseconds, once known.
     pub rtt_ms: Option<u32>,
@@ -393,10 +398,13 @@ pub struct LinkInfo {
 
 /// A device waiting for an admin to let it join, from [`Request::PendingJoins`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PendingJoin {
     /// The network it asked to join.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub network: NetworkId,
     /// The device.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub node: NodeId,
     /// The name it asked for.
     pub name: String,
@@ -408,14 +416,18 @@ pub struct PendingJoin {
 
 /// A connection a network's policy refused, from [`Request::Blocked`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct BlockedInfo {
     /// The network.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub network: NetworkId,
     /// The device that tried to connect.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub from: NodeId,
     /// Its name in the network.
     pub from_name: String,
     /// The device it tried to reach.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub to: NodeId,
     /// Its name in the network.
     pub to_name: String,
@@ -451,8 +463,10 @@ pub enum ErrorCode {
 
 /// The daemon's state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Status {
     /// This device's identity, once created.
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub node: Option<NodeId>,
     /// Networks this device belongs to.
     pub networks: Vec<NetworkSummary>,
@@ -476,6 +490,7 @@ pub struct Status {
 
 /// A warning the daemon logged, kept for `kith status` and `kith doctor`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Warning {
     /// How long ago it happened.
     pub secs_ago: u64,
@@ -485,8 +500,10 @@ pub struct Warning {
 
 /// One network in [`Status`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct NetworkSummary {
     /// Network id.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub id: NetworkId,
     /// Display name.
     pub name: String,
@@ -504,6 +521,7 @@ pub struct NetworkSummary {
 
 /// Something wrong in a network, such as a phone that lost its address.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Problem {
     /// What is wrong.
     pub what: String,
@@ -513,8 +531,10 @@ pub struct Problem {
 
 /// One peer in [`Response::Peers`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PeerInfo {
     /// Peer identity.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub node: NodeId,
     /// The device's name in the network: unique, and a DNS label.
     pub name: String,
@@ -548,7 +568,9 @@ pub struct PeerInfo {
 
 /// How traffic reaches a peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", ts(rename_all = "snake_case"))]
 pub enum PathKind {
     /// Peer-to-peer UDP.
     Direct,
@@ -600,24 +622,30 @@ pub(crate) enum ServerMessage {
 
 /// One thing that happened, numbered so a client can resume where it stopped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Entry {
     /// Increases by one per entry, from 0 when the daemon started.
     pub seq: u64,
     /// When, in milliseconds since the Unix epoch.
     pub at_ms: u64,
     /// What.
+    #[cfg_attr(feature = "ts", ts(flatten))]
     pub kind: EntryKind,
 }
 
 /// What a journal [`Entry`] records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[non_exhaustive]
+#[cfg_attr(feature = "ts", ts(tag = "kind", rename_all = "snake_case"))]
 pub enum EntryKind {
     /// A peer came online, reached as `path` (or through `gateway`, for a phone).
     PeerOnline {
         /// Its network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The peer.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name in the network.
         name: String,
@@ -629,8 +657,10 @@ pub enum EntryKind {
     /// A peer went offline.
     PeerOffline {
         /// Its network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The peer.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name in the network.
         name: String,
@@ -638,8 +668,10 @@ pub enum EntryKind {
     /// An online peer is now reached another way.
     PathChanged {
         /// Its network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The peer.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name in the network.
         name: String,
@@ -651,8 +683,10 @@ pub enum EntryKind {
     /// An online peer's address changed, as when a phone moves from Wi-Fi to mobile data.
     EndpointChanged {
         /// Its network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The peer.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name in the network.
         name: String,
@@ -662,8 +696,10 @@ pub enum EntryKind {
     /// A device became a member.
     DeviceJoined {
         /// The network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The device.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name.
         name: String,
@@ -673,8 +709,10 @@ pub enum EntryKind {
     /// A device stopped being a member.
     DeviceRemoved {
         /// The network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The device.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name.
         name: String,
@@ -708,8 +746,10 @@ pub enum EntryKind {
     /// A device asked to join and waits for an admin.
     JoinRequested {
         /// The network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The device.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// The name it asked for.
         name: String,
@@ -718,12 +758,15 @@ pub enum EntryKind {
     /// 30 seconds.
     Blocked {
         /// The network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         network: NetworkId,
         /// The device that tried to connect.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         from: NodeId,
         /// Its name in the network.
         from_name: String,
         /// The device it tried to reach.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
         to: NodeId,
         /// Its name in the network.
         to_name: String,
@@ -738,10 +781,13 @@ pub enum EntryKind {
 
 /// Traffic counters of one peer, sampled every few seconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TrafficSeries {
     /// Its network.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub network: NetworkId,
     /// The peer.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub node: NodeId,
     /// Its name in the network.
     pub name: String,
@@ -751,6 +797,7 @@ pub struct TrafficSeries {
 
 /// Total bytes received from and sent to a peer at one moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TrafficSample {
     /// When, in milliseconds since the Unix epoch.
     pub at_ms: u64,

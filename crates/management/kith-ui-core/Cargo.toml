@@ -1,0 +1,35 @@
+[package]
+name = "kith-ui-core"
+description = "The kith page's server as an axum router, shared by kith-ui and the desktop shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+futures-core.workspace = true
+kith-crypto = { workspace = true, features = ["getrandom"] }
+kith-ipc.workspace = true
+kith-types.workspace = true
+qrcode = { workspace = true, features = ["svg"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+subtle = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
+ts-rs = { workspace = true, optional = true }
+
+[features]
+# Exports the page's types to `kith-ui/web/src/lib/types.gen.ts` and checks it is current.
+ts = ["dep:ts-rs", "kith-ipc/ts"]
+
+[dev-dependencies]
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

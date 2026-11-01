@@ -1,0 +1,46 @@
+{
+  "name": "kith-ui-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "size": "size-limit",
+    "icons": "node scripts/icons.mjs",
+    "fixture": "node scripts/office-fixture.mjs"
+  },
+  "dependencies": {
+    "bits-ui": "1.8.0",
+    "svelte": "5.57.3",
+    "svelte-sonner": "1.2.2",
+    "uplot": "1.6.32"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@size-limit/file": "14.3.0",
+    "@sveltejs/vite-plugin-svelte": "6.2.4",
+    "@tailwindcss/vite": "4.3.3",
+    "@tsconfig/svelte": "5.0.8",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "eslint-plugin-svelte": "3.23.1",
+    "globals": "17.14.0",
+    "lucide-static": "1.66.0",
+    "size-limit": "14.3.0",
+    "svelte-check": "4.7.8",
+    "svelte-eslint-parser": "1.10.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "6.4.5",
+    "vitest": "3.2.7"
+  }
+}

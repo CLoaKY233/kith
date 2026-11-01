@@ -8,28 +8,23 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish.workspace = true
+# Release tags commit `web/dist`, so building from the package never needs Node.
+include = ["Cargo.toml", "build.rs", "fallback.html", "src/**", "web/dist/**"]
 
 [[bin]]
 name = "kith-ui"
 path = "src/main.rs"
 
 [dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
 bpaf.workspace = true
-bytes = { workspace = true, features = ["std"] }
-http-body-util = { workspace = true, features = ["channel"] }
-hyper = { workspace = true, features = ["http1", "server"] }
-hyper-util = { workspace = true, features = ["tokio"] }
 kith-config.workspace = true
-kith-crypto = { workspace = true, features = ["getrandom"] }
-kith-ipc.workspace = true
-kith-types.workspace = true
-qrcode = { workspace = true, features = ["svg"] }
-serde = { workspace = true, features = ["derive", "std"] }
-serde_json = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+kith-ui-core.workspace = true
+opener.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt", "signal"] }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
+[build-dependencies]
+brotli.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,1573 @@
+// Generated from kith-ipc and kith-ui-core by `cargo xtask ui-types`. Do not edit.
+// Ids are lowercase hex. Times ending in `_ms` are Unix milliseconds.
+
+/**
+ * How traffic reaches a peer.
+ */
+export type PathKind = "direct" | "relay" | "stealth";
+
+/**
+ * Something wrong in a network, such as a phone that lost its address.
+ */
+export type Problem = { 
+/**
+ * What is wrong.
+ */
+what: string, 
+/**
+ * How to fix it.
+ */
+fix: string, };
+
+/**
+ * A warning the daemon logged, kept for `kith status` and `kith doctor`.
+ */
+export type Warning = { 
+/**
+ * How long ago it happened.
+ */
+secs_ago: number, 
+/**
+ * What happened.
+ */
+message: string, };
+
+/**
+ * One network in [`Status`].
+ */
+export type NetworkSummary = { 
+/**
+ * Network id.
+ */
+id: string, 
+/**
+ * Display name.
+ */
+name: string, 
+/**
+ * Peers online now, as [`PeerInfo::online`] decides.
+ */
+peers_online: number, 
+/**
+ * Total members.
+ */
+peers_total: number, 
+/**
+ * Relays advertised in the network.
+ */
+relays: number, 
+/**
+ * What is wrong with the network's records now, each with how to fix it.
+ */
+problems: Array<Problem>, 
+/**
+ * Whether this device is an admin of the network, so may change it.
+ */
+admin: boolean, };
+
+/**
+ * The daemon's state.
+ */
+export type Status = { 
+/**
+ * This device's identity, once created.
+ */
+node: string | null, 
+/**
+ * Networks this device belongs to.
+ */
+networks: Array<NetworkSummary>, 
+/**
+ * Whether this device offers itself as an exit node.
+ */
+exit: boolean, 
+/**
+ * Whether this device offers itself as a relay.
+ */
+relay: boolean, 
+/**
+ * The exit node in use, as `network/device`.
+ */
+exit_node: string | null, 
+/**
+ * The WireGuard UDP port; the control channel uses the same TCP port.
+ */
+listen_port: number, 
+/**
+ * Where names outside the mesh are forwarded.
+ */
+dns_upstreams: Array<string>, 
+/**
+ * Packets the dataplane dropped, by reason; only reasons that occurred.
+ */
+drops: { [key in string]: number }, 
+/**
+ * Routes other interfaces hold inside kith's ranges, usually another VPN's.
+ */
+route_conflicts: Array<string>, 
+/**
+ * Recent warnings, newest last.
+ */
+warnings: Array<Warning>, };
+
+/**
+ * One peer in [`Response::Peers`].
+ */
+export type PeerInfo = { 
+/**
+ * Peer identity.
+ */
+node: string, 
+/**
+ * The device's name in the network: unique, and a DNS label.
+ */
+name: string, 
+/**
+ * Mesh address, as text.
+ */
+address: string, 
+/**
+ * Current path, or `None` while offline.
+ */
+path: PathKind | null, 
+/**
+ * Why that path was chosen, such as which addresses failed to answer.
+ */
+path_reason: string | null, 
+/**
+ * Seconds since anything authenticated last arrived from it, remembered across
+ * restarts, or `None` if it has never been heard from.
+ */
+last_seen_secs: number | null, 
+/**
+ * The peer's current WireGuard endpoint, as text.
+ */
+endpoint: string | null, 
+/**
+ * Bytes received from the peer.
+ */
+rx_bytes: number, 
+/**
+ * Bytes sent to the peer.
+ */
+tx_bytes: number, 
+/**
+ * Whether the peer is reachable now: something authenticated arrived from it
+ * recently (for a phone, at its gateway). Everything that shows liveness uses this.
+ */
+online: boolean, 
+/**
+ * The name the device asked for, when its unique `name` had to differ from it.
+ */
+display_name: string, 
+/**
+ * For a device on plain WireGuard, such as a phone, the unique name of the kith
+ * device it connects through.
+ */
+gateway: string | null, 
+/**
+ * The largest packet the path to it carries, when smaller than the tunnel MTU. Bigger
+ * TCP is kept smaller, IPv4 split, and senders of other traffic told to shrink.
+ */
+path_mtu: number | null, };
+
+/**
+ * What a journal [`Entry`] records.
+ */
+export type EntryKind = { "kind": "peer_online", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * How it is reached.
+ */
+path: PathKind | null, 
+/**
+ * The kith device a plain WireGuard member goes through.
+ */
+gateway: string | null, } | { "kind": "peer_offline", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, } | { "kind": "path_changed", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * The path before.
+ */
+from: PathKind | null, 
+/**
+ * The path now.
+ */
+to: PathKind | null, } | { "kind": "endpoint_changed", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * The new address.
+ */
+endpoint: string, } | { "kind": "device_joined", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * Its name.
+ */
+name: string, 
+/**
+ * Its mesh address.
+ */
+address: string, } | { "kind": "device_removed", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * Its name.
+ */
+name: string, } | { "kind": "exit_changed", 
+/**
+ * `network/device`.
+ */
+exit: string | null, } | { "kind": "dropped", 
+/**
+ * Why, as `kith status` names it.
+ */
+reason: string, 
+/**
+ * How many since the last entry for this reason.
+ */
+count: number, } | { "kind": "warning", 
+/**
+ * Human-readable text.
+ */
+message: string, } | { "kind": "log", 
+/**
+ * `error`, `warn`, `info`, `debug` or `trace`.
+ */
+level: string, 
+/**
+ * The module that logged it.
+ */
+target: string, 
+/**
+ * The message and its fields.
+ */
+message: string, } | { "kind": "join_requested", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * The name it asked for.
+ */
+name: string, } | { "kind": "blocked", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device that tried to connect.
+ */
+from: string, 
+/**
+ * Its name in the network.
+ */
+from_name: string, 
+/**
+ * The device it tried to reach.
+ */
+to: string, 
+/**
+ * Its name in the network.
+ */
+to_name: string, 
+/**
+ * `tcp`, `udp`, `icmp`, or the IP protocol number.
+ */
+protocol: string, 
+/**
+ * The destination port, for TCP and UDP.
+ */
+port: number | null, 
+/**
+ * Packets refused since the last entry for this connection.
+ */
+count: number, };
+
+/**
+ * One thing that happened, numbered so a client can resume where it stopped.
+ */
+export type Entry = { 
+/**
+ * Increases by one per entry, from 0 when the daemon started.
+ */
+seq: number, 
+/**
+ * When, in milliseconds since the Unix epoch.
+ */
+at_ms: number, } & ({ "kind": "peer_online", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * How it is reached.
+ */
+path: PathKind | null, 
+/**
+ * The kith device a plain WireGuard member goes through.
+ */
+gateway: string | null, } | { "kind": "peer_offline", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, } | { "kind": "path_changed", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * The path before.
+ */
+from: PathKind | null, 
+/**
+ * The path now.
+ */
+to: PathKind | null, } | { "kind": "endpoint_changed", 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * The new address.
+ */
+endpoint: string, } | { "kind": "device_joined", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * Its name.
+ */
+name: string, 
+/**
+ * Its mesh address.
+ */
+address: string, } | { "kind": "device_removed", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * Its name.
+ */
+name: string, } | { "kind": "exit_changed", 
+/**
+ * `network/device`.
+ */
+exit: string | null, } | { "kind": "dropped", 
+/**
+ * Why, as `kith status` names it.
+ */
+reason: string, 
+/**
+ * How many since the last entry for this reason.
+ */
+count: number, } | { "kind": "warning", 
+/**
+ * Human-readable text.
+ */
+message: string, } | { "kind": "log", 
+/**
+ * `error`, `warn`, `info`, `debug` or `trace`.
+ */
+level: string, 
+/**
+ * The module that logged it.
+ */
+target: string, 
+/**
+ * The message and its fields.
+ */
+message: string, } | { "kind": "join_requested", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * The name it asked for.
+ */
+name: string, } | { "kind": "blocked", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device that tried to connect.
+ */
+from: string, 
+/**
+ * Its name in the network.
+ */
+from_name: string, 
+/**
+ * The device it tried to reach.
+ */
+to: string, 
+/**
+ * Its name in the network.
+ */
+to_name: string, 
+/**
+ * `tcp`, `udp`, `icmp`, or the IP protocol number.
+ */
+protocol: string, 
+/**
+ * The destination port, for TCP and UDP.
+ */
+port: number | null, 
+/**
+ * Packets refused since the last entry for this connection.
+ */
+count: number, });
+
+/**
+ * Total bytes received from and sent to a peer at one moment.
+ */
+export type TrafficSample = { 
+/**
+ * When, in milliseconds since the Unix epoch.
+ */
+at_ms: number, 
+/**
+ * Received since the session began.
+ */
+rx_bytes: number, 
+/**
+ * Sent since the session began.
+ */
+tx_bytes: number, };
+
+/**
+ * Traffic counters of one peer, sampled every few seconds.
+ */
+export type TrafficSeries = { 
+/**
+ * Its network.
+ */
+network: string, 
+/**
+ * The peer.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * Oldest first.
+ */
+samples: Array<TrafficSample>, };
+
+/**
+ * One peer in a [`LinkReport`].
+ */
+export type LinkInfo = { 
+/**
+ * The peer reached.
+ */
+peer: string, 
+/**
+ * Its name in the network, or its short id if the reporter knows a peer this device
+ * does not.
+ */
+peer_name: string, 
+/**
+ * The path in use.
+ */
+path: PathKind, 
+/**
+ * The relay carrying the traffic, when relayed.
+ */
+relay: string | null, 
+/**
+ * The measured round-trip time in milliseconds, once known.
+ */
+rtt_ms: number | null, 
+/**
+ * Bytes per second both ways over the last sample.
+ */
+bytes_per_sec: number, };
+
+/**
+ * One device's report of the peers it reaches, from [`Response::Topology`].
+ */
+export type LinkReport = { 
+/**
+ * The reporting device.
+ */
+node: string, 
+/**
+ * Its name in the network.
+ */
+name: string, 
+/**
+ * Seconds since the report was received; 0 for this device's own.
+ */
+age_secs: number, 
+/**
+ * The peers it reaches.
+ */
+links: Array<LinkInfo>, };
+
+/**
+ * A device waiting for an admin to let it join, from [`Request::PendingJoins`].
+ */
+export type PendingJoin = { 
+/**
+ * The network it asked to join.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * The name it asked for.
+ */
+name: string, 
+/**
+ * Where it asked from, when it asked this device directly.
+ */
+from: string | null, 
+/**
+ * Seconds since it asked.
+ */
+age_secs: number, };
+
+/**
+ * A connection a network's policy refused, from [`Request::Blocked`].
+ */
+export type BlockedInfo = { 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device that tried to connect.
+ */
+from: string, 
+/**
+ * Its name in the network.
+ */
+from_name: string, 
+/**
+ * The device it tried to reach.
+ */
+to: string, 
+/**
+ * Its name in the network.
+ */
+to_name: string, 
+/**
+ * `tcp`, `udp`, `icmp`, or the IP protocol number.
+ */
+protocol: string, 
+/**
+ * The destination port, for TCP and UDP.
+ */
+port: number | null, 
+/**
+ * Packets refused; under a flood only a sample is counted.
+ */
+count: number, 
+/**
+ * When the latest was refused, in milliseconds since the Unix epoch.
+ */
+last_ms: number, 
+/**
+ * The policy rule, as TOML, that would allow just this connection.
+ */
+rule: string, };
+
+/**
+ * Versions of this server and of the daemon it talks to.
+ */
+export type Versions = { 
+/**
+ * `kith-ui`'s version.
+ */
+ui: string, 
+/**
+ * The daemon's version, empty while it is unreachable.
+ */
+daemon: string, 
+/**
+ * Whether the two speak the same IPC protocol.
+ */
+compatible: boolean, };
+
+/**
+ * This device's standing in a network.
+ */
+export type Role = "admin" | "member" | "view_only" | "removed";
+
+/**
+ * This device in one network: the peers list never includes it.
+ */
+export type Membership = { 
+/**
+ * Network id.
+ */
+network: string, 
+/**
+ * This device's name in the network.
+ */
+name: string, 
+/**
+ * This device's mesh address.
+ */
+address: string, 
+/**
+ * Its standing.
+ */
+role: Role, 
+/**
+ * Its key's short fingerprint, as `k7f3·9a21`.
+ */
+key_fpr: string, 
+/**
+ * The device that made it admin, when it is one and was not the founder.
+ */
+made_admin_by: string | null, 
+/**
+ * When it was made admin, in Unix milliseconds.
+ */
+made_admin_at_ms: number | null, 
+/**
+ * Every admin's name, for "Changes need an admin: desk or nas".
+ */
+admins: Array<string>, 
+/**
+ * Whether this device shares its link reports with the network.
+ */
+share_links: boolean, };
+
+/**
+ * The computer itself, for Welcome before any network exists.
+ */
+export type Host = { 
+/**
+ * The host name, as a suggested device name.
+ */
+name: string, 
+/**
+ * The operating system, such as `macOS` or `Linux`.
+ */
+os: string, };
+
+/**
+ * How the exit in use is doing.
+ */
+export type ExitState = "active" | "offline_blocked" | "offline_direct";
+
+/**
+ * `GET /api/status`: the daemon's `Status` plus what only the page needs.
+ */
+export type StatusView = { 
+/**
+ * Whether this OS user may change kith on this device.
+ */
+operator: boolean, 
+/**
+ * Versions of `kith-ui` and the daemon.
+ */
+versions: Versions, 
+/**
+ * When a pause ends, in Unix milliseconds; `null` when not paused.
+ */
+paused_until: number | null, 
+/**
+ * This device in each network.
+ */
+memberships: Array<Membership>, 
+/**
+ * The computer.
+ */
+host: Host, 
+/**
+ * How the exit in use is doing; `null` without one.
+ */
+exit_state: ExitState | null, 
+/**
+ * This device's identity, once created.
+ */
+node: string | null, 
+/**
+ * Networks this device belongs to.
+ */
+networks: Array<NetworkSummary>, 
+/**
+ * Whether this device offers itself as an exit node.
+ */
+exit: boolean, 
+/**
+ * Whether this device offers itself as a relay.
+ */
+relay: boolean, 
+/**
+ * The exit node in use, as `network/device`.
+ */
+exit_node: string | null, 
+/**
+ * The WireGuard UDP port; the control channel uses the same TCP port.
+ */
+listen_port: number, 
+/**
+ * Where names outside the mesh are forwarded.
+ */
+dns_upstreams: Array<string>, 
+/**
+ * Packets the dataplane dropped, by reason; only reasons that occurred.
+ */
+drops: { [key in string]: number }, 
+/**
+ * Routes other interfaces hold inside kith's ranges, usually another VPN's.
+ */
+route_conflicts: Array<string>, 
+/**
+ * Recent warnings, newest last.
+ */
+warnings: Array<Warning>, };
+
+/**
+ * One exit in a network, for the Exits screen and the picker.
+ */
+export type ExitView = { 
+/**
+ * Network id.
+ */
+network: string, 
+/**
+ * The exit device.
+ */
+node: string, 
+/**
+ * Its name.
+ */
+name: string, 
+/**
+ * Whether this device may use it.
+ */
+allowed: boolean, 
+/**
+ * Names of devices allowed to use it; empty when all are.
+ */
+access: Array<string>, 
+/**
+ * Names of devices using it now.
+ */
+in_use_by: Array<string>, };
+
+/**
+ * How busy a link is, shown to members instead of another device's exact rate.
+ */
+export type RateBand = "idle" | "light" | "busy";
+
+/**
+ * One device's traffic counters at a tick.
+ */
+export type TrafficTick = { 
+/**
+ * Network id.
+ */
+network: string, 
+/**
+ * Device id.
+ */
+node: string, 
+/**
+ * Bytes received from it since its session began.
+ */
+rx: number, 
+/**
+ * Bytes sent to it since its session began.
+ */
+tx: number, };
+
+/**
+ * One link as a device reported it, for the map, paths and latency.
+ */
+export type LinkTick = { 
+/**
+ * Network id.
+ */
+network: string, 
+/**
+ * The reporting device.
+ */
+from: string, 
+/**
+ * The device it reaches.
+ */
+to: string, 
+/**
+ * The path in use.
+ */
+path: PathKind, 
+/**
+ * The relay carrying it, when relayed.
+ */
+relay: string | null, 
+/**
+ * Round-trip time in milliseconds, once measured.
+ */
+rtt_ms: number | null, 
+/**
+ * Share of probes lost, from 0 to 1, once measured.
+ */
+loss: number | null, 
+/**
+ * Bytes per second both ways; only for this device's own links or an admin.
+ */
+rate: number | null, 
+/**
+ * How busy the link is, when `rate` is withheld.
+ */
+rate_band: RateBand | null, 
+/**
+ * Seconds since the report arrived; 0 for this device's own.
+ */
+age_secs: number, };
+
+/**
+ * `event: tick`, every 2 s: numbers for every device and link. Never replayed.
+ */
+export type Tick = { 
+/**
+ * When the numbers were read, in Unix milliseconds.
+ */
+at_ms: number, 
+/**
+ * Counters per device.
+ */
+traffic: Array<TrafficTick>, 
+/**
+ * Links per reporting device.
+ */
+links: Array<LinkTick>, };
+
+/**
+ * `event: reset`: the daemon restarted, so the page refetches everything.
+ */
+export type Reset = { 
+/**
+ * The new boot id.
+ */
+boot: string, 
+/**
+ * When the daemon started, in Unix milliseconds.
+ */
+started_at_ms: number, };
+
+/**
+ * `event: gap`: entries the page asked for have left the daemon's ring.
+ */
+export type Gap = { 
+/**
+ * The first missing sequence number.
+ */
+missed_from: number, 
+/**
+ * The last missing sequence number.
+ */
+missed_to: number, };
+
+/**
+ * What a join request says about itself; shown as a claim, never as fact.
+ */
+export type Claimed = { 
+/**
+ * The name it asked for.
+ */
+name: string, 
+/**
+ * The operating system it says it runs.
+ */
+os: string | null, };
+
+/**
+ * What this device saw of a join request.
+ */
+export type Seen = { 
+/**
+ * The address it asked from, when it asked this device directly.
+ */
+ip: string | null, 
+/**
+ * Its key's short fingerprint, as `k2c1·77f0`.
+ */
+key_fpr: string, };
+
+/**
+ * A device waiting for an admin to let it join.
+ */
+export type JoinRequest = { 
+/**
+ * Stable id, used in `?need=`.
+ */
+id: string, 
+/**
+ * Network id.
+ */
+network: string, 
+/**
+ * The requesting device's id.
+ */
+node: string, 
+/**
+ * Six Crockford base32 characters from a hash of its key; the device shows the same.
+ */
+check_code: string, 
+/**
+ * What it says about itself.
+ */
+claimed: Claimed, 
+/**
+ * What this device saw.
+ */
+seen: Seen, 
+/**
+ * When it asked, in Unix milliseconds.
+ */
+requested_at_ms: number, 
+/**
+ * When the request lapses, in Unix milliseconds.
+ */
+expires_at_ms: number, };
+
+/**
+ * Connections the policy refused, grouped by source, destination and port.
+ */
+export type BlockedGroup = { 
+/**
+ * Stable id, used in `?need=` and `/api/blocked/:id/allow`.
+ */
+id: string, 
+/**
+ * Network id.
+ */
+network: string, 
+/**
+ * The device that tried to connect.
+ */
+from: string, 
+/**
+ * Its name.
+ */
+from_name: string, 
+/**
+ * The device it tried to reach.
+ */
+to: string, 
+/**
+ * Its name.
+ */
+to_name: string, 
+/**
+ * `tcp`, `udp`, `icmp`, or the IP protocol number.
+ */
+protocol: string, 
+/**
+ * The destination port, for TCP and UDP.
+ */
+port: number | null, 
+/**
+ * Connections refused in the window.
+ */
+count: number, 
+/**
+ * The first refusal in the window, in Unix milliseconds.
+ */
+first_ms: number, 
+/**
+ * The latest refusal, in Unix milliseconds.
+ */
+last_ms: number, 
+/**
+ * The policy rule, as TOML, that would allow just this.
+ */
+rule: string, };
+
+/**
+ * `GET /api/pending`: everything waiting for a person.
+ */
+export type Pending = { 
+/**
+ * Join requests, oldest first.
+ */
+joins: Array<JoinRequest>, 
+/**
+ * Blocked connections, most recent first.
+ */
+blocked: Array<BlockedGroup>, };
+
+/**
+ * The snapshot inlined into `index.html` as `<script type="application/json" id="boot">`
+ * and served by `GET /api/boot`.
+ */
+export type Boot = { 
+/**
+ * Identifies the daemon's run; a stream entry from another boot means refetch.
+ */
+boot: string, 
+/**
+ * The last journal sequence number this snapshot includes.
+ */
+seq: number, 
+/**
+ * The server's clock when the snapshot was taken, for the page's clock offset.
+ */
+server_time_ms: number, 
+/**
+ * Status of the daemon and its networks.
+ */
+status: StatusView, 
+/**
+ * Devices per network id.
+ */
+peers: { [key in string]: Array<PeerInfo> }, 
+/**
+ * The last 150 traffic samples per device.
+ */
+traffic_tail: Array<TrafficSeries>, 
+/**
+ * Everything waiting for a person.
+ */
+pending: Pending, 
+/**
+ * Versions of `kith-ui` and the daemon.
+ */
+versions: Versions, 
+/**
+ * The latest tick, so latency and links show on the first frame.
+ */
+last_tick: Tick | null, };
+
+/**
+ * The type of a name record.
+ */
+export type RecordType = "A" | "AAAA" | "CNAME" | "TXT";
+
+/**
+ * One name in a network.
+ */
+export type RecordView = { 
+/**
+ * The full name, such as `nas.home.kith.internal`.
+ */
+name: string, 
+/**
+ * The record type.
+ */
+type: RecordType, 
+/**
+ * The data.
+ */
+value: string, 
+/**
+ * Whether kith made it from a device's name.
+ */
+device: boolean, 
+/**
+ * The device that signed it, for names an admin set.
+ */
+set_by: string | null, };
+
+/**
+ * Why a request failed, as the page maps it to copy.
+ */
+export type ApiErrorCode = "unauthorized" | "session_used" | "session_expired" | "forbidden" | "permission_denied" | "not_found" | "conflict" | "invalid_argument" | "daemon_down" | "not_in_group" | "version_skew" | "os_auth_denied" | "not_implemented" | "internal";
+
+/**
+ * How a join request was settled.
+ */
+export type Resolution = "approved" | "denied" | "expired";
+
+/**
+ * Who won a race, sent with a 409.
+ */
+export type Conflict = { 
+/**
+ * The device that changed it first.
+ */
+resolved_by: string, 
+/**
+ * For a join request, what that device decided.
+ */
+resolution: Resolution | null, 
+/**
+ * When, in Unix milliseconds.
+ */
+at_ms: number, 
+/**
+ * The conflicting operation, for a change made with `based_on`.
+ */
+op: string | null, };
+
+/**
+ * The body of every non-2xx answer.
+ */
+export type ApiErrorBody = { 
+/**
+ * What kind of failure.
+ */
+code: ApiErrorCode, 
+/**
+ * The daemon's or server's words, for logs and the `Internal` copy.
+ */
+message: string, 
+/**
+ * Who won, for a 409.
+ */
+conflict: Conflict | null, };
+
+/**
+ * Where a change stands when its request returns.
+ */
+export type OutcomeState = "accepted" | "awaiting_os_auth";
+
+/**
+ * The answer to a change: its state and, for a ledger operation, the op id that later
+ * `op_seen` entries refer to.
+ */
+export type Outcome = { 
+/**
+ * Where it stands.
+ */
+state: OutcomeState, 
+/**
+ * The ledger operation, when the change signed one.
+ */
+op: string | null, };
+
+/**
+ * `POST /api/session`: trades the one-time link token for a session cookie.
+ */
+export type SessionIn = { 
+/**
+ * The token from the link's `#t=` fragment.
+ */
+token: string, };
+
+/**
+ * `POST /api/networks`: starts a network with this device as its first admin.
+ */
+export type CreateNetworkIn = { 
+/**
+ * The network's name.
+ */
+name: string, 
+/**
+ * This device's name in it.
+ */
+device_name: string, };
+
+/**
+ * `POST /api/join`: joins through an invite link.
+ */
+export type JoinIn = { 
+/**
+ * The invite link.
+ */
+invite_link: string, 
+/**
+ * This device's name in the network.
+ */
+device_name: string, };
+
+/**
+ * `POST /api/join/request`: asks an admin to let this device in.
+ */
+export type RequestJoinIn = { 
+/**
+ * The network and admin, as `home@studio-mac`, or a `kith://request/` code.
+ */
+request_code: string, 
+/**
+ * This device's name in the network.
+ */
+device_name: string, };
+
+/**
+ * The state of this device's own join request.
+ */
+export type JoinRequestState = { 
+/**
+ * Network id, once known.
+ */
+network: string | null, 
+/**
+ * Network name.
+ */
+network_name: string, 
+/**
+ * The code this device shows; the admin sees the same.
+ */
+check_code: string, 
+/**
+ * `null` while waiting.
+ */
+resolution: Resolution | null, };
+
+/**
+ * `POST /api/networks/:net/invites`.
+ */
+export type InviteIn = { 
+/**
+ * Lifetime in seconds.
+ */
+expires_secs: number, 
+/**
+ * How many devices may use it; `null` is unlimited.
+ */
+uses: number | null, };
+
+/**
+ * A new invite.
+ */
+export type Invite = { 
+/**
+ * Stable id, for revoking it.
+ */
+id: string, 
+/**
+ * The link.
+ */
+link: string, 
+/**
+ * The link as an SVG QR code; `null` when too long for one.
+ */
+qr_svg: string | null, 
+/**
+ * When it lapses, in Unix milliseconds.
+ */
+expires_at_ms: number, 
+/**
+ * Uses allowed; `null` is unlimited.
+ */
+uses: number | null, 
+/**
+ * Devices that used it so far, by name.
+ */
+used_by: Array<string>, };
+
+/**
+ * `POST /api/networks/:net/phones`: makes a plain WireGuard device.
+ */
+export type PhoneIn = { 
+/**
+ * The name it asks for.
+ */
+name: string, 
+/**
+ * Its policy tags.
+ */
+tags: Array<string>, };
+
+/**
+ * The phone that was made.
+ */
+export type PhoneCreated = { 
+/**
+ * Its unique name, which differs from the one asked for when that was taken.
+ */
+name: string, 
+/**
+ * Its device id.
+ */
+node: string, 
+/**
+ * The kith device it connects through.
+ */
+gateway: string, 
+/**
+ * Whether an exit is available for the all-traffic config.
+ */
+everything_available: boolean, };
+
+/**
+ * `POST /api/networks/:net/phones/:node/config`: reveals a phone's private config
+ * (tier 3: waits for OS confirmation).
+ */
+export type PhoneConfigIn = { 
+/**
+ * All traffic through the exit, rather than just the network.
+ */
+everything: boolean, };
+
+/**
+ * A phone's `wg-quick` config.
+ */
+export type PhoneConfig = { 
+/**
+ * The config text; it holds the phone's private key.
+ */
+config: string, 
+/**
+ * The config as an SVG QR code; `null` when too long for one.
+ */
+qr_svg: string | null, };
+
+/**
+ * `POST /api/networks/:net/records`: sets a name.
+ */
+export type RecordIn = { 
+/**
+ * The name, without the network suffix.
+ */
+name: string, 
+/**
+ * The record type.
+ */
+type: RecordType, 
+/**
+ * The data.
+ */
+value: string, 
+/**
+ * The op this edit was based on, to detect a concurrent change.
+ */
+based_on: string | null, };
+
+/**
+ * `POST /api/exit`: which exit this device uses; `node: null` stops using one.
+ */
+export type ExitIn = { 
+/**
+ * Network id of the exit; `null` with `node: null` stops.
+ */
+network: string | null, 
+/**
+ * The exit device.
+ */
+node: string | null, };
+
+/**
+ * `POST /api/networks/:net/exits/:node`: allows a device to be an exit, or stops it.
+ */
+export type GrantIn = { 
+/**
+ * Allow when true, revoke when false.
+ */
+allowed: boolean, };
+
+/**
+ * `POST /api/networks/:net/devices/:node/rename`.
+ */
+export type RenameIn = { 
+/**
+ * The new name.
+ */
+name: string, 
+/**
+ * The op this edit was based on, to detect a concurrent change.
+ */
+based_on: string | null, };
+
+/**
+ * `POST /api/networks/:net/devices/:node/remove`.
+ */
+export type RemoveIn = { 
+/**
+ * It was lost or stolen: also revoke its invites and names.
+ */
+lost: boolean, };
+
+/**
+ * `POST /api/blocked/:id/allow`.
+ */
+export type AllowIn = { 
+/**
+ * Return what would change without signing.
+ */
+preview: boolean, };
+
+/**
+ * What allowing a blocked connection would change.
+ */
+export type AllowPreview = { 
+/**
+ * The rule as a sentence, such as `phone may reach nas on TCP 22`.
+ */
+rule_sentence: string, 
+/**
+ * Every path the rule opens, as sentences; one entry means nothing else changes.
+ */
+new_paths: Array<string>, };
+
+/**
+ * Why a name is not usable.
+ */
+export type NameProblem = "empty" | "too_long" | "invalid_character" | "hyphen_at_edge" | "taken";
+
+/**
+ * `GET /api/validate/name?net=&name=`.
+ */
+export type NameCheck = { 
+/**
+ * The name as it would be stored: lowercased, spaces as hyphens.
+ */
+name: string, 
+/**
+ * `null` when the name is usable.
+ */
+problem: NameProblem | null, 
+/**
+ * A free name close to it, when taken.
+ */
+suggestion: string | null, };
+
+/**
+ * A recorded network for `kith-ui --fixture`: what a daemon would answer, frozen at
+ * `recorded_at_ms`.
+ */
+export type Fixture = { 
+/**
+ * When it was recorded; the server shifts every time by `now - recorded_at_ms`.
+ */
+recorded_at_ms: number, 
+/**
+ * The boot id the fixture server reports.
+ */
+boot: string, 
+/**
+ * Status of the daemon and its networks.
+ */
+status: StatusView, 
+/**
+ * Devices per network id.
+ */
+peers: { [key in string]: Array<PeerInfo> }, 
+/**
+ * Names per network id.
+ */
+records: { [key in string]: Array<RecordView> }, 
+/**
+ * Everything waiting for a person.
+ */
+pending: Pending, 
+/**
+ * The journal, oldest first; the last entry's `seq` is the snapshot's.
+ */
+journal: Array<Entry>, 
+/**
+ * Traffic samples per device, oldest first.
+ */
+traffic: Array<TrafficSeries>, 
+/**
+ * Links as each device reports them, per network id.
+ */
+links: { [key in string]: Array<LinkTick> }, 
+/**
+ * Exits per network id.
+ */
+exits: { [key in string]: Array<ExitView> }, 
+/**
+ * Open invites per network id.
+ */
+invites: { [key in string]: Array<Invite> }, };
