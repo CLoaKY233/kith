@@ -1,16 +1,34 @@
 //! `kith-ui --fixture`: a recorded network served as if a daemon answered, so the page is
 //! built and tested without one.
+//!
+//! The stream replays the recording through [`Live`], the same path a daemon's journal
+//! takes: the recorded journal is the history a page can resume from, ticks advance the
+//! recorded traffic, and the recorded entries are played again as new ones, 60 times
+//! faster than they happened, so the page always has something live to show.
 
+use core::time::Duration;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
+use kith_ipc::{Entry, TrafficSample, TrafficSeries};
+use kith_types::{NetworkId, NodeId};
 use serde_json::Value;
+use tokio::time::{Instant, MissedTickBehavior};
 
-use crate::now_ms;
+use crate::ipc::TICK;
+use crate::stream::Live;
 use crate::wire::{Boot, Fixture, LinkTick, Tick, TrafficTick};
+use crate::{json, now_ms};
 
 /// Samples per device in the boot snapshot.
 const TAIL: usize = 150;
+/// How much faster than recorded the journal replays: a day in 24 minutes.
+const SPEEDUP: u64 = 60;
+/// The shortest wait between replayed entries, so a recorded burst stays readable.
+const REPLAY_MIN: Duration = Duration::from_millis(500);
+/// The longest wait between replayed entries, so a recorded quiet hour stays short.
+const REPLAY_MAX: Duration = Duration::from_secs(20);
 
 /// Why a fixture could not be loaded.
 #[derive(Debug)]
@@ -19,6 +37,8 @@ pub enum FixtureError {
     Read(std::io::Error),
     /// The file is not a fixture.
     Parse(serde_json::Error),
+    /// The boot id is not 1 to 64 ASCII letters and digits, so it cannot name events.
+    Boot,
 }
 
 impl core::error::Error for FixtureError {}
@@ -28,6 +48,7 @@ impl core::fmt::Display for FixtureError {
         match self {
             Self::Read(error) => write!(f, "cannot read the fixture: {error}"),
             Self::Parse(error) => write!(f, "not a fixture: {error}"),
+            Self::Boot => f.write_str("not a fixture: `boot` must be 1 to 64 letters and digits"),
         }
     }
 }
@@ -65,7 +86,16 @@ pub fn load_fixture(path: &Path) -> Result<Fixture, FixtureError> {
         .unwrap_or(i64::MAX)
         .saturating_sub(i64::try_from(recorded).unwrap_or(i64::MAX));
     shift(&mut value, offset);
-    serde_json::from_value(value).map_err(FixtureError::Parse)
+    let fixture: Fixture = serde_json::from_value(value).map_err(FixtureError::Parse)?;
+    let boot_ok = (1..=64).contains(&fixture.boot.len())
+        && fixture
+            .boot
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric());
+    if !boot_ok {
+        return Err(FixtureError::Boot);
+    }
+    Ok(fixture)
 }
 
 /// The last `TAIL` samples of each series.
@@ -210,16 +240,86 @@ impl Player {
     }
 }
 
+/// The wait before replaying the recorded entry at `turn`: its recorded distance from the
+/// entry before it, sped up and kept between [`REPLAY_MIN`] and [`REPLAY_MAX`].
+fn replay_delay(recorded: &[Entry], turn: usize) -> Duration {
+    let count = recorded.len().max(1);
+    let index = turn % count;
+    let before = (index + count - 1) % count;
+    let gap = match (recorded.get(index), recorded.get(before)) {
+        (Some(entry), Some(previous)) => entry.at_ms.saturating_sub(previous.at_ms) / SPEEDUP,
+        _ => u64::MAX,
+    };
+    Duration::from_millis(gap).clamp(REPLAY_MIN, REPLAY_MAX)
+}
+
+/// Feeds `live` from the recording for as long as the server runs.
+pub(crate) async fn replay(fixture: Fixture, live: Arc<Live>) {
+    let recorded: Vec<Entry> = fixture
+        .journal
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| json::unshape_entry(entry).ok())
+        .collect();
+    let mut seq = recorded
+        .last()
+        .map_or(0, |entry| entry.seq.saturating_add(1));
+    live.restart(recorded.clone(), seq);
+    if let Ok(series) = json::unshape::<Vec<TrafficSeries>>(&fixture.traffic) {
+        live.record(|history| history.record(&series));
+    }
+    let mut player = Player::new(&fixture);
+    let mut ticks = tokio::time::interval(TICK);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut turn = 0;
+    let wait = tokio::time::sleep(replay_delay(&recorded, turn));
+    tokio::pin!(wait);
+    loop {
+        tokio::select! {
+            _ = ticks.tick() => {
+                let tick = player.tick();
+                live.record(|history| {
+                    for counters in &tick.traffic {
+                        if let (Ok(network), Ok(node)) = (
+                            counters.network.parse::<NetworkId>(),
+                            counters.node.parse::<NodeId>(),
+                        ) {
+                            history.add(network, node, TrafficSample {
+                                at_ms: tick.at_ms,
+                                rx_bytes: counters.rx,
+                                tx_bytes: counters.tx,
+                            });
+                        }
+                    }
+                });
+                live.tick(tick);
+            }
+            () = &mut wait => {
+                if let Some(entry) = recorded.get(turn % recorded.len().max(1)) {
+                    live.extend([Entry {
+                        seq,
+                        at_ms: now_ms(),
+                        kind: entry.kind.clone(),
+                    }]);
+                    seq = seq.saturating_add(1);
+                }
+                turn = turn.wrapping_add(1);
+                wait.as_mut().reset(Instant::now() + replay_delay(&recorded, turn));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
     reason = "assertions fail the test; ? keeps the setup short"
 )]
 mod tests {
-    use kith_ipc::{Entry, PeerInfo, Status, TrafficSeries};
+    use kith_ipc::{EntryKind, PeerInfo, Status};
 
     use super::*;
-    use crate::json;
 
     type TestResult = Result<(), Box<dyn core::error::Error>>;
 
@@ -269,5 +369,31 @@ mod tests {
         }
         assert_ne!(first.links.len(), 0);
         Ok(())
+    }
+
+    #[test]
+    fn replay_keeps_the_recorded_rhythm_within_bounds() {
+        let at = |at_ms| Entry {
+            seq: 0,
+            at_ms,
+            kind: EntryKind::Log {
+                level: "info".into(),
+                target: "test".into(),
+                message: String::new(),
+            },
+        };
+        let recorded = [at(0), at(300_000), at(300_010), at(99_000_000)];
+        let waits: Vec<Duration> = (0..5).map(|turn| replay_delay(&recorded, turn)).collect();
+        assert_eq!(
+            waits,
+            [
+                REPLAY_MIN,
+                Duration::from_secs(5),
+                REPLAY_MIN,
+                REPLAY_MAX,
+                REPLAY_MIN
+            ]
+        );
+        assert_eq!(replay_delay(&[], 0), REPLAY_MAX);
     }
 }

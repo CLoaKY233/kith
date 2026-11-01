@@ -8,12 +8,14 @@
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
-use axum::http::header::{self, HeaderValue};
+use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::Shared;
-use crate::api::status::snapshot;
+use crate::api::ApiError;
+use crate::ipc::snapshot;
+use crate::wire::ApiErrorCode;
 
 /// One embedded file.
 #[derive(Debug, Clone, Copy)]
@@ -127,15 +129,42 @@ async fn page(shared: &Shared, index: &Asset, signed_in: bool) -> Response {
     response
 }
 
-/// Everything that is not `/api/`: the page's routes and files. Nothing else exists.
+/// Whether `Accept-Encoding` allows brotli: `br` listed without `q=0`.
+fn accepts_brotli(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|part| {
+            let mut params = part.split(';').map(str::trim);
+            params.next() == Some("br")
+                && params.all(|param| {
+                    param
+                        .strip_prefix("q=")
+                        .and_then(|q| q.parse::<f32>().ok())
+                        .is_none_or(|q| q > 0.0)
+                })
+        })
+}
+
+/// Everything not routed: the page's routes and files. Nothing else exists.
 pub(crate) async fn serve(State(shared): State<Arc<Shared>>, request: Request) -> Response {
+    let path = request.uri().path();
+    if path.starts_with("/api/") {
+        return ApiError::new(
+            StatusCode::NOT_FOUND,
+            ApiErrorCode::NotFound,
+            "no such endpoint",
+        )
+        .into_response();
+    }
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return not_found();
     }
     let Some(assets) = shared.assets else {
         return not_found();
     };
-    let path = request.uri().path();
     if is_page(path) {
         let signed_in = shared.sessions.admits(request.headers());
         return match assets.iter().find(|asset| asset.path == "index.html") {
@@ -143,17 +172,12 @@ pub(crate) async fn serve(State(shared): State<Arc<Shared>>, request: Request) -
             None => not_found(),
         };
     }
-    let accepts_brotli = request
-        .headers()
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.split(',').any(|part| part.trim().starts_with("br")));
     let name = path.trim_start_matches('/');
     match assets
         .iter()
         .find(|asset| asset.path == name && asset.path != "index.html")
     {
-        Some(asset) => file(asset, accepts_brotli),
+        Some(asset) => file(asset, accepts_brotli(request.headers())),
         None => not_found(),
     }
 }
@@ -183,10 +207,26 @@ mod tests {
             "/n/home/inbox",
             "/admin",
             "/n/home/devices/nas/x",
+            "/n//devices",
             "/assets",
+            "/index.html",
         ] {
             assert!(!is_page(other), "{other}");
         }
+    }
+
+    #[test]
+    fn brotli_only_when_the_browser_takes_it() {
+        let accepts = |value: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
+            accepts_brotli(&headers)
+        };
+        assert!(accepts("gzip, deflate, br, zstd"));
+        assert!(accepts("br;q=0.5"));
+        assert!(!accepts("br;q=0"));
+        assert!(!accepts("gzip, brotli"));
+        assert!(!accepts_brotli(&HeaderMap::new()));
     }
 
     #[test]
