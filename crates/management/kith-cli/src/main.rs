@@ -58,6 +58,8 @@ fn main() -> ExitCode {
         | Cmd::Log { .. }
         | Cmd::Top
         | Cmd::Doctor
+        | Cmd::Blocked { .. }
+        | Cmd::Allow { .. }
         | Cmd::Config(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

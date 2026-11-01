@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod blocked;
 mod engine;
 #[cfg(any(test, feature = "test-support"))]
 mod memory_tun;
@@ -26,5 +27,6 @@ pub use api::{
     Dataplane, DataplaneConfig, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event,
     ExternalInterface, ExternalMember, ExternalPeer, ExternalPeerStats, PeerSpec, PeerStats, Stats,
 };
+pub use blocked::Blocked;
 #[cfg(any(test, feature = "test-support"))]
 pub use memory_tun::MemoryTun;

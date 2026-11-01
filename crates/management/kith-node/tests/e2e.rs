@@ -996,6 +996,91 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a_blocked_connection_is_reported_and_allowed_with_one_rule() -> TestResult {
+        let journal = kith_node::Journal::new();
+        let watched = journal.clone();
+        let s = start_node(
+            |config| config,
+            move |options| options.journal(watched.clone()),
+            true,
+        )
+        .await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer_info(&a, network, "server").await?;
+        let alpha = peer_info(&s, network, "alpha").await?;
+        let packet = udp_packet(alpha.address.parse()?, server.address.parse()?, b"hi")?;
+        deliver(&a, &s, &packet).await?;
+
+        set_policy(
+            &s,
+            network,
+            toml::to_string(&kith_policy::Policy::deny_all())?,
+        )
+        .await?;
+        never_delivered(&a, &s, &packet).await?;
+        let other_port = udp_ports(
+            alpha.address.parse()?,
+            4000,
+            server.address.parse()?,
+            5001,
+            b"no",
+        )?;
+        never_delivered(&a, &s, &other_port).await?;
+
+        let Response::Blocked(blocked) = s.request(Request::Blocked { network }).await else {
+            return Err("no blocked list".into());
+        };
+        let Some(seen) = blocked.iter().find(|b| b.port == Some(5000)) else {
+            return Err(format!("port 5000 was not reported: {blocked:?}").into());
+        };
+        if (seen.from, seen.to, seen.protocol.as_str(), seen.port)
+            != (alpha.node, server.node, "udp", Some(5000))
+            || seen.count == 0
+        {
+            return Err(format!("the wrong connection was reported: {seen:?}").into());
+        }
+        let rule: kith_policy::Policy = toml::from_str(&seen.rule)?;
+        if rule.rules().len() != 1 {
+            return Err(
+                format!("the rule does not parse as one policy rule: {}", seen.rule).into(),
+            );
+        }
+        let journaled = journal.entries().iter().any(|entry| {
+            matches!(&entry.kind, EntryKind::Blocked { from_name, to_name, port: Some(5000), .. }
+                if from_name == "alpha" && to_name == "server")
+        });
+        if !journaled {
+            return Err(format!("the journal missed the block: {:?}", journal.entries()).into());
+        }
+
+        let allowed = s
+            .request(Request::AllowBlocked {
+                network,
+                from: seen.from,
+                to: seen.to,
+                protocol: seen.protocol.clone(),
+                port: seen.port,
+            })
+            .await;
+        if allowed != Response::BlockedAllowed {
+            return Err(format!("allow failed: {allowed:?}").into());
+        }
+        deliver(&a, &s, &packet).await?;
+        never_delivered(&a, &s, &other_port).await?;
+        let Response::Blocked(blocked) = s.request(Request::Blocked { network }).await else {
+            return Err("no blocked list".into());
+        };
+        if blocked.iter().any(|b| b.port == Some(5000))
+            || !blocked.iter().any(|b| b.port == Some(5001))
+        {
+            return Err(format!("the list should hold only port 5001 now: {blocked:?}").into());
+        }
+        shutdown([a, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn exit_traffic_goes_out_and_back_and_the_choice_survives_a_restart() -> TestResult {
         let s = start_server(true, false, None).await?;
         let disk = Disk::new("exit")?;

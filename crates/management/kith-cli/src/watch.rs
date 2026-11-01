@@ -207,6 +207,21 @@ pub(crate) fn describe(kind: &EntryKind, names: &NetworkNames) -> String {
             |exit| format!("internet traffic now goes through {exit}"),
         ),
         EntryKind::Dropped { reason, count } => format!("{count} packets dropped: {reason}"),
+        EntryKind::Blocked {
+            network,
+            from_name,
+            to_name,
+            protocol,
+            port,
+            count,
+            ..
+        } => {
+            let what = port.map_or_else(|| protocol.clone(), |port| format!("{protocol} {port}"));
+            format!(
+                "policy blocked {} -> {to_name} {what} ({count} packets); see kith blocked",
+                who(network, from_name)
+            )
+        }
         EntryKind::Warning { message } => format!("warning: {message}"),
         EntryKind::Log {
             level,

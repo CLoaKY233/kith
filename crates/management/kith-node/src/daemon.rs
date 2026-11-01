@@ -19,7 +19,7 @@ use kith_ipc::{
     Status, Warning,
 };
 use kith_ledger::{AdmissionRequest, JoinProof, Ledger};
-use kith_policy::Addresses;
+use kith_policy::{Addresses, Policy, Rule};
 use kith_router::MeshRanges;
 use kith_sys::{Dns, Interface, OsSystem, Platform, System};
 use kith_transport_udp::UdpLink;
@@ -28,6 +28,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::blocked::BlockedLog;
 use crate::channel::{ChannelLayer, now, pick_targets};
 use crate::connectivity::{Connectivity, Output};
 use crate::dns::DnsService;
@@ -353,6 +354,7 @@ pub(crate) struct Daemon {
     share_links: bool,
     /// This device's own join requests, kept so asking again reuses the same request.
     asks: BTreeMap<NetworkId, AdmissionRequest>,
+    blocked: BlockedLog,
 }
 
 impl Drop for Daemon {
@@ -605,6 +607,7 @@ impl Daemon {
             topology: Topology::new(local),
             share_links: config.network.share_links,
             asks: BTreeMap::new(),
+            blocked: BlockedLog::default(),
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -723,6 +726,8 @@ impl Daemon {
             Action::Peers { network } => self.peers(network).await,
             Action::Traffic => Ok(Response::Traffic(self.activity.traffic())),
             Action::Topology { network } => self.topology(network).await,
+            Action::Blocked { network } => self.blocked_list(network).await,
+            Action::AllowBlocked { network, rule } => self.allow_blocked(network, &rule).await,
             Action::Records { network } => Ok(Response::Records(crate::dns::record_list(
                 self.member_map(network)?,
             ))),
@@ -2170,6 +2175,7 @@ impl Daemon {
         self.activity
             .observe(&peers, &drop_reasons(&stats.drops), &self.journal);
         self.announce_links(&peers);
+        self.observe_blocked(&stats);
     }
 
     /// The peers this device reaches in `network`, from `infos`, as a link report.
@@ -2267,6 +2273,45 @@ impl Daemon {
             });
         }
         Ok(Response::Topology(reports))
+    }
+
+    /// The connections `network`'s policy refused, as of now.
+    async fn blocked_list(&mut self, network: NetworkId) -> Result<Response, NodeError> {
+        self.member_map(network)?;
+        if let Ok(stats) = self.dataplane.stats().await {
+            self.observe_blocked(&stats);
+        }
+        Ok(Response::Blocked(self.blocked.list(network)))
+    }
+
+    /// Adds `rule` to `network`'s policy, unless it is there already.
+    async fn allow_blocked(
+        &mut self,
+        network: NetworkId,
+        rule: &Rule,
+    ) -> Result<Response, NodeError> {
+        let identity = Arc::clone(&self.identity);
+        let runtime = self.runtime_mut(network)?;
+        let mut rules = runtime.policy()?.rules().to_vec();
+        if !rules.contains(rule) {
+            rules.push(rule.clone());
+        }
+        let policy =
+            Policy::new(rules).map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+        runtime.set_policy(&identity, &policy, now())?;
+        self.commit(network).await?;
+        self.blocked.forget(network, rule);
+        Ok(Response::BlockedAllowed)
+    }
+
+    /// Takes in the connections the dataplane saw refused.
+    fn observe_blocked(&mut self, stats: &Stats) {
+        self.blocked.observe(
+            &stats.blocked,
+            self.networks.maps(),
+            (self.identity.node_id(), &self.journal),
+            (Instant::now(), crate::journal::unix_ms()),
+        );
     }
 
     /// Tells the network which of this device's plain WireGuard members are online,
