@@ -6,7 +6,7 @@ kith is alpha software. It has had no outside audit. This page says what it prot
 
 Each device makes one Ed25519 key when it first runs. Its `NodeId` is the public half. The same key, converted to X25519, is the device's WireGuard key, so a device's identity and its tunnel key cannot drift apart. The private key stays in the state directory (`/var/lib/kith` on Linux, `/Library/Application Support/kith` on macOS), readable by root only.
 
-A phone added with `kith wg export` is different: the exporting device generates the phone's WireGuard key and prints it inside the QR code. It is not saved anywhere, but the device that ran the export had it in memory, and anyone who sees the code has it.
+A phone added with `kith wg export` is different: the exporting device generates the phone's WireGuard key and prints it inside the QR code. It is not saved anywhere, but the device that ran the export had it in memory, and anyone who sees the code has it. A phone added from the web page is the same, except that `kith-ui` keeps the phone's config in memory until it stops, so the person can show the code again after confirming to the OS.
 
 ## What runs where
 
@@ -27,6 +27,31 @@ There is no control server. Each network is a ledger of signed operations (add a
 - **Changing the admin set or the threshold** needs signatures from at least the threshold number of admins, set when the network is created.
 - **Removal wins.** If an admin is removed while they concurrently sign something, that operation does not count.
 
+## Joining by request
+
+A device without an invite can ask to join. Any member prints a `kith://request/` code with `kith request-code`; it holds the network's id and name and that member's addresses, and no secret. The new device signs a request with its own key and sends it to that member, which gossips it to the others. The request grants nothing: it only lets in a device once an admin runs `kith approve` (or approves it on the web page), which signs an ordinary add.
+
+- **Check that it is the right device.** A request carries only the name the device asked for, and anyone with the code can ask under any name. The web page shows the device and every admin the same six-character check code, a hash of the device's key; approve only when it matches the code on the device in front of you. It is 30 bits: enough to tell two requests apart, not a password. `kith requests` shows the device's id instead, and `kith request` does not print a check code yet, so from the CLI compare the id with `kith status` on the new device.
+- **Who sees a request.** Every member holds pending requests, with the requested name and, on the member that was asked, the address it came from. A request lapses 10 minutes after the requester signed it.
+- **Flooding.** Each member holds at most 32 pending requests per network and one per device. Anyone with the code can fill that list with fresh keys for 10 minutes at a time, and new requests are refused until it drains. A request code is not a secret, but sharing it only with the person who needs it keeps this away.
+
+## What members learn about each other
+
+Every member keeps the full ledger, so it knows every device, its address, its DNS names and the policy. Members also gossip link reports every 10 seconds to the others in each network: which peers a device reaches, whether directly or through which relay, the round-trip time and the bytes per second on each link. So every member learns who talks to whom and roughly how much, and keeps the last report from each device for a minute. `kith map` shows these numbers.
+
+Each device also records connections the policy refused (`kith blocked`): the two devices, the protocol and port, a count and the last time.
+
+The web page shows a member only a band (idle, light, busy) for links between two other devices; admins and a device's own links get the exact rate. This is a courtesy on screen, not a boundary: the daemon holds the exact numbers, and any local user can read them with `kith map`.
+
+## The web page
+
+`kith ui` starts `kith-ui`, which serves the page on `127.0.0.1` only, and asks the OS to open a one-time link in the default browser.
+
+- **Signing in.** The link carries a random 256-bit token after `#`, so it never reaches a server log. The page trades it once for a separate secret in an `HttpOnly`, `SameSite=Strict` cookie named for the port. The token works once and for 2 minutes; the session lasts until `kith-ui` stops. Every other user on the computer can connect to the port, but nothing under `/api/` answers without that cookie.
+- **Other web sites.** Every request must name `127.0.0.1` or `localhost` on the right port in `Host`, which stops DNS rebinding. Every change, and the event stream, must carry the page's own `Origin`. A strict Content Security Policy, `frame-ancestors 'none'` and no-store caching for the API cover the rest.
+- **What it can do.** `kith-ui` runs as the user who started it and talks to the daemon as that user, so it can change only what that user could change with `kith`. Showing a phone's private key and leaving a network also need the OS to confirm the person at the computer (Touch ID or the login password on macOS, polkit on Linux), within 2 minutes. That guards an unattended browser tab, not the user's own account.
+- **What it holds.** Invite links and phone configs made through the page stay in `kith-ui`'s memory until it stops, and the page can list them again.
+
 ## What an attacker can do
 
 **On the network path** (your ISP, café Wi-Fi): see that you use kith, the server addresses you talk to, and how much traffic flows. They cannot read or change the traffic. DNS lookups go through the tunnel only while an exit is on; otherwise they go to your normal resolver for names outside the mesh.
@@ -35,21 +60,24 @@ There is no control server. Each network is a ledger of signed operations (add a
 
 **An exit node** sees your internet traffic as it leaves the tunnel, exactly as a commercial VPN provider would. Only use exits you trust.
 
-**Someone with an invite link** can join the network once per allowed use, until it expires. Treat the link like a password. A joined device can reach whatever the policy lets it reach, which by default is every other device. Revoke unused invites; see the gap on backdating below.
+**Someone with an invite link** can join the network once per allowed use, until it expires. Treat the link like a password. A joined device can reach whatever the policy lets it reach, which by default is every other device. Neither `kith` nor the web page can revoke an invite yet, so make invites short and single-use (`--expires 1h --uses 1`); see the gap on backdating below.
 
-**A stolen member device** has that device's key: it can reach what the device could, and sync the ledger, so it learns the member list, addresses and DNS names. Remove it from any admin device with `kith remove`; every member stops talking to it as soon as the removal reaches them.
+**A stolen member device** has that device's key: it can reach what the device could, and sync the ledger, so it learns the member list, addresses, DNS names and the link reports above. Remove it from any admin device with `kith remove`; every member stops talking to it as soon as the removal reaches them.
 
 **A leaked admin key** can do everything a single admin can: add devices, remove devices, change the policy and grant exits. The ledger can require several admins to change the admin set, but `kith create` makes a network with one admin and a threshold of 1, and the CLI has no command yet to add admins. Today, a leaked admin key means full control of that network.
 
-**A local user on a member device** can read the status. Only root and members of the operator group (`admin` on macOS, `kith` on Linux) can change anything.
+**A local user on a member device** can read everything the daemon knows that is not secret: the status, peers, DNS names, link reports, refused connections and pending join requests with their addresses. Only root and members of the operator group (`admin` on macOS, `kith` on Linux) can change anything.
 
 ## Known gaps
 
-- **Invite backdating.** The sponsor of a join sets its timestamp, so a malicious member could accept an expired invite. Threshold-signed checkpoints will fix this; until then, revoke invites you no longer need.
+- **Invite backdating.** The sponsor of a join sets its timestamp, so a malicious member could accept an expired invite. Threshold-signed checkpoints will fix this; until then, keep invites short-lived.
+- **No invite revocation.** An invite stays good until it expires or its uses run out.
 - **No key rotation yet.** A device keeps its key for life. Replace a device whose key may have leaked: remove it and join it again.
 - **No recovery if admins are lost.** If every admin key is gone, nobody can change the network.
 - **Phones trust their gateway.** A phone on plain WireGuard reaches the network through one kith device, and that device enforces the policy on the phone's behalf.
 - **One admin per network.** See above; adding admins from the CLI is planned.
+- **The web link can be seen while it opens.** The OS opens the link by starting a program with it as an argument, so another user on a shared computer who lists processes at that moment could see the token and use it first. The window lasts until the browser loads the page, and the page then says the link was already used. On a shared computer, use `kith ui --no-open` and paste the link yourself.
+- **Web sessions do not expire.** A session ends only when `kith-ui` stops. Stop it (Ctrl-C) when you are done.
 - **No audit.** The ledger rules have unit tests, and the protocols run in a deterministic multi-node simulator, but nobody outside the project has reviewed the code, and there are no fuzz targets yet.
 
 ## Reporting a vulnerability
