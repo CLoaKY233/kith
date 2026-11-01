@@ -391,7 +391,7 @@ Props:
       touch: readPx('target-touch'),
     };
     const pointer = window.matchMedia('(pointer: coarse)');
-    const small = window.matchMedia('(max-width: 40rem)');
+    const small = window.matchMedia('(width < 40rem)');
     const sync = (): void => {
       coarse = pointer.matches;
       narrow = small.matches;
@@ -893,7 +893,7 @@ Props:
     font: var(--t-small);
     animation: map-card-in var(--d-pop-in) var(--e-pop);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .well {
       aspect-ratio: auto;
     }

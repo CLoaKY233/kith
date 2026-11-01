@@ -257,7 +257,7 @@ Props:
     border-left: var(--hairline) solid var(--line);
   }
 
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .line:not(.log-line) {
       grid-template-columns: calc(var(--s-7) + var(--s-2)) var(--icon) minmax(0, 1fr);
       grid-template-areas:

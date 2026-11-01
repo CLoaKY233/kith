@@ -89,7 +89,7 @@ Props:
     padding-top: var(--s-2);
     max-width: var(--gate-max);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .banner {
       padding-inline: var(--gutter-mobile);
     }

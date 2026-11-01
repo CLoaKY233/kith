@@ -64,7 +64,7 @@ Props:
     onOpenChange?: (open: boolean) => void;
   } = $props();
 
-  const narrow = new MediaQuery('(max-width: 40rem)');
+  const narrow = new MediaQuery('(width < 40rem)');
   const coarse = new MediaQuery('(pointer: coarse)');
   const downloadFirst = $derived(narrow.current || coarse.current);
 

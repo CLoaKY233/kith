@@ -118,7 +118,7 @@ Props:
     outline-offset: var(--focus-offset);
     border-radius: var(--r-1);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     th,
     td {
       padding: 0 var(--s-2);

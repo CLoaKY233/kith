@@ -49,7 +49,7 @@ Props:
     $props();
 
   const wide = new MediaQuery('min-width: 80rem');
-  const narrow = new MediaQuery('max-width: 39.999rem');
+  const narrow = new MediaQuery('(width < 40rem)');
   const mode = $derived(narrow.current ? 'page' : wide.current ? 'split' : 'drawer');
 
   const network = $derived(resolveNetwork(live.status, net));
@@ -529,7 +529,7 @@ Props:
     display: none;
   }
 
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .screen {
       --sticky-top: var(--topbar);
       padding: var(--s-4) var(--gutter-mobile);
