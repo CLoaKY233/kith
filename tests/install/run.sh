@@ -2,6 +2,7 @@
 # Runs install.sh against a fake release served from disk: it installs both binaries,
 # and refuses a tampered archive, one SHA256SUMS does not list, and a bad version.
 # Never starts kith.
+# shellcheck disable=SC2016 # check() evals its single-quoted conditions on purpose.
 set -eu
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
