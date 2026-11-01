@@ -718,6 +718,13 @@ export const copy = {
     rename: (device: string): string => `Rename ${device}`,
     copyAddress: (device: string): string => `Copy ${device} address`,
     askRename: (device: string): string => `Ask an admin to rename ${device}…`,
+    /** Typed first, these limit the palette to one group (§10). */
+    prefix: { actions: '>', devices: '@' },
+  },
+
+  /** §5 overlays: names for layers that have no visible title. */
+  layer: {
+    toasts: 'Your recent actions',
   },
 
   shortcuts: {
