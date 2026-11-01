@@ -27,8 +27,14 @@ pub use server::{Connection, IpcServer, PeerCred};
 /// The protocol version both sides must agree on in [`Request::Hello`].
 pub const PROTOCOL_VERSION: u32 = 12;
 
-/// The largest frame either side accepts.
+/// The largest request the daemon accepts, in envelope bytes.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;
+
+/// The largest response, event or journal entry the client accepts, in envelope bytes.
+///
+/// Larger than [`MAX_FRAME_LEN`]: an hour of traffic history for a dozen peers is
+/// already bigger than that, while requests stay small.
+pub const MAX_RESPONSE_LEN: usize = kith_wire::MAX_MESSAGE_LEN;
 
 /// How long the client waits for a response.
 pub const REQUEST_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);

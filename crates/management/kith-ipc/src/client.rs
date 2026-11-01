@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 
 use crate::codec::Framed;
 use crate::message::ServerMessage;
-use crate::{Entry, Event, IpcError, PROTOCOL_VERSION, REQUEST_TIMEOUT, Request, Response};
+use crate::{
+    Entry, Event, IpcError, MAX_FRAME_LEN, MAX_RESPONSE_LEN, PROTOCOL_VERSION, REQUEST_TIMEOUT,
+    Request, Response,
+};
 
 #[cfg(unix)]
 type Stream = tokio::net::UnixStream;
@@ -28,7 +31,7 @@ impl IpcClient {
         #[cfg(windows)]
         let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(path.as_ref())?;
         let mut client = Self {
-            framed: Framed::new(stream),
+            framed: Framed::new(stream, MAX_RESPONSE_LEN, MAX_FRAME_LEN),
             daemon_version: String::new(),
         };
         let hello = Request::Hello {

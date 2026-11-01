@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use crate::codec::Framed;
 use crate::message::ServerMessage;
-use crate::{Entry, ErrorCode, Event, IpcError, PROTOCOL_VERSION, Request, Response};
+use crate::{
+    Entry, ErrorCode, Event, IpcError, MAX_FRAME_LEN, MAX_RESPONSE_LEN, PROTOCOL_VERSION, Request,
+    Response,
+};
 
 #[cfg(unix)]
 type Stream = tokio::net::UnixStream;
@@ -139,7 +142,7 @@ pub struct Connection {
 impl Connection {
     fn new(stream: Stream, peer: Option<PeerCred>) -> Self {
         Self {
-            framed: Framed::new(stream),
+            framed: Framed::new(stream, MAX_FRAME_LEN, MAX_RESPONSE_LEN),
             peer,
             client_version: None,
         }
