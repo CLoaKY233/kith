@@ -3,53 +3,40 @@
 //   live.*     readonly reactive state: read it in markup or $derived, never assign it.
 //   actions.*  every change the page can make; each returns an ActionHandle.
 //   start()    hydrates from the boot snapshot and opens the stream; main.ts calls it.
+//   notifications  the browser-notification opt-in (§7.12) for Settings and Activity.
+//
+// Actions run through runner.ts; watch.svelte.ts follows the journal and connection to
+// mark actions seen, notify and announce, so the stream code needs no hooks for them.
 //
 // Workstream C owns this file and its internals. This first version hydrates from the
 // boot snapshot (inlined `#boot`, or GET /api/boot under the dev and fixture servers),
 // applies stream entries through reducers.ts and commits tick numbers together.
 
 import { SvelteSet } from 'svelte/reactivity';
-import { api, ApiError, networkPath } from '../api';
+import { go, href } from '../../router';
+import { api, ApiError } from '../api';
 import type {
-  AllowPreview,
   Boot,
-  Conflict,
   Entry,
   ExitView,
   Invite,
-  JoinRequestState,
   LinkTick,
-  NameCheck,
-  Outcome,
   Pending,
   PeerInfo,
-  PhoneConfig,
-  PhoneCreated,
-  RecordType,
   RecordView,
   StatusView,
   Tick,
   Versions,
 } from '../types.gen';
-import type {
-  ActionHandle,
-  ActionState,
-  ApiFailure,
-  ConnState,
-  GateReason,
-  PeerLive,
-  Spread,
-  TrafficColumns,
-} from '../types';
+import type { ConnState, GateReason, PeerLive, TrafficColumns } from '../types';
+import { createActions, type Actions } from './actions';
+import { Notifications } from './notifications.svelte';
+import { browserEnv } from './notify';
 import { reduce, type ReducerState } from './reducers';
+import { Runner } from './runner';
 import { connect } from './stream';
-import {
-  JOURNAL_CAP,
-  SEEN_TIMEOUT_MS,
-  STALE_MS,
-  TINT_MS,
-  TRAFFIC_SAMPLES,
-} from './timing';
+import { JOURNAL_CAP, STALE_MS, TINT_MS, TRAFFIC_SAMPLES } from './timing';
+import { watch } from './watch.svelte';
 
 const EMPTY_PENDING: Pending = { joins: [], blocked: [] };
 
@@ -261,144 +248,26 @@ export const live: Live = {
   now: () => Date.now() + store.serverOffset,
 };
 
-class Handle<T> implements ActionHandle<T> {
-  state = $state<ActionState>('pending');
-  error = $state<ApiFailure | null>(null);
-  conflict = $state<Conflict | null>(null);
-  seen = $state<Spread | null>(null);
-  slow = $state(false);
-  result = $state.raw<T | null>(null);
-  readonly done: Promise<ActionHandle<T>>;
+const runner = new Runner(store);
 
-  constructor(run: () => Promise<T>) {
-    const slow = setTimeout(() => {
-      if (this.state === 'accepted') this.slow = true;
-    }, SEEN_TIMEOUT_MS);
-    this.done = run().then(
-      (value) => {
-        this.result = value;
-        const outcome = value as Partial<Outcome> | null;
-        this.state = outcome?.state === 'awaiting_os_auth' ? 'awaiting_os_auth' : 'accepted';
-        return this;
-      },
-      (cause: unknown) => {
-        clearTimeout(slow);
-        const failure =
-          cause instanceof ApiError
-            ? cause
-            : new ApiError('internal', 0, cause instanceof Error ? cause.message : String(cause), null);
-        if (failure.code === 'conflict' && failure.conflict) {
-          this.conflict = failure.conflict;
-          this.state = 'conflict';
-        } else {
-          this.error = {
-            code: failure.code,
-            status: failure.status,
-            message: failure.message,
-            conflict: failure.conflict,
-          };
-          this.state = 'failed';
-        }
-        return this;
-      },
-    );
-  }
+/** Every change and on-demand read. Each returns an ActionHandle (§16 C, runner.svelte.ts). */
+export const actions: Actions = createActions(store, runner);
+export type { Actions };
+
+/** Feeds a propagation ack (§2.12 `op_seen`) to the action that signed `op`. */
+export function ackOp(op: string, by: number, of: number): void {
+  runner.ack(op, by, of);
 }
 
-function act<T>(run: () => Promise<T>): ActionHandle<T> {
-  if (store.conn === 'stale' || store.conn === 'daemon_down') {
-    // §8.5: nothing is queued while stale.
-    return new Handle<T>(() =>
-      Promise.reject(new ApiError('daemon_down', 0, 'stale', null)),
-    );
-  }
-  return new Handle(run);
-}
+/** Browser notification opt-in and delivery (§7.12): Settings and the Activity card. */
+export const notifications = new Notifications(
+  browserEnv(live.now, (need) => {
+    const name = need ? (store.status?.networks.find((n) => n.id === need.network)?.name ?? null) : null;
+    if (need && name) go(`${href({ name: 'overview', net: name })}?need=${encodeURIComponent(need.id)}`);
+  }),
+);
 
-function load<T>(path: string, into: (value: T) => void): ActionHandle<T> {
-  return new Handle(async () => {
-    const value = await api.get<T>(path);
-    into(value);
-    return value;
-  });
-}
-
-const enc = encodeURIComponent;
-
-/** Every change and on-demand read. Each returns an ActionHandle (§16 C). */
-export const actions = {
-  // Reads that are not in the boot snapshot.
-  loadRecords: (net: string) =>
-    load<RecordView[]>(networkPath(net, '/records'), (v) => (store.records[net] = v)),
-  loadExits: (net: string) =>
-    load<ExitView[]>(networkPath(net, '/exits'), (v) => (store.exits[net] = v)),
-  loadInvites: (net: string) =>
-    load<Invite[]>(networkPath(net, '/invites'), (v) => (store.invites[net] = v)),
-  validateName: (net: string | null, name: string) =>
-    new Handle(() =>
-      api.get<NameCheck>(`/api/validate/name?net=${enc(net ?? '')}&name=${enc(name)}`),
-    ) as ActionHandle<NameCheck>,
-
-  // Networks (§7.1, §7.2).
-  createNetwork: (name: string, deviceName: string) =>
-    act(() => api.post<Outcome>('/api/networks', { name, device_name: deviceName })),
-  join: (inviteLink: string, deviceName: string) =>
-    act(() => api.post<Outcome>('/api/join', { invite_link: inviteLink, device_name: deviceName })),
-  requestJoin: (requestCode: string, deviceName: string) =>
-    act(() =>
-      api.post<JoinRequestState>('/api/join/request', {
-        request_code: requestCode,
-        device_name: deviceName,
-      }),
-    ),
-  leave: (net: string) => act(() => api.post<Outcome>(networkPath(net, '/leave'))),
-
-  // Join requests (§7.3).
-  approveJoin: (net: string, node: string, name: string) =>
-    act(() => api.post<Outcome>(networkPath(net, `/joins/${enc(node)}/approve`), { name })),
-  denyJoin: (net: string, node: string) =>
-    act(() => api.post<Outcome>(networkPath(net, `/joins/${enc(node)}/deny`))),
-
-  // Invites (§7.4).
-  createInvite: (net: string, expiresSecs: number, uses: number | null) =>
-    act(() => api.post<Invite>(networkPath(net, '/invites'), { expires_secs: expiresSecs, uses })),
-  revokeInvite: (net: string, id: string) =>
-    act(() => api.post<Outcome>(networkPath(net, `/invites/${enc(id)}/revoke`))),
-
-  // Blocked connections (§7.5).
-  previewAllow: (id: string) =>
-    act(() => api.post<AllowPreview>(`/api/blocked/${enc(id)}/allow`, { preview: true })),
-  allowBlocked: (id: string) =>
-    act(() => api.post<Outcome>(`/api/blocked/${enc(id)}/allow`, { preview: false })),
-
-  // Phones (§7.6).
-  createPhone: (net: string, name: string, tags: string[]) =>
-    act(() => api.post<PhoneCreated>(networkPath(net, '/phones'), { name, tags })),
-  phoneConfig: (net: string, node: string, everything: boolean) =>
-    act(() => api.post<PhoneConfig>(networkPath(net, `/phones/${enc(node)}/config`), { everything })),
-
-  // Names (§6.6).
-  setRecord: (net: string, name: string, type: RecordType, value: string, basedOn: string | null = null) =>
-    act(() => api.post<Outcome>(networkPath(net, '/records'), { name, type, value, based_on: basedOn })),
-  deleteRecord: (net: string, name: string) =>
-    act(() => api.post<Outcome>(networkPath(net, `/records/${enc(name)}/delete`))),
-
-  // Exits (§7.8). Optimistic in the screen; the store keeps the server's truth.
-  useExit: (net: string | null, node: string | null) =>
-    act(() => api.post<Outcome>('/api/exit', { network: net, node })),
-  grantExit: (net: string, node: string, allowed: boolean) =>
-    act(() => api.post<Outcome>(networkPath(net, `/exits/${enc(node)}`), { allowed })),
-
-  // Devices (§7.9, §7.11).
-  renameDevice: (net: string, node: string, name: string, basedOn: string | null = null) =>
-    act(() =>
-      api.post<Outcome>(networkPath(net, `/devices/${enc(node)}/rename`), { name, based_on: basedOn }),
-    ),
-  removeDevice: (net: string, node: string, lost: boolean) =>
-    act(() => api.post<Outcome>(networkPath(net, `/devices/${enc(node)}/remove`), { lost })),
-} as const;
-
-export type Actions = typeof actions;
+watch(live, runner, notifications);
 
 let stopStream: (() => void) | null = null;
 let staleTimer: ReturnType<typeof setTimeout> | null = null;

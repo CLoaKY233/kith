@@ -2,10 +2,11 @@
 // in the page writes a duration. CSS durations in tokens.css mirror the MOTION block; a
 // test keeps them equal.
 
-const SECOND = 1000;
-const MINUTE = 60 * SECOND;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
+/** Units for writing durations; the live layer and format.ts build on them. */
+export const SECOND = 1000;
+export const MINUTE = 60 * SECOND;
+export const HOUR = 60 * MINUTE;
+export const DAY = 24 * HOUR;
 
 /** §3.5: CSS transitions, in ms. Mirrored as `--d-*` in tokens.css. */
 export const MOTION = {
@@ -65,6 +66,8 @@ export const RELATIVE_TIME_REFRESH_MS = SECOND;
 export const RELATIVE_NOW_MS = 5 * SECOND;
 export const RELATIVE_TIME_CLOCK_AFTER_MS = HOUR;
 export const RELATIVE_TIME_WEEKDAY_AFTER_MS = DAY;
+/** Past a week a weekday alone is ambiguous, so RelativeTime adds the date. */
+export const RELATIVE_TIME_DATE_AFTER_MS = 7 * DAY;
 export const FLAP_COUNT = 3;
 export const FLAP_WINDOW_MS = 60 * SECOND;
 export const RTT_TINT_TICKS = 3;
@@ -97,6 +100,8 @@ export const PHONE_ABANDONED_MS = DAY;
 export const IGNORE_BLOCKED_MS = DAY;
 export const NOTIFY_PROMPT_SNOOZE_MS = 7 * DAY;
 export const DAEMON_STOPPED_NOTIFY_MS = 10 * SECOND;
+/** §7.12 "a recently-used device went offline": it moved data within this window. */
+export const RECENTLY_USED_MS = 10 * MINUTE;
 export const INVITE_LINK_TTL_MS = 2 * MINUTE;
 
 /** §12.4 verdicts. */
