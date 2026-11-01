@@ -739,3 +739,75 @@ export const copy = {
 } as const;
 
 export type Copy = typeof copy;
+
+/**
+ * Activity, Settings and This device (spec §6.5, §6.8, §7.12, §12.3): the keys those
+ * screens need beyond `copy`. A block of its own so parallel work merges cleanly.
+ */
+export const copyScreens = {
+  activity: {
+    feed: 'Activity',
+    kind: 'Show',
+    /** Accessible names for the glyph column (§5 EventRow). */
+    glyphs: { blocked: 'blocked', warning: 'warning', signed: 'signed' },
+    noMatch: (q: string): string => `Nothing matches ${quoted(q)}.`,
+    noneOfKind: 'Nothing of this kind has happened here yet.',
+    /** The `12 new ↑` pill's accessible name. */
+    newerLabel: (n: number): string => `${n} new ${plural(n, 'event', 'events')}. Show them.`,
+    notifyBlocked:
+      'This browser blocks notifications from this page. Allow them in its site settings.',
+  },
+
+  /** §12.3 templates that `copy.entry` does not cover. */
+  entry: {
+    peerOnlinePlain: (device: string): string => `${device} came online`,
+    pathRelayedPlain: (device: string, was: string): string =>
+      `${device} now relayed (was ${was})`,
+    pathStealthPlain: (device: string, was: string): string =>
+      `${device} now stealth (was ${was})`,
+    pathLost: (device: string, was: string): string => `${device} lost its path (was ${was})`,
+    /** What a path was, inside `(was …)`. */
+    pathWas: { direct: 'direct', relay: 'relayed', stealth: 'stealth', none: 'offline' },
+    portSuffix: (port: number): string => `:${port}`,
+    protocolSuffix: (protocol: string): string => ` (${protocol.toUpperCase()})`,
+    /** Drop reasons as `kith status` names them, in words. */
+    dropReasons: { policy: 'policy', no_route: 'no route' } as Readonly<Record<string, string>>,
+  },
+
+  settings: {
+    notifySwitch: 'Notify me in this browser',
+    on: 'On',
+    off: 'Off',
+    notificationsBlocked:
+      'This browser blocks notifications from this page. Allow them in its site settings, then turn this on.',
+    notificationsUnsupported: "This browser can't show notifications.",
+    noInvites: 'No open invites.',
+    inviteUsedBy: (names: readonly string[]): string => `Used by ${names.join(', ')}`,
+    inviteUsesLeft: (n: number): string => `${n} ${plural(n, 'use', 'uses')} left`,
+    revokeLabel: (expires: string): string => `Revoke the invite that expires ${expires}`,
+    leaveTitle: (network: string): string => `Leave ${network}?`,
+    leaveLoses: (network: string): string =>
+      `This device loses access to every device in ${network} within seconds.`,
+    leaveSubmit: (network: string): string => `Leave ${network}`,
+    left: (network: string): string => `This device left ${network}.`,
+  },
+
+  thisDevice: {
+    address: 'Address',
+    network: 'Network',
+    role: 'Role',
+    noNetworks: "This device isn't in a network yet.",
+    logEmpty: 'No log lines since this page opened.',
+    copyFailed: "Couldn't copy the log: this browser blocked the clipboard.",
+    /** One line of the copied log. */
+    logLine: (time: string, level: string, target: string, message: string): string =>
+      `${time} ${level} ${target ? `${target}: ` : ''}${message}`,
+  },
+
+  /** `Copy redacted log` (§6.8): what stands in for addresses and keys. */
+  redact: {
+    ipv4: (a: string, b: string): string => `${a}.${b}.x.x`,
+    ipv6: (a: string, b: string): string => `${a}:${b}:x:x`,
+    key: (head: string): string => `${head}…`,
+  },
+} as const;
