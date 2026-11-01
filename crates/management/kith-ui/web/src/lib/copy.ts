@@ -12,6 +12,10 @@ export const DOT = ' · ';
 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 const quoted = (value: string): string => `"${value}"`;
+const andList = (names: readonly string[]): string =>
+  names.length <= 1
+    ? (names[0] ?? '')
+    : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1] ?? ''}`;
 
 export const copy = {
   brand: 'kith',
@@ -389,16 +393,37 @@ export const copy = {
     txt: 'Text record',
     target: (value: string): string => `→ ${value}`,
     setBy: (who: string): string => `set by ${who}`,
-    empty:
-      'No names yet. Give a device a name like nas.home so others can reach it without its address.',
+    setByColumn: 'Set by',
+    empty: (network: string): string =>
+      `No names yet. Give a device a name like nas.${network} so others can reach it without its address.`,
     remove: 'Remove name',
     suffix: (network: string): string => `.${network}`,
+    /** A text record's value, quoted so it reads as text, not a target. */
+    text: (value: string): string => quoted(value),
+    valueHelp: (network: string): string =>
+      `An address like 100.64.0.4, or a name like nas.${network}.`,
+    textHelp: 'Any text. Devices can look it up; nothing else changes.',
+    valueEmpty: 'Add an address or a name for it to point to.',
+    valueInvalid: (network: string): string =>
+      `Use an address like 100.64.0.4 or a name like nas.${network}.`,
+    replaces: (name: string, target: string): string =>
+      `${name} points to ${target} now. Adding it again replaces that.`,
+    deviceName: (name: string): string =>
+      `${name} is a device's own name. Choose another.`,
+    copyName: (name: string): string => `Copy ${name}`,
+    moreFor: (name: string): string => `More for ${name}`,
+    removed: (name: string): string => `Removed ${name}`,
+    askRemove: (name: string): string => `Ask an admin to remove ${name}…`,
+    setCommand: (network: string, name: string, type: string, value: string): string =>
+      `kith dns set ${network} ${name} ${type} ${/\s/.test(value) ? `'${value}'` : value}`,
+    removeCommand: (network: string, name: string): string => `kith dns rm ${network} ${name}`,
   },
 
   /** §6.7 Exits. */
   exits: {
     heading: 'Send internet traffic through',
     none: `No exit${DOT}this device's own connection`,
+    noneShort: 'No exit',
     option: (exit: string, rtt: string): string => `${exit}${DOT}${rtt}`,
     noAccess: (exit: string): string => `You don't have access to ${exit}.`,
     allow: 'Allow',
@@ -416,6 +441,30 @@ export const copy = {
     failedNone: (exit: string): string =>
       `Couldn't switch: ${exit} isn't reachable right now. You're still using this device's own connection.`,
     noExitYet: 'No exit yet. Set one up in Exits →',
+    empty: 'No device offers itself as an exit yet. On the one that should, run:',
+    offerCommand: 'kith server --exit',
+    emptyThen: 'Then an admin allows it here.',
+    exit: 'Exit',
+    everyone: 'Every device',
+    nobody: 'Nobody',
+    moreFor: (exit: string): string => `More for ${exit}`,
+    /** `desk`, `desk and nas`, `desk, nas and tv`. */
+    list: andList,
+    askCommand: (network: string, exit: string): string => `kith exit allow ${network} ${exit}`,
+    allowTitle: (exit: string, network: string): string =>
+      `Allow ${exit} as an exit in ${network}?`,
+    allowBody: (exit: string, network: string): string =>
+      `Devices in ${network} can then send their internet traffic through ${exit}.`,
+    allowSees: (exit: string): string => `${exit} can see which addresses that traffic goes to.`,
+    allowSubmit: (exit: string): string => `Allow ${exit}`,
+    stopTitle: (exit: string): string => `Stop offering ${exit} as an exit?`,
+    stopUsers: (users: readonly string[], exit: string): string =>
+      users.length === 1
+        ? `${users[0] ?? ''} uses ${exit} as its exit. Its internet will go directly.`
+        : `${andList(users)} use ${exit} as their exit. Their internet will go directly.`,
+    stopNobody: (exit: string): string => `No device uses ${exit} right now.`,
+    stopAgain: 'Devices can use it again once an admin allows it.',
+    stopSubmit: (exit: string): string => `Stop offering ${exit}`,
   },
 
   /** §6.8 Settings. */
