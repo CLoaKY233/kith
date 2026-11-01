@@ -83,8 +83,12 @@ expected="$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
     fail "checksum mismatch for $name.tar.gz; not installing"
 
 tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
-as_root mkdir -p "$bin_dir"
-as_root install -m 0755 "$tmp/$name/kith" "$bin_dir/kith"
+if mkdir -p "$bin_dir" 2>/dev/null && [ -w "$bin_dir" ]; then
+    install -m 0755 "$tmp/$name/kith" "$bin_dir/kith"
+else
+    as_root mkdir -p "$bin_dir"
+    as_root install -m 0755 "$tmp/$name/kith" "$bin_dir/kith"
+fi
 say "installed $bin_dir/kith"
 
 if [ "$(uname -s)" = Linux ] && command -v groupadd >/dev/null 2>&1; then
