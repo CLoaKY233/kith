@@ -160,19 +160,23 @@ fn status() -> impl Strategy<Value = Status> {
         proptest::collection::vec(
             (
                 (net(), text(), any::<u32>(), any::<u32>(), any::<u32>()),
+                any::<bool>(),
                 proptest::collection::vec(
                     (text(), text()).prop_map(|(what, fix)| Problem { what, fix }),
                     0..2,
                 ),
             )
                 .prop_map(
-                    |((id, name, peers_online, peers_total, relays), problems)| NetworkSummary {
-                        id,
-                        name,
-                        peers_online,
-                        peers_total,
-                        relays,
-                        problems,
+                    |((id, name, peers_online, peers_total, relays), admin, problems)| {
+                        NetworkSummary {
+                            id,
+                            name,
+                            peers_online,
+                            peers_total,
+                            relays,
+                            problems,
+                            admin,
+                        }
                     },
                 ),
             0..3,

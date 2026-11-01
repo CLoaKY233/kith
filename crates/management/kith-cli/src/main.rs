@@ -13,6 +13,7 @@ mod render;
 mod service;
 #[cfg(test)]
 mod tests;
+mod ui;
 mod watch;
 
 use std::io::Write as _;
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
         Cmd::Up => exec::socket_path(&opts)
             .and_then(|socket| service::up(&socket, &mut std::io::stdout().lock())),
         Cmd::Down => service::down(&mut std::io::stdout().lock()),
+        Cmd::Ui { args } => ui::run(opts.socket.as_deref(), args),
         Cmd::Status { .. }
         | Cmd::Create { .. }
         | Cmd::Invite { .. }

@@ -228,6 +228,7 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
         | Cmd::Top
         | Cmd::Doctor
         | Cmd::Config(_)
+        | Cmd::Ui { .. }
         | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));
         }
@@ -334,7 +335,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
             out.write_all(load_config(path.as_deref())?.to_toml_string()?.as_bytes())?;
             return Ok(());
         }
-        Cmd::Daemon { .. } | Cmd::Up | Cmd::Down => {
+        Cmd::Daemon { .. } | Cmd::Up | Cmd::Down | Cmd::Ui { .. } => {
             return Err(CliError("not handled here".to_owned()));
         }
         Cmd::Status { .. }
@@ -378,6 +379,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Watch
         | Cmd::Log { .. }
         | Cmd::Top
+        | Cmd::Ui { .. }
         | Cmd::Daemon { .. } => {}
     }
 

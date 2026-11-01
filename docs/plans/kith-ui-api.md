@@ -23,7 +23,7 @@ Ids (network, node) are lowercase hex. Times are `at_ms` (Unix milliseconds).
 
 ## Actions
 
-All `POST`, JSON in, JSON out. Errors: status 400/403/404/409/500 with `{"error": "<plain words>"}`.
+All `POST`, JSON in, JSON out. A `qr_svg` is `null` when the text is too long for a QR code. Errors: status 400/403/404/409/500 with `{"error": "<plain words>"}`.
 
 | Path | In | Out |
 |---|---|---|

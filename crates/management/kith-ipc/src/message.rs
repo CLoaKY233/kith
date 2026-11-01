@@ -343,6 +343,8 @@ pub struct NetworkSummary {
     pub relays: u32,
     /// What is wrong with the network's records now, each with how to fix it.
     pub problems: Vec<Problem>,
+    /// Whether this device is an admin of the network, so may change it.
+    pub admin: bool,
 }
 
 /// Something wrong in a network, such as a phone that lost its address.

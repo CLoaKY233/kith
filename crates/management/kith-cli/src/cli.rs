@@ -141,6 +141,13 @@ pub(crate) enum Cmd {
     /// Check or show the configuration file
     #[bpaf(command)]
     Config(#[bpaf(external(config_cmd))] ConfigCmd),
+    /// Open this device's kith in a web browser (needs the kith-ui program)
+    #[bpaf(command)]
+    Ui {
+        /// Passed to kith-ui, such as --port N or --no-open
+        #[bpaf(any("ARG", Some), many)]
+        args: Vec<String>,
+    },
     /// Run the background daemon
     #[bpaf(command)]
     Daemon {
