@@ -12,7 +12,47 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Release tags commit the built page, so `cargo install` from the tag never needs Node.
+  # The tag's commit sits on top of the release commit and is not merged into main:
+  #   git switch --detach main
+  #   (cd crates/management/kith-ui/web && npm ci && npm run build)
+  #   git add -f crates/management/kith-ui/web/dist && git commit -m "Add the built page for vX.Y.Z"
+  #   git tag vX.Y.Z && git push origin vX.Y.Z
+  # This job fails the release when the committed page is missing or is not what the tag's
+  # sources build.
+  page:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/management/kith-ui/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.10.0
+          cache: npm
+          cache-dependency-path: crates/management/kith-ui/web/package-lock.json
+      - name: the tag commits web/dist
+        run: |
+          if ! git ls-files --error-unmatch dist/index.html > /dev/null 2>&1; then
+            echo "::error::$GITHUB_REF_NAME does not commit crates/management/kith-ui/web/dist; see the comment above this job in release.yml."
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm run build
+      - run: npm run size
+      - name: the committed page is what the sources build
+        run: |
+          changed="$(git status --porcelain --ignored=matching -- dist)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "::error::web/dist on $GITHUB_REF_NAME is stale; rebuild it with npm ci && npm run build and tag again."
+            exit 1
+          fi
+
   build:
+    needs: page
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +111,10 @@ jobs:
           if [ -n "$UI" ]; then
             ui_name="kith-ui-${version}-${TARGET}"
             ui_bin="target/${TARGET}/dist/kith-ui"
+            if grep -q "built without its page" "$ui_bin"; then
+              echo "::error::kith-ui for $TARGET embeds fallback.html instead of the built page."
+              exit 1
+            fi
             if [ -n "$strip_bin" ]; then "$strip_bin" "$ui_bin"; elif [ "$RUNNER_OS" = macOS ]; then strip "$ui_bin"; fi
             mkdir -p "dist/$ui_name"
             cp "$ui_bin" LICENSE "dist/$ui_name/"
@@ -83,8 +127,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
-    if: ${{ !cancelled() }}
+    needs: [page, build]
+    if: ${{ !cancelled() && needs.page.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

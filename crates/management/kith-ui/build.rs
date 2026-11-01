@@ -1,6 +1,6 @@
 //! Compiles the built page, `web/dist`, into the binary, each file also brotli-compressed
-//! at quality 11. Without a built page it embeds `fallback.html` and warns; the build never
-//! fails for want of Node.
+//! at quality 11. Without a complete built page it embeds `fallback.html` and warns; the
+//! build never fails for want of Node.
 
 use std::error::Error;
 use std::fmt::Write as _;
@@ -11,10 +11,20 @@ use std::path::{Path, PathBuf};
 const QUALITY: u32 = 11;
 /// Brotli's largest window.
 const WINDOW: u32 = 24;
+/// The places in `index.html` that `kith-ui-core` fills on every request: the boot snapshot
+/// and the signed-out page.
+const MARKERS: [&str; 2] = ["<!--kith:boot-->", "<!--kith:signed-out-->"];
 
+/// Every file under `dir`, skipping dotfiles such as `.DS_Store` so they never ship.
 fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+        {
+            continue;
+        }
         if path.is_dir() {
             collect(&path, files)?;
         } else {
@@ -22,6 +32,30 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Root-relative paths the page loads through `src="/..."` or `href="/..."`.
+fn references(html: &str) -> Vec<&str> {
+    ["src=\"/", "href=\"/"]
+        .iter()
+        .flat_map(|attribute| html.split(attribute).skip(1))
+        .filter_map(|rest| rest.split('"').next())
+        .filter(|path| !path.is_empty() && !path.starts_with('/'))
+        .collect()
+}
+
+/// Why `web/dist` cannot be embedded, or `None` when it is complete. A page whose scripts
+/// or styles are missing would load blank, so the fallback is better.
+fn incomplete(dist: &Path) -> std::io::Result<Option<String>> {
+    let index = dist.join("index.html");
+    if !index.is_file() {
+        return Ok(Some("web/dist is missing".to_owned()));
+    }
+    let html = std::fs::read_to_string(&index)?;
+    Ok(references(&html)
+        .into_iter()
+        .find(|path| !dist.join(path).is_file())
+        .map(|missing| format!("web/dist/index.html loads /{missing}, which is not in web/dist")))
 }
 
 /// Writes `bytes` only when they differ, so an unchanged page does not rebuild the binary.
@@ -51,7 +85,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     writeln!(stdout, "cargo::rerun-if-changed=fallback.html")?;
 
     let mut files: Vec<(String, PathBuf)> = Vec::new();
-    if dist.join("index.html").is_file() {
+    if let Some(reason) = incomplete(&dist)? {
+        writeln!(
+            stdout,
+            "cargo::warning={reason}, so kith-ui embeds fallback.html. Run `npm ci && npm run build` in crates/management/kith-ui/web."
+        )?;
+        files.push(("index.html".to_owned(), fallback));
+    } else {
+        let html = std::fs::read_to_string(dist.join("index.html"))?;
+        for marker in MARKERS.iter().filter(|marker| !html.contains(*marker)) {
+            writeln!(
+                stdout,
+                "cargo::warning=web/dist/index.html lacks {marker}, which kith-ui fills on every request."
+            )?;
+        }
         let mut paths = Vec::new();
         collect(&dist, &mut paths)?;
         paths.sort();
@@ -64,12 +111,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .join("/");
             files.push((relative, path));
         }
-    } else {
-        writeln!(
-            stdout,
-            "cargo::warning=web/dist is missing, so kith-ui embeds fallback.html. Run `npm ci && npm run build` in crates/management/kith-ui/web."
-        )?;
-        files.push(("index.html".to_owned(), fallback));
     }
 
     let compressed = out.join("brotli");

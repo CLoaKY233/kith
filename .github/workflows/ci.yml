@@ -90,6 +90,45 @@ jobs:
         with: { tool: cargo-zigbuild }
       - run: cargo xtask size --zigbuild --target ${{ matrix.target }}
 
+  # The page: lint, types and unit tests, the build and its 150 KB brotli budget, then the
+  # built page embedded in kith-ui and driven by Playwright against the office fixture:
+  # axe at 4 widths in both themes, the keyboard-only flows and layout shift. No daemon runs.
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crates/management/kith-ui/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.10.0
+          cache: npm
+          cache-dependency-path: crates/management/kith-ui/web/package-lock.json
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm run size
+      - run: cargo build -p kith-ui --locked
+      - name: kith-ui embeds the built page, not the fallback
+        run: cargo test -p kith-ui --test embed --locked
+        env: { KITH_UI_EXPECT_PAGE: "1" }
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: |
+            crates/management/kith-ui/web/playwright-report
+            crates/management/kith-ui/web/test-results
+          retention-days: 7
+
   # Mesh, DNS, relay fallback, exit through a Docker-style firewall, restart and cleanup,
   # on a real kernel in network namespaces.
   smoke-linux:

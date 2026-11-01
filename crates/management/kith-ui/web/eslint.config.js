@@ -29,7 +29,16 @@ const banned = [
 ];
 
 export default ts.config(
-  { ignores: ['dist/', 'node_modules/', 'src/lib/types.gen.ts', 'scripts/'] },
+  {
+    ignores: [
+      'dist/',
+      'node_modules/',
+      'src/lib/types.gen.ts',
+      'scripts/',
+      'playwright-report/',
+      'test-results/',
+    ],
+  },
   js.configs.recommended,
   ...ts.configs.strict,
   ...svelte.configs.recommended,
