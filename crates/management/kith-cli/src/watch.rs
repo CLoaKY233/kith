@@ -116,12 +116,11 @@ pub(crate) async fn top(socket: &Path, live: bool, out: &mut impl Write) -> Resu
 
 /// Says how many entries the daemon skipped before `seq` because this reader fell
 /// behind, then expects the one after `seq`.
-fn note_missed(
-    out: &mut impl Write,
-    expected: &mut Option<u64>,
-    seq: u64,
-) -> std::io::Result<()> {
-    if let Some(missed) = expected.and_then(|want| seq.checked_sub(want)).filter(|n| *n > 0) {
+fn note_missed(out: &mut impl Write, expected: &mut Option<u64>, seq: u64) -> std::io::Result<()> {
+    if let Some(missed) = expected
+        .and_then(|want| seq.checked_sub(want))
+        .filter(|n| *n > 0)
+    {
         writeln!(out, "({missed} entries missed: this reader fell behind)")?;
     }
     *expected = Some(seq.saturating_add(1));
@@ -167,11 +166,12 @@ pub(crate) fn traffic_table(
             Some((
                 down.saturating_add(up),
                 [
-                    printable(&format!(
+                    render::printable(&format!(
                         "{}/{}",
                         network_name(names, peer.network),
                         peer.name
-                    )),
+                    ))
+                    .into_owned(),
                     format!("{}/s", render::byte_size(down)),
                     format!("{}/s", render::byte_size(up)),
                     render::byte_size(last.rx_bytes),
@@ -324,7 +324,7 @@ mod tests {
         };
         assert_eq!(
             line(&entry, &NetworkNames::new(), 0),
-            "00:00:00  warning: \\u{1b}]0;owned\\u{7}two\\nlines"
+            "00:00:00  warning: \u{fffd}]0;owned\u{fffd}two\u{fffd}lines"
         );
     }
 

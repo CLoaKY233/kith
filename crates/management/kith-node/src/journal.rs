@@ -400,7 +400,10 @@ mod tests {
         let mut activity = Activity::default();
         let peers = [(NET, Vec::new())];
         activity.observe(&peers, &[("ttl".to_owned(), 9)].into(), &journal);
-        assert!(journal.entries().is_empty(), "the first look is the baseline");
+        assert!(
+            journal.entries().is_empty(),
+            "the first look is the baseline"
+        );
 
         activity.observe(&peers, &BTreeMap::new(), &journal);
         activity.observe(&peers, &[("policy".to_owned(), 3)].into(), &journal);

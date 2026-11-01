@@ -773,7 +773,9 @@ async fn log_prints_the_journal_and_following_fails_when_the_daemon_goes() {
                     match request {
                         Request::Journal { since } => {
                             asked.send(since).unwrap();
-                            conn.respond(Response::Journaling { next: 2 }).await.unwrap();
+                            conn.respond(Response::Journaling { next: 2 })
+                                .await
+                                .unwrap();
                             if since.is_none() {
                                 let warning = EntryKind::Warning {
                                     message: "disk full".into(),
@@ -794,10 +796,9 @@ async fn log_prints_the_journal_and_following_fails_when_the_daemon_goes() {
                             }
                             return;
                         }
-                        Request::Status => conn
-                            .respond(Response::Status(fake_status()))
-                            .await
-                            .unwrap(),
+                        Request::Status => {
+                            conn.respond(Response::Status(fake_status())).await.unwrap();
+                        }
                         Request::Peers { .. } => {
                             conn.respond(Response::Peers(vec![])).await.unwrap();
                         }
