@@ -47,8 +47,13 @@ class Connection {
       switch (conn) {
         case 'live':
           return show('live', 0);
-        case 'catching_up':
+        case 'catching_up': {
+          // Back from down or stale: values are live again, so the banner goes now and
+          // collapses with the rows and header, not a second later.
+          const was = untrack(() => this.shown);
+          if (was === 'daemon_down' || was === 'ui_gone' || was === 'stale') this.shown = 'live';
           return wasLive ? show('reconnecting', CATCHING_UP_QUIET_MS) : undefined;
+        }
         case 'stale':
           this.asOf = untrack(() => live.lastTickMs);
           return show('stale', BANNER_DELAY_MS);

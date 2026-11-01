@@ -403,7 +403,7 @@ Props:
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .list {

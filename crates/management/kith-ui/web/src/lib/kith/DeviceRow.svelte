@@ -241,6 +241,7 @@ Props:
   class:needs={needsYou}
   class:changed
   role="row"
+  aria-keyshortcuts="."
   tabindex={active ? 0 : -1}
   aria-selected={selected}
   aria-label={label || peer.display_name}

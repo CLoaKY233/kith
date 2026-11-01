@@ -2,7 +2,9 @@
 @component
 A nav item (spec §4.2): 32 px tall (44 on touch), a 16 px icon, the label at 14/400 and an
 optional count in `--ink-3`. The active one is `--ink-1` 600 on `--sunken`; no coloured bar.
-In the tablet rail it is the icon alone, named by aria-label and a tooltip.
+In the tablet rail it is the icon, named by aria-label and a tooltip (both carry the count);
+under a coarse pointer the label also shows under the icon at `--t-micro`, since touch gets
+no tooltips (§11.4).
 Props:
   - to: string, the href; omit it for a button (Add device).
   - icon: IconName; label: string; count?: number | null.
@@ -13,6 +15,7 @@ Props:
   import Icon from '../lib/icons/Icon.svelte';
   import type { IconName } from '../lib/icons/names';
   import Tooltip from '../lib/ui/Tooltip.svelte';
+  import { copy } from '../lib/copy';
   import { follow } from '../router';
 
   let {
@@ -35,6 +38,8 @@ Props:
     onclick?: () => void;
   } = $props();
 
+  const named = $derived(count === null ? label : copy.nav.withCount(label, count));
+
   function click(event: MouseEvent): void {
     onclick?.();
     if (to) follow(event, to);
@@ -46,16 +51,18 @@ Props:
   {#if !rail}
     <span class="label">{label}</span>
     {#if count !== null}<span class="count">{count}</span>{/if}
+  {:else}
+    <span class="micro" aria-hidden="true">{label}</span>
   {/if}
 {/snippet}
 
 {#if rail}
-  <Tooltip text={label} side="right">
+  <Tooltip text={named} side="right">
     {#snippet trigger(props)}
       {#if to}
-        <a {...props} href={to} class="item rail" class:active class:strong aria-label={label} aria-current={active ? 'page' : undefined} onclick={click}>{@render body()}</a>
+        <a {...props} href={to} class="item rail" class:active class:strong aria-label={named} aria-current={active ? 'page' : undefined} onclick={click}>{@render body()}</a>
       {:else}
-        <button {...props} type="button" class="item rail" class:strong aria-label={label} onclick={click}>{@render body()}</button>
+        <button {...props} type="button" class="item rail" class:strong aria-label={named} onclick={click}>{@render body()}</button>
       {/if}
     {/snippet}
   </Tooltip>
@@ -82,8 +89,8 @@ Props:
       background-color var(--d-hover) var(--e-linear),
       color var(--d-hover) var(--e-linear);
   }
-  .item:hover {
-    background: var(--sunken);
+  .item:hover:not(.active) {
+    background: color-mix(in srgb, var(--sunken) 55%, transparent);
     color: var(--ink-1);
   }
   .item.strong {
@@ -105,6 +112,13 @@ Props:
     font: var(--t-small);
     color: var(--ink-3);
   }
+  /* --ink-3 only holds 4.5:1 on --surface (§3.1, §11.3). */
+  .item.active .count {
+    color: var(--ink-2);
+  }
+  .micro {
+    display: none;
+  }
   .rail {
     justify-content: center;
     width: var(--control);
@@ -115,7 +129,21 @@ Props:
       height: var(--target-touch);
     }
     .rail {
-      width: var(--target-touch);
+      flex-direction: column;
+      gap: 2px;
+      width: calc(var(--rail) - 2 * var(--s-1));
+      height: auto;
+      min-height: var(--target-touch);
+      padding: var(--s-1) 0;
+    }
+    .rail .micro {
+      display: block;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font: var(--t-micro);
+      letter-spacing: var(--t-micro-tracking);
     }
   }
 </style>

@@ -64,7 +64,6 @@ Props:
 </script>
 
 <section class="screen">
-  <h1 class="t-title">{copy.thisDevice.title}</h1>
 
   <dl class="facts">
     <div class="fact">
@@ -160,7 +159,7 @@ Props:
     display: grid;
     gap: var(--s-7);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .group {

@@ -84,9 +84,17 @@ class Needs {
     return [...own, ...held];
   }
 
-  /** How many live needs this person has in a network (held outcomes do not count). */
+  /**
+   * How many live needs this person has in a network. Held outcomes do not count, and
+   * neither does an expired join request: its card stays to say so, but nothing waits.
+   */
   count(net: string): number {
-    return this.live.filter((n) => n.network === net || n.network === ANY_NETWORK).length;
+    const now = live.now();
+    return this.live.filter(
+      (n) =>
+        (n.network === net || n.network === ANY_NETWORK) &&
+        !(n.kind === 'join' && n.join.expires_at_ms <= now),
+    ).length;
   }
 
   /** One need by id, live or held; null once it is gone. */

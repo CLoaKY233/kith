@@ -12,7 +12,8 @@ Props:
   - groups: CommandGroup[], where
       CommandGroup = { heading: string; kind?: 'devices' | 'actions' | 'goTo' | 'networks'; items: CommandItem[] }
       CommandItem = { id: string; label: string; keywords?: string[]; hint?: string;
-                      onSelect: (detail: { port?: number }) => void }
+                      whenTyped?: boolean; onSelect: (detail: { port?: number }) => void }
+    `whenTyped` items (per-device actions) stay out of the list until something is typed.
     Item ids are unique across all groups and stable between opens (they key recency).
     `kind` defaults from the heading (copy.palette.groups). Device hints (addresses) are
     mono. Members' admin actions arrive already worded "Ask an admin to rename nas…".
@@ -24,6 +25,7 @@ Props:
     label: string;
     keywords?: readonly string[];
     hint?: string;
+    whenTyped?: boolean;
     onSelect: (detail: { port?: number }) => void;
   };
   export type CommandKind = 'devices' | 'actions' | 'goTo' | 'networks';
@@ -91,7 +93,15 @@ Props:
       .map((group) => ({ group, kind: group.kind ?? byHeading[group.heading] }))
       .filter(({ kind }) => query.scope === 'all' || kind === query.scope)
       .filter(({ kind }) => query.port === undefined || kind === 'devices')
-      .map(({ group, kind }) => ({ group, kind, items: rank(group.items, query.text, recent) }))
+      .map(({ group, kind }) => ({
+        group,
+        kind,
+        items: rank(
+          query.text === '' ? group.items.filter((item) => !item.whenTyped) : group.items,
+          query.text,
+          recent,
+        ),
+      }))
       .filter(({ items }) => items.length > 0),
   );
 
@@ -146,7 +156,11 @@ Props:
                   >
                     <span class="kith-palette-label">{item.label}</span>
                     {#if item.hint}
-                      <span class="kith-palette-hint" class:mono={kind === 'devices'}>{item.hint}</span>
+                      <span class="kith-palette-hint" class:mono={kind === 'devices'}
+                        >{kind === 'devices' && query.port !== undefined
+                          ? copy.palette.withPort(item.hint, query.port)
+                          : item.hint}</span
+                      >
                     {/if}
                   </Command.Item>
                 {/each}

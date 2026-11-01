@@ -141,7 +141,6 @@ Props:
 </script>
 
 <section class="screen">
-  <h1 class="t-title">{copy.nav.exits}</h1>
 
   {#if network}
     <div class="sections">
@@ -240,7 +239,7 @@ Props:
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .sections {

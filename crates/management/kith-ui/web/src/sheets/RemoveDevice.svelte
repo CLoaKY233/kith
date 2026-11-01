@@ -142,17 +142,27 @@ Module exports, for DeviceRow (spec §5 Removing state):
     if (!open) return;
     untrack(() => {
       lost = false;
+      seen = false;
       typed = '';
       handle = null;
       if (!live.exits[netId] && !self) actions.loadExits(netId);
     });
   });
 
-  /** §7.9 step 4: removed by someone else while this was open. */
+  /**
+   * §7.9 step 4: removed by someone else while this was open. Only a device that was here
+   * once can vanish; an id that never resolved closes nothing and says nothing.
+   */
+  let seen = false;
   $effect(() => {
-    if (!open || self || peer !== null || handle !== null) return;
+    if (!open || self || handle !== null) return;
+    if (peer !== null) {
+      seen = true;
+      return;
+    }
+    if (!seen) return;
     open = false;
-    toast.done(copy.remove.racedPlain(name));
+    if (name) toast.done(copy.remove.racedPlain(name));
   });
 
   let last: boolean | null = null;

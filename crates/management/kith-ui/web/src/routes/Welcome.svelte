@@ -4,23 +4,30 @@ Welcome (spec §6.1): this device is in no network yet. No app frame; a centred 
 max 640 px. `kith`, the one-line promise, then two large card buttons (side by side on
 desktop, stacked on phones): Start a network and Join a network, each opening its sheet
 through `?flow=start|join` so Back closes it. The footer names this device, with Rename:
-an inline field validated like any name (Enter saves, Esc reverts).
+an inline field validated like any name (Enter saves, Esc reverts); the column is pinned at
+the top, so opening it moves nothing above. Reached from a network (NetworkList's
+`Start or join another network`), it links back to that network.
 Props:
   - flow: string | null, the `?flow=` value.
 -->
 <script lang="ts">
   import { host } from '../frame/host.svelte';
+  import { prefs } from '../frame/prefs.svelte';
   import { nameProblem } from '../lib/kith/errors';
   import { copy } from '../lib/copy';
-  import { actions } from '../lib/live/store.svelte';
+  import { actions, live } from '../lib/live/store.svelte';
   import Button from '../lib/ui/Button.svelte';
   import Field from '../lib/ui/Field.svelte';
   import Input from '../lib/ui/Input.svelte';
-  import { closeOverlay, openOverlay } from '../router';
+  import { closeOverlay, follow, href, openOverlay } from '../router';
   import CreateNetwork from '../sheets/CreateNetwork.svelte';
   import JoinNetwork from '../sheets/JoinNetwork.svelte';
 
   let { flow }: { flow: string | null } = $props();
+
+  const networks = $derived(live.status?.networks ?? []);
+  const back = $derived(networks.find((n) => n.id === prefs.lastNetwork) ?? networks[0] ?? null);
+  const backHref = $derived(back ? href({ name: 'overview', net: back.id }) : '');
 
   let editing = $state(false);
   let draft = $state('');
@@ -76,6 +83,9 @@ Props:
 </script>
 
 <section class="welcome" aria-labelledby="welcome-title">
+  {#if back}
+    <a class="back" href={backHref} onclick={(e) => follow(e, backHref)}>{copy.welcome.back(back.name)}</a>
+  {/if}
   <header class="intro">
     <h1 id="welcome-title" class="brand">{copy.welcome.title}</h1>
     <p class="lede">{copy.welcome.lede}</p>
@@ -95,7 +105,7 @@ Props:
   <footer class="device">
     {#if editing}
       <div class="rename">
-        <Field label={copy.welcome.nameLabel} {error}>
+        <Field label={copy.welcome.nameLabel} helper={copy.welcome.nameHelper(draft)} {error}>
           {#snippet children(control)}
             <Input
               {...control}
@@ -126,12 +136,24 @@ Props:
 <style>
   .welcome {
     display: grid;
-    align-content: center;
+    align-content: start;
     gap: var(--s-7);
     min-height: 100dvh;
     max-width: var(--welcome-max);
     margin: 0 auto;
-    padding: var(--s-8) var(--gutter-mobile);
+    padding: max(var(--s-8), 20dvh) var(--gutter-mobile) var(--s-8);
+  }
+  .back {
+    justify-self: start;
+    margin-bottom: calc(-1 * var(--s-5));
+    padding: var(--s-1) var(--s-2);
+    margin-left: calc(-1 * var(--s-2));
+    border-radius: var(--r-2);
+    color: var(--ink-2);
+  }
+  .back:hover {
+    background: var(--sunken);
+    color: var(--ink-1);
   }
   .intro {
     display: grid;

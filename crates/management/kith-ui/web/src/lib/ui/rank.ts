@@ -40,7 +40,8 @@ const WORD_START = /[\s\-._:/@]/;
 
 /**
  * How well `query` matches `target`, from 0 (no match) to 1 (equal). Prefixes beat word
- * starts, which beat substrings, which beat letters in order.
+ * starts, which beat substrings, which beat letters in order. Letters in order must fall in
+ * one space-separated word, so `nas` does not find `Rename vps`.
  */
 export function score(target: string, query: string): number {
   const t = target.toLowerCase();
@@ -50,14 +51,21 @@ export function score(target: string, query: string): number {
   if (t.startsWith(q)) return 0.9;
   const at = t.indexOf(q);
   if (at > 0) return WORD_START.test(t.charAt(at - 1)) ? 0.8 : 0.6;
-  let from = 0;
-  for (const char of q) {
-    const found = t.indexOf(char, from);
-    if (found < 0) return 0;
-    from = found + 1;
-  }
-  return 0.3 * (q.length / t.length);
+  if (/\s/.test(q)) return 0;
+  const inOrder = (word: string): boolean => {
+    let from = 0;
+    for (const char of q) {
+      const found = word.indexOf(char, from);
+      if (found < 0) return false;
+      from = found + 1;
+    }
+    return true;
+  };
+  return t.split(/\s+/).some(inOrder) ? 0.3 * (q.length / t.length) : 0;
 }
+
+/** Below this a match is letters in order: recency does not lift it over real matches. */
+const STRONG = 0.5;
 
 export type Rankable = { readonly id: string; readonly label: string; readonly keywords?: readonly string[] };
 
@@ -65,8 +73,9 @@ export type Rankable = { readonly id: string; readonly label: string; readonly k
 const KEYWORD_WEIGHT = 0.95;
 
 /**
- * The items that match `text`: recently picked ones first (most recent first), then the
- * rest by match quality, ties kept in the caller's order.
+ * The items that match `text`: prefix, word and substring matches before letters in order;
+ * within each, recently picked ones first (most recent first), then by match quality, ties
+ * kept in the caller's order.
  */
 export function rank<T extends Rankable>(items: readonly T[], text: string, recent: readonly string[]): T[] {
   const scored = items
@@ -79,7 +88,11 @@ export function rank<T extends Rankable>(items: readonly T[], text: string, rece
       return { item, index, best, seen: seen < 0 ? Number.POSITIVE_INFINITY : seen };
     })
     .filter((entry) => entry.best > 0);
-  scored.sort((a, b) => a.seen - b.seen || b.best - a.best || a.index - b.index);
+  const strong = (best: number): number => (best >= STRONG ? 0 : 1);
+  scored.sort(
+    (a, b) =>
+      strong(a.best) - strong(b.best) || a.seen - b.seen || b.best - a.best || a.index - b.index,
+  );
   return scored.map((entry) => entry.item);
 }
 

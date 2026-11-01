@@ -10,6 +10,7 @@ CNAME; `More` reveals a text record. A name typed bare (`nas`, `nas.home`) becom
 Members fill in the same row; its button becomes `Ask an admin…` with the exact command.
 Props:
   - net: string, the network's id or name (as in the URL).
+  - query?: URLSearchParams. `?new=1` (the palette's `Add name`) opens the new row.
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte';
@@ -36,8 +37,9 @@ Props:
   import Sheet from '../lib/ui/Sheet.svelte';
   import Switch from '../lib/ui/Switch.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
+  import { setQuery } from '../router';
 
-  let { net }: { net: string } = $props();
+  let { net, query = null }: { net: string; query?: URLSearchParams | null } = $props();
 
   function findNetwork(list: readonly NetworkSummary[], ref: string): NetworkSummary | null {
     return (
@@ -210,6 +212,17 @@ Props:
     await tick();
     nameRef?.focus();
   }
+
+  // The palette's `Add name` lands here with `?new=1` (§10): open the editor, then drop it.
+  $effect(() => {
+    if (!ready || adding) return;
+    if (query?.get('new') !== '1') return;
+    untrack(() => {
+      setQuery({ new: null }, { replace: true });
+      adding = true;
+      void tick().then(() => nameRef?.focus());
+    });
+  });
 
   function reset(): void {
     adding = false;
@@ -430,7 +443,6 @@ Props:
 
 <section class="screen">
   <div class="title">
-    <h1 class="t-title">{copy.nav.names}</h1>
     {#if ready && names.length > 0 && !adding}
       <Button id={addId} onclick={open}>{copy.names.add}</Button>
     {/if}
@@ -611,13 +623,13 @@ Props:
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .title {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: var(--s-4);
     min-height: var(--control);
   }

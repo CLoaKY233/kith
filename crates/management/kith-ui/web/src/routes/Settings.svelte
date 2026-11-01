@@ -15,7 +15,7 @@ Props:
   import { clock, weekdayClock } from '../lib/format';
   import { devicesByName, findNetwork, membershipOf } from '../lib/kith/network';
   import { actions, live } from '../lib/live/store.svelte';
-  import { prefs, setPref } from '../lib/prefs.svelte';
+  import { prefs } from '../frame/prefs.svelte';
   import type { ActionHandle, ApiFailure } from '../lib/types';
   import type { Invite, Outcome } from '../lib/types.gen';
   import AlertDialog from '../lib/ui/AlertDialog.svelte';
@@ -65,7 +65,7 @@ Props:
   }));
   function pickTheme(value: string): void {
     const theme = themeOptions.find((o) => o.value === value)?.value;
-    if (theme) setPref('theme', theme);
+    if (theme) prefs.theme = theme;
   }
   let compact = $state(prefs.density === 'compact');
   let shortcuts = $state(prefs.shortcuts);
@@ -81,7 +81,7 @@ Props:
     if (on && permission !== 'granted') permission = await Notification.requestPermission();
     const granted = on && permission === 'granted';
     notify = granted;
-    setPref('notifications', granted);
+    prefs.notifications = granted;
   }
 
   // Invites.
@@ -165,7 +165,6 @@ Props:
 </script>
 
 <section class="screen">
-  <h1 class="t-title">{copy.nav.settings}</h1>
 
   <section class="group" aria-labelledby="settings-appearance">
     <h2 class="t-heading" id="settings-appearance">{copy.settings.appearance}</h2>
@@ -182,13 +181,13 @@ Props:
       <Switch
         bind:checked={compact}
         label={copy.settings.compact}
-        onCheckedChange={(on) => setPref('density', on ? 'compact' : 'comfortable')}
+        onCheckedChange={(on) => prefs.density = on ? 'compact' : 'comfortable'}
       />
     {/if}
     <Switch
       bind:checked={shortcuts}
       label={copy.settings.shortcuts}
-      onCheckedChange={(on) => setPref('shortcuts', on)}
+      onCheckedChange={(on) => prefs.shortcuts = on}
     />
   </section>
 
@@ -318,7 +317,7 @@ Props:
     display: grid;
     gap: var(--s-7);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .group {

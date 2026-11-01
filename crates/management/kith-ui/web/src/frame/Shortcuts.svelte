@@ -1,10 +1,12 @@
 <!--
 @component
-The shortcut sheet (spec §10), opened with `?`. Lists every global shortcut.
+The shortcut sheet (spec §10), opened with `?`. Lists every global shortcut, the row menu
+key and the palette's `>` and `@` prefixes, with a `Done` button to close it.
 Props: none (open state is `layers.shortcuts`).
 -->
 <script lang="ts">
   import { copy } from '../lib/copy';
+  import Button from '../lib/ui/Button.svelte';
   import Dialog from '../lib/ui/Dialog.svelte';
   import Kbd from '../lib/ui/Kbd.svelte';
   import { layers } from './layers.svelte';
@@ -20,6 +22,9 @@ Props: none (open state is `layers.shortcuts`).
     [k.goActivity, copy.shortcuts.goActivity],
     [k.close, copy.shortcuts.close],
     [k.approveDeny, copy.shortcuts.approveDeny],
+    [k.rowMenu, copy.shortcuts.rowMenu],
+    [k.prefixActions, copy.shortcuts.prefixActions],
+    [k.prefixDevices, copy.shortcuts.prefixDevices],
   ];
 </script>
 
@@ -32,6 +37,9 @@ Props: none (open state is `layers.shortcuts`).
       </div>
     {/each}
   </dl>
+  {#snippet footer()}
+    <Button variant="ghost" onclick={() => (layers.shortcuts = false)}>{copy.shortcuts.done}</Button>
+  {/snippet}
 </Dialog>
 
 <style>

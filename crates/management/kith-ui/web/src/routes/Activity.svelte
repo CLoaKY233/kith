@@ -28,7 +28,7 @@ Props:
   import VirtualList from '../lib/kith/VirtualList.svelte';
   import { live } from '../lib/live/store.svelte';
   import { SORT_FREEZE_MS, TINT_MS } from '../lib/live/timing';
-  import { prefs, promptSnoozed, setPref, snoozePrompt, wasHiddenAt } from '../lib/prefs.svelte';
+  import { prefs, promptSnoozed, snoozePrompt, wasHiddenAt } from '../frame/prefs.svelte';
   import { readPx } from '../lib/tokens';
   import type { Entry } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
@@ -162,7 +162,7 @@ Props:
 
   async function turnOn(): Promise<void> {
     const permission = await Notification.requestPermission();
-    setPref('notifications', permission === 'granted');
+    prefs.notifications = permission === 'granted';
     askDismissed = true;
   }
 
@@ -188,7 +188,6 @@ Props:
 </script>
 
 <section class="screen">
-  <h1 class="t-title">{copy.nav.activity}</h1>
 
   {#if ask}
     <div class="ask">
@@ -311,7 +310,7 @@ Props:
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
 

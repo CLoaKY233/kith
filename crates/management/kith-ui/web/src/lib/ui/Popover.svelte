@@ -17,6 +17,8 @@ Props:
   - width?: 'auto' | 'card' (card = 360 px, for NeedsYouCard lists and focus cards).
   - flush?: boolean. No inner padding, for content that brings its own (a list of cards).
   - onOpenChange?: (open: boolean) => void.
+  - onOpenAutoFocus?: (event: Event) => void. Call preventDefault() and focus something
+    else to keep focus off the first field (a NeedsYouCard's name input).
 -->
 <script lang="ts">
   import { Popover } from 'bits-ui';
@@ -35,6 +37,7 @@ Props:
     width = 'auto',
     flush = false,
     onOpenChange,
+    onOpenAutoFocus,
   }: {
     open?: boolean;
     trigger?: Snippet<[Record<string, unknown>]>;
@@ -46,6 +49,7 @@ Props:
     width?: 'auto' | 'card';
     flush?: boolean;
     onOpenChange?: (open: boolean) => void;
+    onOpenAutoFocus?: (event: Event) => void;
   } = $props();
 
   const modal = insideModal();
@@ -69,6 +73,7 @@ Props:
       class="kith-float kith-pop {width} {modal ? 'in-modal' : ''}"
       data-flush={flush ? '' : undefined}
       aria-label={label}
+      {onOpenAutoFocus}
     >
       {@render children()}
     </Popover.Content>
