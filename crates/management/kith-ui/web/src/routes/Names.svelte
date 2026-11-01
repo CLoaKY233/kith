@@ -316,7 +316,7 @@ Props:
       return;
     }
     if (!admin) {
-      openAsk(copy.names.setCommand(netName, nameText, parsed.type, parsed.value));
+      openAsk(copy.askAdmin.request.dnsSet(netName, nameText, parsed.type, parsed.value));
       return;
     }
     if (frozen) return;
@@ -408,7 +408,7 @@ Props:
       : [
           {
             label: copy.names.askRemove(short(record.name)),
-            onSelect: () => openAsk(copy.names.removeCommand(netName, label(record.name))),
+            onSelect: () => openAsk(copy.askAdmin.request.dnsRm(netName, label(record.name))),
           },
         ];
   }

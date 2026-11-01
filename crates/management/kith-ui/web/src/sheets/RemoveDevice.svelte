@@ -253,7 +253,7 @@ Module exports, for DeviceRow (spec §5 Removing state):
       <span>{copy.remove.lost(name)}</span>
     </label>
     {#if exitUsers.length > 0}
-      <p class="body">{copy.remove.exitUsers(copy.remove.andList(exitUsers), name)}</p>
+      <p class="body">{copy.remove.exitUsers(exitUsers, name)}</p>
     {/if}
     {#if failure}<p class="fail">{failure}</p>{/if}
     {#if stale}<p class="note">{copy.conn.staleActions}</p>{/if}

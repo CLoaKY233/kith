@@ -407,7 +407,7 @@ Props:
       {:else if asking}
         <AskAdminSheet
           net={blocked.network}
-          request={copy.askAdmin.allowCommand(
+          request={copy.askAdmin.request.allow(
             network,
             blocked.from_name,
             blocked.to_name,

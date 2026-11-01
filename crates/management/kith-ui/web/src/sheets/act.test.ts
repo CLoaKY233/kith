@@ -123,8 +123,11 @@ describe('asking an admin (spec §7.10)', () => {
 
 describe('remove (spec §7.9)', () => {
   it('lists exit users the way the dialog reads', () => {
-    expect(copy.remove.exitUsers(copy.remove.andList(['laptop', 'tv']), 'phone')).toBe(
+    expect(copy.remove.exitUsers(['laptop', 'tv'], 'phone')).toBe(
       'laptop and tv use phone as their exit. Their internet will go directly.',
+    );
+    expect(copy.remove.exitUsers(['laptop'], 'phone')).toBe(
+      'laptop uses phone as its exit. Its internet will go directly.',
     );
     expect(copy.remove.andList(['a', 'b', 'c'])).toBe('a, b and c');
   });

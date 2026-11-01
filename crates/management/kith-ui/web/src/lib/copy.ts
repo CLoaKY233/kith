@@ -239,7 +239,7 @@ export const copy = {
     onlyThis: 'Only this device so far.',
     addDevice: 'Add a device',
     allGood: (online: number, total: number): string =>
-      `Everything is working. ${online} of ${total} devices online.`,
+      `Everything is working. ${online} of ${total} ${plural(total, 'device', 'devices')} online.`,
     /** The default sub-line, `9 direct · 2 via vps · ↓ 3.4 MB/s ↑ 220 kB/s`, in parts. */
     direct: (n: number): string => `${n} direct`,
     via: (n: number, relay: string): string => `${n} via ${relay}`,
@@ -248,7 +248,7 @@ export const copy = {
     needsYou: 'Needs you',
     viewAll: (n: number): string => `View all (${n})`,
     devices: 'Devices',
-    allDevices: (n: number): string => `All ${n} devices →`,
+    allDevices: (n: number): string => `All ${n} ${plural(n, 'device', 'devices')} →`,
     recent: 'Recent',
     allActivity: 'All activity →',
   },
@@ -414,9 +414,6 @@ export const copy = {
     moreFor: (name: string): string => `More for ${name}`,
     removed: (name: string): string => `Removed ${name}`,
     askRemove: (name: string): string => `Ask an admin to remove ${name}…`,
-    setCommand: (network: string, name: string, type: string, value: string): string =>
-      `kith dns set ${network} ${name} ${type} ${/\s/.test(value) ? `'${value}'` : value}`,
-    removeCommand: (network: string, name: string): string => `kith dns rm ${network} ${name}`,
   },
 
   /** §6.7 Exits. */
@@ -450,7 +447,6 @@ export const copy = {
     moreFor: (exit: string): string => `More for ${exit}`,
     /** `desk`, `desk and nas`, `desk, nas and tv`. */
     list: andList,
-    askCommand: (network: string, exit: string): string => `kith exit allow ${network} ${exit}`,
     allowTitle: (exit: string, network: string): string =>
       `Allow ${exit} as an exit in ${network}?`,
     allowBody: (exit: string, network: string): string =>
@@ -475,7 +471,6 @@ export const copy = {
     compact: 'Compact rows',
     shortcuts: 'Keyboard shortcuts',
     notifications: 'Notifications',
-    notificationsSwitch: 'Notifications',
     privacy: 'Privacy',
     shareLinks: (network: string): string => `Share link reports with ${network}`,
     shareLinksHelp:
@@ -606,7 +601,8 @@ export const copy = {
     request: (command: string): string => `Your request: ${command}`,
     requestCommand: (network: string, admin: string): string => `kith join ${network}@${admin}`,
     waiting: (network: string): string => `Waiting for an admin of ${network}…`,
-    joined: (online: number): string => `You're in. ${online} devices online.`,
+    joined: (online: number): string =>
+      `You're in. ${online} ${plural(online, 'device', 'devices')} online.`,
     denied: 'An admin denied this request.',
     /** The ask-to-join field, for when there is no link. */
     askLabel: 'Network and admin',
@@ -676,7 +672,7 @@ export const copy = {
   /** §7.5 Allow a blocked connection. */
   blocked: {
     card: (from: string, to: string, port: string, n: number): string =>
-      `${from} → ${to}${port}${DOT}blocked ${n}× in the last 10 min`,
+      `${from} → ${to}${port}${DOT}blocked ${n}× in the last 10${THIN}min`,
     port: (port: number, service: string | null): string =>
       ` :${port}${service ? ` (${service})` : ''}`,
     ignore: 'Ignore',
@@ -722,7 +718,8 @@ export const copy = {
     reveal: "Show QR code (contains this phone's private key)",
     download: 'Download .conf',
     showText: 'Show config as text',
-    waiting: 'Waiting for phone to connect… Turn on the tunnel in WireGuard after scanning.',
+    waiting: (phone: string): string =>
+      `Waiting for ${phone} to connect… Turn on the tunnel in WireGuard after scanning.`,
     notYet: (gateway: string): string =>
       `Not connected yet. Check the tunnel is on, and that ${gateway} is online. Phones connect through it.`,
     connected: (phone: string, gateway: string, rtt: string): string =>
@@ -743,8 +740,10 @@ export const copy = {
     comeBack: 'To come back it must join again.',
     lost: (device: string): string =>
       `${device} was lost or stolen — also revoke its invites and names`,
-    exitUsers: (users: string, device: string): string =>
-      `${users} use ${device} as their exit. Their internet will go directly.`,
+    exitUsers: (users: readonly string[], device: string): string =>
+      users.length === 1
+        ? `${users[0] ?? ''} uses ${device} as its exit. Its internet will go directly.`
+        : `${andList(users)} use ${device} as their exit. Their internet will go directly.`,
     submit: (device: string): string => `Remove ${device}`,
     progress: (n: number, m: number, device: string): string =>
       `Removing… ${n} of ${m} have dropped ${device}`,
@@ -772,14 +771,6 @@ export const copy = {
 
   /** §7.10 Ask an admin. */
   askAdmin: {
-    /** The exact CLI request for an admin to allow a blocked connection. */
-    allowCommand: (
-      network: string,
-      from: string,
-      to: string,
-      protocol: string,
-      port: number | null,
-    ): string => `kith allow ${network} ${from} ${to} ${protocol}${port === null ? '' : ` ${port}`}`,
     title: 'Ask an admin',
     onlyAdmins: (network: string, admins: string): string =>
       `Only admins can change this. Admins in ${network}: ${admins}.`,
@@ -803,6 +794,9 @@ export const copy = {
       /** No command renames a device yet, so the request is the name to set. */
       rename: (network: string, device: string, name: string): string =>
         `Rename ${device} to ${name} in ${network}`,
+      dnsSet: (network: string, name: string, type: string, value: string): string =>
+        `kith dns set ${network} ${name} ${type} ${/\s/.test(value) ? `'${value}'` : value}`,
+      dnsRm: (network: string, name: string): string => `kith dns rm ${network} ${name}`,
     },
   },
 
@@ -812,7 +806,9 @@ export const copy = {
       `${name} is taken in ${network}. Use ${suggestion}?`,
     use: (suggestion: string): string => `Use ${suggestion}`,
     follow: (n: number, device: string): string =>
-      `${n} ${plural(n, 'name points', 'names point')} to ${device}. They'll follow the new name.`,
+      n === 1
+        ? `1 name points to ${device}. It'll follow the new name.`
+        : `${n} names point to ${device}. They'll follow the new name.`,
     concurrent: (who: string, from: string, to: string): string =>
       `${who} changed this a second ago: ${quoted(from)} → ${quoted(to)}.`,
     useTheirs: 'Use theirs',
@@ -921,14 +917,8 @@ export const copy = {
     noHistory: 'Nothing has happened to this device yet.',
     detailLabel: (device: string): string => `${device} details`,
     askRemove: (device: string, network: string): string =>
-      `Ask to remove ${device} from ${network}…`,
-    askAllowExit: (device: string): string => `Ask to allow ${device} as exit…`,
-    removeCommand: (network: string, device: string): string =>
-      `kith remove ${network} ${device}`,
-    allowExitCommand: (network: string, device: string): string =>
-      `kith exit allow ${network} ${device}`,
-    allowCommand: (network: string, from: string, to: string, proto: string, port: string): string =>
-      `kith allow ${network} ${from} ${to} ${proto}${port ? ` ${port}` : ''}`,
+      `Ask an admin to remove ${device} from ${network}…`,
+    askAllowExit: (device: string): string => `Ask an admin to allow ${device} as an exit…`,
     allowExitTitle: (device: string): string => `Allow ${device} as an exit?`,
     allowExitBody: (device: string, network: string): string =>
       `Devices in ${network} that may use it can send all their internet traffic through ${device}. Websites see ${device}'s address instead of theirs.`,
@@ -963,8 +953,6 @@ export const copyScreens = {
     noneOfKind: 'Nothing of this kind has happened here yet.',
     /** The `12 new ↑` pill's accessible name. */
     newerLabel: (n: number): string => `${n} new ${plural(n, 'event', 'events')}. Show them.`,
-    notifyBlocked:
-      'This browser blocks notifications from this page. Allow them in its site settings.',
   },
 
   /** §12.3 templates that `copy.entry` does not cover. */

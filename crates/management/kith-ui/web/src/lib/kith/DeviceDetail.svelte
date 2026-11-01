@@ -447,19 +447,18 @@ Props:
 
   // §7.10 Ask an admin.
   let askRequest = $state<string | null>(null);
-  const portText = $derived(blocked?.port === null || !blocked ? '' : String(blocked.port));
   const askItems: MenuItem[] = $derived.by(() => {
     if (!peer) return [];
     const items: MenuItem[] = [
       {
         label: copy.deviceView.askRemove(peer.name, networkName),
-        onSelect: () => (askRequest = copy.deviceView.removeCommand(networkName, peer.name)),
+        onSelect: () => (askRequest = copy.askAdmin.request.remove(networkName, peer.name)),
       },
     ];
     if (!exitView && !isPhone(peer)) {
       items.push({
         label: copy.deviceView.askAllowExit(peer.name),
-        onSelect: () => (askRequest = copy.deviceView.allowExitCommand(networkName, peer.name)),
+        onSelect: () => (askRequest = copy.askAdmin.request.exitAllow(networkName, peer.name)),
       });
     }
     return items;
@@ -469,7 +468,7 @@ Props:
     if (!verdict?.action || !peer) return;
     if (verdict.action === 'remove') {
       if (admin) setQuery({ remove: peer.name });
-      else askRequest = copy.deviceView.removeCommand(networkName, peer.name);
+      else askRequest = copy.askAdmin.request.remove(networkName, peer.name);
       return;
     }
     if (!blocked) return;
@@ -477,12 +476,12 @@ Props:
       setQuery({ need: blocked.id });
       return;
     }
-    askRequest = copy.deviceView.allowCommand(
+    askRequest = copy.askAdmin.request.allow(
       networkName,
       blocked.from_name,
       blocked.to_name,
       blocked.protocol,
-      portText,
+      blocked.port,
     );
   }
 
