@@ -1,19 +1,112 @@
 <!--
 @component
-Spark (spec §5): 120×24 rx sparkline drawn by the list's shared painter. Placeholder;
-workstream F owns it.
+Spark (spec §5): received traffic for one device over the last 5 minutes, 120×24 on
+desktop and the row's full width on mobile. Painted by the list's shared painter in the
+tick's frame. Hover (mouse and pen only) shows a crosshair and
+`14:02:16 · ↓ 2.1 MB/s · peak 4.0 MB/s`. Empty draws a dashed baseline; offline, or a
+stale page, freezes it in --ink-4. Hidden from screen readers: Rate and the row's
+accessible name carry the numbers.
 Props:
   - peer: string, the `net/node` key into live.traffic.
+  - frozen?: boolean. Defaults to "offline, or the page is stale or the daemon down".
+  - painter?: SparkPainter. Defaults to the page's shared painter.
 -->
 <script lang="ts">
-  let { peer }: { peer: string } = $props();
+  import { untrack } from 'svelte';
+  import { copy } from '../copy';
+  import { clockSeconds, rate } from '../format';
+  import { live } from '../live/store.svelte';
+  import { sparkPainter, type SparkHandle, type SparkPainter, type SparkPoint } from './sparkPainter';
+
+  let {
+    peer,
+    frozen,
+    painter = sparkPainter(),
+  }: { peer: string; frozen?: boolean; painter?: SparkPainter } = $props();
+
+  let canvas: HTMLCanvasElement | undefined = $state();
+  let handle = $state.raw<SparkHandle | null>(null);
+  let tip = $state<SparkPoint | null>(null);
+
+  const offline = $derived.by(() => {
+    const cut = peer.indexOf('/');
+    const info = live.peers[peer.slice(0, cut)]?.[peer.slice(cut + 1)];
+    return info ? !info.online : false;
+  });
+  const isFrozen = $derived(
+    frozen ?? (offline || live.conn === 'stale' || live.conn === 'daemon_down' || live.conn === 'ui_gone'),
+  );
+  const tipText = $derived(
+    tip ? copy.chart.sparkTip(clockSeconds(tip.at), rate(tip.rate), rate(tip.peak)) : '',
+  );
+
+  $effect(() => {
+    if (!canvas) return;
+    const h = painter.register(canvas, untrack(() => peer), (next) => (tip = next));
+    handle = h;
+    const seen = new IntersectionObserver(([entry]) => h.visible(entry?.isIntersecting ?? true));
+    seen.observe(canvas);
+    return () => {
+      seen.disconnect();
+      h.dispose();
+      handle = null;
+    };
+  });
+
+  $effect(() => {
+    handle?.update(peer, isFrozen);
+  });
+
+  $effect(() => {
+    void live.trafficVersion;
+    painter.request();
+  });
+
+  function move(event: PointerEvent): void {
+    if (event.pointerType === 'touch') return;
+    handle?.hover(event.offsetX);
+  }
+
+  function leave(): void {
+    handle?.hover(null);
+  }
 </script>
 
-<canvas class="spark" data-peer={peer} aria-hidden="true"></canvas>
+<span class="spark">
+  <canvas bind:this={canvas} aria-hidden="true" onpointermove={move} onpointerleave={leave}></canvas>
+  {#if tip}
+    <span class="tip" style:left="{tip.x}px">{tipText}</span>
+  {/if}
+</span>
 
 <style>
   .spark {
+    position: relative;
+    display: block;
     width: var(--spark-w);
     height: var(--spark-h);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .tip {
+    position: absolute;
+    bottom: calc(100% + var(--s-1));
+    z-index: var(--z-popover);
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-1);
+    background: var(--ink-1);
+    color: var(--surface);
+    font: var(--t-small);
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translateX(-50%);
+  }
+  @media (width < 40rem) {
+    .spark {
+      width: 100%;
+    }
   }
 </style>
