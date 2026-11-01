@@ -73,6 +73,15 @@ pub(crate) fn relative(name: &str, suffix: &str) -> String {
         .to_owned()
 }
 
+/// A name the page sent, as the daemon stores it: trimmed, lowercase, without a trailing
+/// dot or the network's suffix, so `Nas.home.kith.internal.` and `nas` are one name.
+fn short(name: &str, suffix: &str) -> String {
+    relative(
+        &name.trim().trim_end_matches('.').to_ascii_lowercase(),
+        &suffix.to_ascii_lowercase(),
+    )
+}
+
 /// `GET /api/networks/:net/records`.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     match &shared.source {
@@ -91,7 +100,8 @@ pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<Stri
 
 /// `POST /api/networks/:net/records`.
 ///
-/// With `based_on`, the value the edit started from, the change is refused with 409 when
+/// `name` may be the full name or the short one, as for delete. With `based_on`, the
+/// value the edit started from, the change is refused with 409 when
 /// the name now holds something else, and `conflict.op` carries what it holds.
 pub(crate) async fn set(
     State(shared): State<Arc<Shared>>,
@@ -102,21 +112,25 @@ pub(crate) async fn set(
     let daemon = daemon(&shared)?;
     let network = network_id(&net)?;
     let data = record(input.kind, &input.value)?;
-    if let Some(based_on) = &input.based_on {
+    let name = if let Some(based_on) = &input.based_on {
         let (records, suffix) = named(daemon, network).await?;
-        let name = relative(&input.name, &suffix);
+        let name = short(&input.name, &suffix);
         let current: Vec<String> = records
             .iter()
-            .filter(|record| !record.device && relative(&record.name, &suffix) == name)
+            .filter(|record| !record.device && short(&record.name, &suffix) == name)
             .map(|record| view(record).value)
             .collect();
         if !current.contains(based_on) {
             return Err(settled(None, now_ms(), current.into_iter().next()));
         }
-    }
+        name
+    } else {
+        let status = status_of(daemon).await?;
+        short(&input.name, &suffix(&summary(&status, network)?.name))
+    };
     let request = Request::SetRecord {
         network,
-        name: input.name,
+        name,
         record: data,
     };
     let Response::RecordSet = as_admin(daemon, network, request).await? else {
@@ -126,7 +140,7 @@ pub(crate) async fn set(
 }
 
 /// `POST /api/networks/:net/records/:name/delete`. `name` may be the full name the list
-/// shows or the short one.
+/// shows or the short one, in any case.
 pub(crate) async fn delete(
     State(shared): State<Arc<Shared>>,
     Path((net, name)): Path<(String, String)>,
@@ -137,7 +151,7 @@ pub(crate) async fn delete(
     let suffix = suffix(&summary(&status, network)?.name);
     let request = Request::DeleteRecord {
         network,
-        name: relative(&name, &suffix),
+        name: short(&name, &suffix),
     };
     let Response::RecordDeleted = as_admin(daemon, network, request).await? else {
         return Err(ApiError::unexpected());
