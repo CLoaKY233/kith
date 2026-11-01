@@ -7,6 +7,7 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
+use kith_packet::FlowKey;
 use kith_types::NetworkId;
 
 /// The most distinct connections kept; the one seen longest ago makes room for a new one.
@@ -15,9 +16,6 @@ pub(crate) const MAX_BLOCKED: usize = 256;
 /// The most refused packets sampled per [`WINDOW`]; the rest are only counted as drops.
 const SAMPLES_PER_WINDOW: u32 = 512;
 const WINDOW: Duration = Duration::from_secs(1);
-
-const TCP: u8 = 6;
-const UDP: u8 = 17;
 
 /// Inbound packets of one connection the network's policy refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,28 +115,15 @@ impl BlockedTable {
     }
 }
 
+/// The connection `packet` belongs to, read as the filter that refused it reads it.
 fn parse(network: NetworkId, packet: &[u8]) -> Option<Blocked> {
-    let source = crate::packet::source(packet)?;
-    let destination = crate::packet::destination(packet)?;
-    let (protocol, transport) = match packet.first()? >> 4 {
-        4 => {
-            let header = usize::from(packet.first()? & 0x0f) * 4;
-            (*packet.get(9)?, header)
-        }
-        _ => (*packet.get(6)?, 40),
-    };
-    let port = matches!(protocol, TCP | UDP)
-        .then(|| {
-            let bytes = packet.get(transport + 2..transport + 4)?;
-            Some(u16::from_be_bytes([*bytes.first()?, *bytes.get(1)?]))
-        })
-        .flatten();
+    let flow = FlowKey::extract(packet).ok()?;
     Some(Blocked {
         network,
-        source,
-        destination,
-        protocol,
-        port,
+        source: flow.src,
+        destination: flow.dst,
+        protocol: flow.protocol,
+        port: flow.dst_port,
         count: 1,
     })
 }
@@ -146,6 +131,8 @@ fn parse(network: NetworkId, packet: &[u8]) -> Option<Blocked> {
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
+
+    use kith_packet::ip_protocol::{ICMPV6, TCP, UDP};
 
     use super::*;
 
@@ -200,5 +187,32 @@ mod tests {
         assert_eq!(table.snapshot().len(), MAX_BLOCKED);
         assert_eq!(table.capacity(), MAX_BLOCKED, "the table never grows");
         assert!(ssh(&table).is_none(), "the oldest connections make room");
+    }
+
+    #[test]
+    fn a_connection_is_read_as_the_filter_reads_it() {
+        let network = NetworkId::from_bytes([1; 32]);
+        let mut with_options = vec![0x46, 0, 0, 32, 0, 0, 0, 0, 64, TCP, 0, 0];
+        with_options.extend_from_slice(&[100, 64, 0, 7, 100, 64, 0, 1]);
+        with_options.extend_from_slice(&[1, 1, 0, 0]);
+        with_options.extend_from_slice(&[0x30, 0x39, 0, 22]);
+        with_options.extend_from_slice(&[0; 8]);
+        with_options[3] = u8::try_from(with_options.len()).unwrap();
+        let read = parse(network, &with_options).unwrap();
+        assert_eq!(
+            (read.protocol, read.port),
+            (TCP, Some(22)),
+            "past the options"
+        );
+
+        let mut ping = vec![0x60, 0, 0, 0, 0, 8, ICMPV6, 64];
+        ping.extend_from_slice(&[0xfd; 16]);
+        ping.extend_from_slice(&[0xfe; 16]);
+        ping.extend_from_slice(&[128, 0, 0, 0, 0, 1, 0, 1]);
+        let read = parse(network, &ping).unwrap();
+        assert_eq!((read.protocol, read.port), (ICMPV6, None));
+        assert_eq!(read.source, IpAddr::from([0xfd; 16]));
+
+        assert!(parse(network, &udp([100, 64, 0, 7], 22)[..20]).is_none());
     }
 }
