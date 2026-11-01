@@ -632,6 +632,31 @@ impl Connectivity {
             })
     }
 
+    /// How traffic to `peer` travels now: the path, the relay carrying it when relayed,
+    /// and the measured round-trip time when direct.
+    pub(crate) fn link(
+        &self,
+        peer: &NodeId,
+    ) -> Option<(PathKind, Option<NodeId>, Option<Duration>)> {
+        let kind = self.path_kind(peer)?;
+        let rtt = match self.peers.get(peer)?.paths.explain() {
+            PathReason::Direct { latency, .. } if kind == PathKind::Direct => latency,
+            PathReason::Direct { .. } | PathReason::NoDirectAnswer { .. } => None,
+        };
+        if kind == PathKind::Direct {
+            return Some((kind, None, rtt));
+        }
+        if self.links.contains(*peer) {
+            return Some((PathKind::Stealth, None, None));
+        }
+        let relay = self
+            .relays
+            .iter()
+            .find(|(_, relay)| relay.client.status() == Status::Connected)
+            .map(|(node, _)| *node);
+        Some((kind, relay, None))
+    }
+
     fn at(&self, now: Instant) -> Duration {
         now.saturating_duration_since(self.epoch)
     }

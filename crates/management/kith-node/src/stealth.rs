@@ -171,6 +171,12 @@ impl QuicLinks {
             .is_some_and(|(_, link)| link.send(datagram).is_ok())
     }
 
+    /// Whether a QUIC link to `node` is open.
+    pub(crate) fn contains(&self, node: NodeId) -> bool {
+        let table = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        table.links.contains_key(&node)
+    }
+
     async fn serve(self, link: QuicLink, token: u64, commands: mpsc::Sender<Command>) {
         let from = link.remote_node();
         loop {

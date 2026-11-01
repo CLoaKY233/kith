@@ -186,6 +186,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
         Request::Peers { network } => Action::Peers { network },
         Request::Records { network } => Action::Records { network },
         Request::Traffic => Action::Traffic,
+        Request::Topology { network } => Action::Topology { network },
         Request::SetRecord {
             network,
             name,
@@ -360,6 +361,7 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::Records { .. }
             | Request::Journal { .. }
             | Request::Traffic
+            | Request::Topology { .. }
             | Request::Watch
     )
 }

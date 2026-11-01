@@ -16,7 +16,7 @@ use tokio_rustls::TlsStream;
 use tracing::{debug, warn};
 
 use crate::channel::{HANDSHAKE_TIMEOUT, Hub};
-use crate::message::{Entries, FrameReader, Message, Presence};
+use crate::message::{Entries, FrameReader, Link, Message, Presence};
 use crate::{ChannelError, ChannelHandler};
 
 const RESYNC_INTERVAL: Duration = Duration::from_secs(60);
@@ -237,6 +237,7 @@ impl<H: ChannelHandler> Connection<H> {
             (true, Message::Sync { network, bytes }) => self.on_sync(network, &bytes),
             (true, Message::Endpoints { network, entries }) => self.on_endpoints(network, entries),
             (true, Message::Presence { network, entries }) => self.on_presence(network, entries),
+            (true, Message::Links { network, links }) => self.on_links(network, links),
             (
                 true,
                 Message::JoinRequest { .. }
@@ -382,6 +383,14 @@ impl<H: ChannelHandler> Connection<H> {
             return Err(Close::Violation("gossip for a network that is not shared"));
         }
         self.handler.on_presence(network, self.peer.node, entries);
+        Ok(())
+    }
+
+    fn on_links(&self, network: NetworkId, links: Vec<Link>) -> Result<(), Close> {
+        if !self.active.contains(&network) {
+            return Err(Close::Violation("gossip for a network that is not shared"));
+        }
+        self.handler.on_links(network, self.peer.node, links);
         Ok(())
     }
 

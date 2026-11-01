@@ -22,6 +22,9 @@ listen_port = 41641
 #tun_name = "utun7"
 # 1280 is safe on every path; raise only on networks you control (max 9000).
 mtu = 1280
+# Tell the other members which peers this device reaches, how, and how fast, for the
+# network map. They learn who this device talks to. false sends nothing.
+share_links = true
 
 [network.transports]
 # Enabled transports, most preferred first: udp, quic, websocket.

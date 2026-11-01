@@ -2,7 +2,7 @@ use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-use kith_channel::Presence;
+use kith_channel::{Link, Presence};
 use kith_config::Config;
 use kith_control::records::{Record, Relay};
 use kith_control::{NetMap, Networks, Warning as MapWarning};
@@ -15,7 +15,8 @@ use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
 use kith_ipc::{
-    EntryKind, Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning,
+    EntryKind, Event, LinkInfo, LinkReport, NetworkSummary, PeerInfo, Problem, Request, Response,
+    Status, Warning,
 };
 use kith_ledger::JoinProof;
 use kith_policy::Addresses;
@@ -38,6 +39,7 @@ use crate::os::{DynSystem, OsPlanner, PlanInputs};
 use crate::server::{Listeners, ServerMode, stun_reply};
 use crate::state::StateDir;
 use crate::stealth::StealthOptions;
+use crate::topology::{Topology, link_path, path_kind};
 use crate::types::{
     Action, Chain, ChannelEvent, Command, ConnectivityEvent, NodeError, WriteThrottle,
 };
@@ -345,6 +347,8 @@ pub(crate) struct Daemon {
     ipc_task: Option<JoinHandle<()>>,
     journal: Journal,
     activity: Activity,
+    topology: Topology,
+    share_links: bool,
 }
 
 impl Drop for Daemon {
@@ -594,6 +598,8 @@ impl Daemon {
             ipc_task,
             journal: options.journal.clone(),
             activity: Activity::default(),
+            topology: Topology::new(local),
+            share_links: config.network.share_links,
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -711,6 +717,7 @@ impl Daemon {
             Action::Leave { network } => self.leave(network).await,
             Action::Peers { network } => self.peers(network).await,
             Action::Traffic => Ok(Response::Traffic(self.activity.traffic())),
+            Action::Topology { network } => self.topology(network).await,
             Action::Records { network } => Ok(Response::Records(crate::dns::record_list(
                 self.member_map(network)?,
             ))),
@@ -1505,6 +1512,18 @@ impl Daemon {
                     None => self.persist(network),
                 }
             }
+            ChannelEvent::Links {
+                network,
+                from,
+                links,
+            } => {
+                if let Some(map) = self.networks.maps().get(&network).filter(|m| m.is_member()) {
+                    let members: BTreeSet<NodeId> = map.peers().keys().copied().collect();
+                    self.topology
+                        .receive(network, from, links, &members, Instant::now());
+                }
+                Ok(())
+            }
             ChannelEvent::Presence {
                 network,
                 from,
@@ -2123,6 +2142,94 @@ impl Daemon {
             .collect();
         self.activity
             .observe(&peers, &drop_reasons(&stats.drops), &self.journal);
+        self.announce_links(&peers);
+    }
+
+    /// The peers this device reaches in `network`, from `infos`, as a link report.
+    fn own_links(&self, network: NetworkId, infos: &[PeerInfo]) -> Vec<Link> {
+        infos
+            .iter()
+            .filter(|info| info.online && info.gateway.is_none())
+            .filter_map(|info| {
+                let (kind, relay, rtt) = self.connectivity.link(&info.node)?;
+                Some(Link {
+                    peer: info.node,
+                    path: link_path(kind),
+                    relay,
+                    rtt_ms: rtt.map(|rtt| u32::try_from(rtt.as_millis()).unwrap_or(u32::MAX)),
+                    bytes_per_sec: self.activity.rate(network, info.node),
+                })
+            })
+            .collect()
+    }
+
+    /// Tells each network's members which peers this device reaches, when that changed
+    /// or every [`crate::topology::REPORT_INTERVAL`], unless `network.share_links` is off.
+    fn announce_links(&mut self, peers: &[(NetworkId, Vec<PeerInfo>)]) {
+        let at = Instant::now();
+        let members: BTreeMap<NetworkId, BTreeSet<NodeId>> =
+            member_maps_with_ids(self.networks.maps())
+                .map(|(network, map)| (network, map.peers().keys().copied().collect()))
+                .collect();
+        self.topology.retain(&members, at);
+        if !self.share_links {
+            return;
+        }
+        for (network, infos) in peers {
+            let links = self.own_links(*network, infos);
+            if !self.topology.due(*network, &links, at) {
+                continue;
+            }
+            if let Err(error) = self.channel.announce_links(*network, links.clone()) {
+                tracing::warn!(error = %Chain(&error), "could not send the link report");
+                continue;
+            }
+            self.topology.sent(*network, links, at);
+        }
+    }
+
+    /// Every member's latest link report for `network`, this device's computed now.
+    async fn topology(&self, network: NetworkId) -> Result<Response, NodeError> {
+        let map = self.member_map(network)?;
+        let stats = self.dataplane.stats().await?;
+        let local = self.identity.node_id();
+        let name_of = |node: &NodeId| {
+            map.peers()
+                .get(node)
+                .or_else(|| map.local_device().filter(|_| *node == local))
+                .map_or_else(|| node.short().to_string(), |peer| peer.label.clone())
+        };
+        let to_info = |link: &Link| LinkInfo {
+            peer: link.peer,
+            peer_name: name_of(&link.peer),
+            path: path_kind(link.path),
+            relay: link.relay,
+            rtt_ms: link.rtt_ms,
+            bytes_per_sec: link.bytes_per_sec,
+        };
+        let own = self.own_links(network, &self.peer_infos(network, map, &stats));
+        let mut reports = vec![LinkReport {
+            node: local,
+            name: name_of(&local),
+            age_secs: 0,
+            links: own.iter().map(to_info).collect(),
+        }];
+        for (from, age, links) in self.topology.reports(network, Instant::now()) {
+            if !map.peers().contains_key(&from) {
+                continue;
+            }
+            reports.push(LinkReport {
+                node: from,
+                name: name_of(&from),
+                age_secs: age.as_secs(),
+                links: links
+                    .iter()
+                    .filter(|link| link.peer == local || map.peers().contains_key(&link.peer))
+                    .map(to_info)
+                    .collect(),
+            });
+        }
+        Ok(Response::Topology(reports))
     }
 
     /// Tells the network which of this device's plain WireGuard members are online,

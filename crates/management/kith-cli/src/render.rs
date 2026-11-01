@@ -2,7 +2,8 @@
 
 use std::io::{self, Write};
 
-use kith_ipc::{DnsRecord, IpcError, PathKind, PeerInfo, RecordInfo, Response, Status};
+use kith_ipc::{DnsRecord, IpcError, LinkReport, PathKind, PeerInfo, RecordInfo, Response, Status};
+use kith_types::NodeId;
 
 use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
@@ -115,6 +116,56 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
     write_row(out, indent, &HEADER, &widths)?;
     for row in &rows {
         write_row(out, indent, row, &widths)?;
+    }
+    Ok(())
+}
+
+fn link_table(out: &mut impl Write, reports: &[LinkReport]) -> io::Result<()> {
+    const HEADER: [&str; 5] = ["FROM", "TO", "PATH", "RTT", "RATE"];
+    let relay_name = |relay: Option<NodeId>| {
+        relay.map(|relay| {
+            reports
+                .iter()
+                .find(|report| report.node == relay)
+                .map_or_else(|| relay.short().to_string(), |report| report.name.clone())
+        })
+    };
+    let rows: Vec<[String; 5]> = reports
+        .iter()
+        .flat_map(|report| {
+            report.links.iter().map(move |link| {
+                let from = if report.age_secs >= 30 {
+                    format!("{} ({}s ago)", report.name, report.age_secs)
+                } else {
+                    report.name.clone()
+                };
+                let path = match relay_name(link.relay) {
+                    Some(relay) => format!("{} via {relay}", path_name(Some(link.path))),
+                    None => path_name(Some(link.path)).to_owned(),
+                };
+                [
+                    from,
+                    link.peer_name.clone(),
+                    path,
+                    link.rtt_ms
+                        .map_or_else(|| "-".to_owned(), |ms| format!("{ms} ms")),
+                    format!("{}/s", byte_size(link.bytes_per_sec)),
+                ]
+            })
+        })
+        .collect();
+    if rows.is_empty() {
+        return writeln!(out, "no links reported yet");
+    }
+    let mut widths = HEADER.map(str::len);
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    write_row(out, "", &HEADER, &widths)?;
+    for row in &rows {
+        write_row(out, "", row, &widths)?;
     }
     Ok(())
 }
@@ -526,6 +577,7 @@ pub(crate) fn response(
             writeln!(out)?;
         }
         (Cmd::Peers { .. }, Response::Peers(peers)) => peer_table(out, &peers, "")?,
+        (Cmd::Map { .. }, Response::Topology(reports)) => link_table(out, &reports)?,
         (Cmd::Dns(DnsCmd::List { json: true, .. }), Response::Records(records)) => {
             records_json(out, &records)?;
             writeln!(out)?;

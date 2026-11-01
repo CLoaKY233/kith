@@ -72,6 +72,7 @@ fn example_validates_and_documents_every_setting() {
                 tun_name,
                 mtu: _,
                 transports: _,
+                share_links: _,
             },
         stealth:
             StealthConfig {
@@ -255,7 +256,7 @@ prop_compose! {
         };
         Config {
             daemon: DaemonConfig { state_dir, socket_path, log_level, operator_group: "wheel".to_owned() },
-            network: NetworkConfig { listen_port, tun_name: tun, mtu, transports },
+            network: NetworkConfig { listen_port, tun_name: tun, mtu, transports, share_links: listen_port % 2 == 0 },
             stealth: StealthConfig { obfuscation, quic_sni, websocket_urls, cdn_front, amnezia },
             server,
             dns: DnsConfig {

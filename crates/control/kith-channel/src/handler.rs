@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use kith_ledger::{JoinProof, Ledger};
 use kith_types::{NetworkId, NodeId};
 
-use crate::Presence;
+use crate::{Link, Presence};
 
 /// The daemon's side of the channel, called concurrently from connection tasks.
 pub trait ChannelHandler: Send + Sync + 'static {
@@ -33,6 +33,9 @@ pub trait ChannelHandler: Send + Sync + 'static {
     /// The member `from` says which of the plain WireGuard members it is the gateway for
     /// are online; only claims about its own members should be believed.
     fn on_presence(&self, network: NetworkId, from: NodeId, entries: Vec<(NodeId, Presence)>);
+
+    /// The member `from` reported the peers it reaches in `network`; by default ignored.
+    fn on_links(&self, _network: NetworkId, _from: NodeId, _links: Vec<Link>) {}
 
     /// Sync or a join changed `network`'s ledger; the channel already resyncs its other peers.
     fn on_ledger_changed(&self, network: NetworkId);
