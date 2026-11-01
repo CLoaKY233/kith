@@ -98,15 +98,17 @@ impl Topology {
         self.sent.insert(network, (at, links));
     }
 
-    /// Every other member's latest report for `network`, with its age.
+    /// Every other member's latest report for `network`, with its age. A report past
+    /// [`REPORT_EXPIRY`] is left out even before [`Self::retain`] drops it, since retaining
+    /// only runs while this device has peers to tick.
     pub(crate) fn reports(
         &self,
         network: NetworkId,
         at: Instant,
     ) -> impl Iterator<Item = (NodeId, Duration, &[Link])> {
         self.reports
-            .iter()
-            .filter(move |((id, _), _)| *id == network)
+            .range((network, NodeId::from_bytes([0; 32]))..)
+            .take_while(move |((id, _), _)| *id == network)
             .map(move |((_, from), report)| {
                 (
                     *from,
@@ -114,6 +116,7 @@ impl Topology {
                     report.links.as_slice(),
                 )
             })
+            .filter(|(_, age, _)| *age < REPORT_EXPIRY)
     }
 }
 
@@ -204,6 +207,14 @@ mod tests {
             reports,
             [(a, Duration::ZERO, &[link(b, LinkPath::Relay)][..])]
         );
+
+        assert_eq!(
+            topology
+                .reports(network, later + REPORT_EXPIRY - Duration::from_secs(1))
+                .count(),
+            1
+        );
+        assert_eq!(topology.reports(network, later + REPORT_EXPIRY).count(), 0);
 
         let shrunk = BTreeMap::from([(network, BTreeSet::from([b]))]);
         topology.retain(&shrunk, later);
