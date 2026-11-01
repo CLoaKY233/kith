@@ -8,6 +8,7 @@
 
 use core::time::Duration;
 use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -29,6 +30,8 @@ const SPEEDUP: u64 = 60;
 const REPLAY_MIN: Duration = Duration::from_millis(500);
 /// The longest wait between replayed entries, so a recorded quiet hour stays short.
 const REPLAY_MAX: Duration = Duration::from_secs(20);
+/// The largest fixture read; the recorded office is well under a megabyte.
+const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Why a fixture could not be loaded.
 #[derive(Debug)]
@@ -37,6 +40,8 @@ pub enum FixtureError {
     Read(std::io::Error),
     /// The file is not a fixture.
     Parse(serde_json::Error),
+    /// The file is larger than [`MAX_BYTES`].
+    TooLarge,
     /// The boot id is not 1 to 64 ASCII letters and digits, so it cannot name events.
     Boot,
 }
@@ -48,18 +53,29 @@ impl core::fmt::Display for FixtureError {
         match self {
             Self::Read(error) => write!(f, "cannot read the fixture: {error}"),
             Self::Parse(error) => write!(f, "not a fixture: {error}"),
+            Self::TooLarge => write!(f, "not a fixture: larger than {MAX_BYTES} bytes"),
             Self::Boot => f.write_str("not a fixture: `boot` must be 1 to 64 letters and digits"),
         }
     }
 }
 
-/// Adds `offset` to every time in milliseconds, so a recording plays as if made now.
+/// Whether `key` holds a moment in Unix milliseconds rather than a duration such as
+/// `rtt_ms`.
+fn is_moment(key: &str) -> bool {
+    key == "at_ms"
+        || key.ends_with("_at_ms")
+        || matches!(
+            key,
+            "first_ms" | "last_ms" | "server_time_ms" | "paused_until"
+        )
+}
+
+/// Adds `offset` to every moment, so a recording plays as if made now.
 fn shift(value: &mut Value, offset: i64) {
     match value {
         Value::Object(map) => {
             for (key, field) in map.iter_mut() {
-                let is_time = key.ends_with("_ms") || key == "paused_until";
-                if is_time
+                if is_moment(key)
                     && let Some(shifted) =
                         field.as_u64().and_then(|ms| ms.checked_add_signed(offset))
                 {
@@ -76,7 +92,14 @@ fn shift(value: &mut Value, offset: i64) {
 
 /// Reads a fixture and moves its times so that it was recorded just now.
 pub fn load_fixture(path: &Path) -> Result<Fixture, FixtureError> {
-    let text = std::fs::read_to_string(path).map_err(FixtureError::Read)?;
+    let file = std::fs::File::open(path).map_err(FixtureError::Read)?;
+    let mut text = String::new();
+    file.take(MAX_BYTES.saturating_add(1))
+        .read_to_string(&mut text)
+        .map_err(FixtureError::Read)?;
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_BYTES {
+        return Err(FixtureError::TooLarge);
+    }
     let mut value: Value = serde_json::from_str(&text).map_err(FixtureError::Parse)?;
     let recorded = value
         .get("recorded_at_ms")
@@ -356,6 +379,22 @@ mod tests {
             "the journal is in order"
         );
         Ok(())
+    }
+
+    #[test]
+    fn shifting_moves_moments_but_not_durations() {
+        let mut value = serde_json::json!({
+            "at_ms": 1_000,
+            "expires_at_ms": 2_000,
+            "paused_until": 3_000,
+            "links": [{ "rtt_ms": 40, "last_ms": 4_000 }],
+        });
+        shift(&mut value, 86_400_000 * 60);
+        assert_eq!(value["at_ms"], 5_184_001_000_u64);
+        assert_eq!(value["expires_at_ms"], 5_184_002_000_u64);
+        assert_eq!(value["paused_until"], 5_184_003_000_u64);
+        assert_eq!(value["links"][0]["rtt_ms"], 40);
+        assert_eq!(value["links"][0]["last_ms"], 5_184_004_000_u64);
     }
 
     #[test]

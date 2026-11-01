@@ -54,11 +54,14 @@ fn content_type(name: &str) -> &'static str {
         Some("html") => "text/html; charset=utf-8",
         Some("js" | "mjs") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
-        Some("json") => "application/json",
+        Some("json" | "map") => "application/json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("webp") => "image/webp",
+        Some("webmanifest") => "application/manifest+json",
         Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
@@ -129,7 +132,8 @@ async fn page(shared: &Shared, index: &Asset, signed_in: bool) -> Response {
     response
 }
 
-/// Whether `Accept-Encoding` allows brotli: `br` listed without `q=0`.
+/// Whether `Accept-Encoding` allows brotli: `br` listed without `q=0`. Codings and
+/// parameter names are case-insensitive (RFC 9110 §8.4.1, §5.6.6).
 fn accepts_brotli(headers: &HeaderMap) -> bool {
     headers
         .get_all(header::ACCEPT_ENCODING)
@@ -138,11 +142,14 @@ fn accepts_brotli(headers: &HeaderMap) -> bool {
         .flat_map(|value| value.split(','))
         .any(|part| {
             let mut params = part.split(';').map(str::trim);
-            params.next() == Some("br")
+            params
+                .next()
+                .is_some_and(|coding| coding.eq_ignore_ascii_case("br"))
                 && params.all(|param| {
                     param
-                        .strip_prefix("q=")
-                        .and_then(|q| q.parse::<f32>().ok())
+                        .split_once('=')
+                        .filter(|(name, _)| name.trim().eq_ignore_ascii_case("q"))
+                        .and_then(|(_, q)| q.trim().parse::<f32>().ok())
                         .is_none_or(|q| q > 0.0)
                 })
         })
@@ -151,7 +158,7 @@ fn accepts_brotli(headers: &HeaderMap) -> bool {
 /// Everything not routed: the page's routes and files. Nothing else exists.
 pub(crate) async fn serve(State(shared): State<Arc<Shared>>, request: Request) -> Response {
     let path = request.uri().path();
-    if path.starts_with("/api/") {
+    if path == "/api" || path.starts_with("/api/") {
         return ApiError::new(
             StatusCode::NOT_FOUND,
             ApiErrorCode::NotFound,
@@ -225,6 +232,8 @@ mod tests {
         assert!(accepts("gzip, deflate, br, zstd"));
         assert!(accepts("br;q=0.5"));
         assert!(!accepts("br;q=0"));
+        assert!(accepts("BR"));
+        assert!(!accepts("br; Q=0.0"));
         assert!(!accepts("gzip, brotli"));
         assert!(!accepts_brotli(&HeaderMap::new()));
     }
@@ -235,5 +244,36 @@ mod tests {
             script_safe(r#"{"a":"</script>"}"#),
             "{\"a\":\"\\u003c/script>\"}"
         );
+    }
+
+    #[test]
+    fn only_hashed_files_are_cached_for_good() {
+        let hashed = Asset {
+            path: "assets/index-3f2a.js",
+            body: b"plain",
+            brotli: Some(b"br"),
+        };
+        let packed = file(&hashed, true);
+        assert_eq!(packed.headers()[header::CONTENT_ENCODING], "br");
+        assert_eq!(packed.headers()[header::VARY], "accept-encoding");
+        assert_eq!(
+            packed.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        assert!(
+            file(&hashed, false)
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .is_none()
+        );
+        let icon = Asset {
+            path: "favicon.svg",
+            body: b"<svg/>",
+            brotli: None,
+        };
+        let icon = file(&icon, true);
+        assert_eq!(icon.headers()[header::CACHE_CONTROL], "no-cache");
+        assert_eq!(icon.headers()[header::CONTENT_TYPE], "image/svg+xml");
+        assert!(icon.headers().get(header::CONTENT_ENCODING).is_none());
     }
 }
