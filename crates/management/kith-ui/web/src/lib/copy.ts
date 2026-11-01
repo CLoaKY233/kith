@@ -559,6 +559,14 @@ export const copy = {
     waiting: (network: string): string => `Waiting for an admin of ${network}…`,
     joined: (online: number): string => `You're in. ${online} devices online.`,
     denied: 'An admin denied this request.',
+    /** The ask-to-join field, for when there is no link. */
+    askLabel: 'Network and admin',
+    askHelper: "From the admin's Add device screen, such as home@studio-mac.",
+    ask: 'Ask to join',
+    haveLink: 'I have an invite link',
+    notALink: "This isn't an invite link. Invite links start with kith://join/.",
+    notARequest: 'Write it as network@admin, such as home@studio-mac.',
+    requestExpired: 'No admin answered in time. Ask again.',
   },
 
   /** §7.3 Add a laptop or server. */
