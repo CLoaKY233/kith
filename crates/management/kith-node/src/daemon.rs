@@ -2193,6 +2193,8 @@ impl Daemon {
 
     /// Tells each network's members which peers this device reaches, when that changed
     /// or every [`crate::topology::REPORT_INTERVAL`], unless `network.share_links` is off.
+    /// A report holds at most [`kith_channel::MAX_LINKS`] links: a longer one would be
+    /// refused by the channel on every tick, so nothing would be shared at all.
     fn announce_links(&mut self, peers: &[(NetworkId, Vec<PeerInfo>)]) {
         let at = Instant::now();
         let members: BTreeMap<NetworkId, BTreeSet<NodeId>> =
@@ -2204,7 +2206,8 @@ impl Daemon {
             return;
         }
         for (network, infos) in peers {
-            let links = self.own_links(*network, infos);
+            let mut links = self.own_links(*network, infos);
+            links.truncate(kith_channel::MAX_LINKS);
             if !self.topology.due(*network, &links, at) {
                 continue;
             }
@@ -2236,7 +2239,8 @@ impl Daemon {
             rtt_ms: link.rtt_ms,
             bytes_per_sec: link.bytes_per_sec,
         };
-        let own = self.own_links(network, &self.peer_infos(network, map, &stats));
+        let mut own = self.own_links(network, &self.peer_infos(network, map, &stats));
+        own.truncate(crate::topology::MAX_RESPONSE_LINKS);
         let mut reports = vec![LinkReport {
             node: local,
             name: name_of(&local),
