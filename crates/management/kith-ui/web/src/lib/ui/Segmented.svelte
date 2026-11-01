@@ -154,6 +154,8 @@ Labels never shift: each segment is as wide as its label in the selected weight.
     border-radius: var(--r-2);
     color: var(--ink-2);
     font: var(--t-body);
+    /* Counts like `Online 11` keep their width as they change (§3.5). */
+    font-variant-numeric: tabular-nums slashed-zero;
     white-space: nowrap;
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
@@ -171,7 +173,7 @@ Labels never shift: each segment is as wide as its label in the selected weight.
   }
   .segmented :global(.segment[data-state='on']) {
     background: var(--surface);
-    border-color: var(--line);
+    border-color: var(--line-strong);
     color: var(--ink-1);
     font-weight: 600;
   }
@@ -193,6 +195,18 @@ Labels never shift: each segment is as wide as its label in the selected weight.
     overflow: hidden;
     visibility: hidden;
     font-weight: 600;
+  }
+  /* Touch: 44 px wide at least, and a hit area 44 px tall around the 40 px track. */
+  @media (pointer: coarse) {
+    .segmented :global(.segment) {
+      position: relative;
+      min-width: var(--target-touch);
+    }
+    .segmented :global(.segment)::after {
+      content: '';
+      position: absolute;
+      inset: calc((var(--control) - var(--target-touch)) / 2) 0;
+    }
   }
   .reason {
     font: var(--t-small);

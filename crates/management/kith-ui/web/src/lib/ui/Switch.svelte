@@ -77,11 +77,11 @@ Props:
   }
   .switch-row :global(.kith-switch) {
     flex: none;
-    display: inline-flex;
-    align-items: center;
+    position: relative;
+    display: inline-block;
     width: var(--switch-w);
     height: var(--switch-h);
-    padding: 0 calc((var(--switch-h) - var(--switch-thumb)) / 2 - var(--hairline));
+    padding: 0;
     border: var(--hairline) solid var(--line-strong);
     border-radius: var(--r-full);
     background: var(--sunken);
@@ -113,7 +113,11 @@ Props:
   .switch-row :global(.kith-switch[aria-disabled='true'][data-state='checked']) {
     background: var(--ink-4);
   }
+  /* The thumb sits centred in the track, inset by the same gap on every side. */
   .switch-row :global(.kith-switch-thumb) {
+    position: absolute;
+    inset-block: calc((var(--switch-h) - var(--switch-thumb)) / 2 - var(--hairline));
+    inset-inline-start: calc((var(--switch-h) - var(--switch-thumb)) / 2 - var(--hairline));
     display: block;
     width: var(--switch-thumb);
     height: var(--switch-thumb);
@@ -128,6 +132,14 @@ Props:
     transform: translateX(
       calc(var(--switch-w) - var(--switch-h))
     );
+  }
+  /* Touch: a 44×44 hit area around the 40×24 control (§11.4). */
+  @media (pointer: coarse) {
+    .switch-row :global(.kith-switch)::after {
+      content: '';
+      position: absolute;
+      inset: calc((var(--switch-h) - var(--target-touch)) / 2) calc((var(--switch-w) - var(--target-touch)) / 2);
+    }
   }
   .switch-row:has(:global(.kith-switch[aria-disabled='true'])) label {
     cursor: default;

@@ -21,6 +21,7 @@ function handle(
     state,
     seen,
     slow,
+    ledger: false,
     error: null,
     conflict: null,
     result: null,

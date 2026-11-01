@@ -30,6 +30,14 @@ describe('palette queries (spec §10)', () => {
     expect(score('laptop', 'nas')).toBe(0);
   });
 
+  it('matches letters in order only at word starts or in runs', () => {
+    expect(score('Rename vps', 'nas')).toBe(0);
+    expect(score('Copy phone address', 'nas')).toBe(0);
+    expect(score('Use exit…', 'set')).toBe(0);
+    expect(score('100.64.0.2', '.4')).toBe(0);
+    expect(score('Settings', 'set')).toBeGreaterThan(0);
+  });
+
   it('ranks recent picks first, then by match, keeping ties in order', () => {
     expect(rank(items, 'nas', []).map((i) => i.id)).toEqual(['nas', 'rename']);
     expect(rank(items, 'nas', ['rename']).map((i) => i.id)).toEqual(['rename', 'nas']);

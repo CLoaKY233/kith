@@ -37,7 +37,7 @@
   --line-strong: #8a8f98;
   --ink-1: #17191c;
   --ink-2: #5b6069;
-  --ink-3: #6f747c;
+  --ink-3: #676c74;
   --ink-4: #b4b8be;
   --accent: #2f62d0;
   --accent-fg: #ffffff;
@@ -117,6 +117,7 @@
   --icon: 16px;
   --icon-stroke: 1.5;
   --target-touch: 44px;
+  --target-fine: 24px;
   --dot: 8px;
   --dot-ring: 1.5px;
   --chip: 20px;
@@ -219,8 +220,9 @@
     --danger: #ec6b5f;
     --danger-wash: #2c1715;
     --changed: rgb(106 149 236 / 0.1);
-    --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.08);
-    --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.08);
+    --scrim: rgb(0 0 0 / 0.6);
+    --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 8px 24px rgb(0 0 0 / 0.5);
+    --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 24px 64px rgb(0 0 0 / 0.6);
   }
 }
 
@@ -243,8 +245,9 @@
   --danger: #ec6b5f;
   --danger-wash: #2c1715;
   --changed: rgb(106 149 236 / 0.1);
-  --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.08);
-  --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.08);
+  --scrim: rgb(0 0 0 / 0.6);
+  --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 8px 24px rgb(0 0 0 / 0.5);
+  --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 24px 64px rgb(0 0 0 / 0.6);
 }
 
 /* Touch: body text 16/24, controls 40 px. */

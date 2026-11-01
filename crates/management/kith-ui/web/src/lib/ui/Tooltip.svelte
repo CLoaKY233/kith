@@ -14,6 +14,20 @@ Props:
     DropdownMenu or Popover), pass that primitive's trigger id here: both look the element
     up by id, so they must share one.
 -->
+<script lang="ts" module>
+  /** Tooltips stay shut until this time, in performance.now() ms. */
+  let heldUntil = 0;
+  const HOLD_MS = 300;
+
+  /**
+   * Keeps tooltips shut for a moment while focus is put back on a trigger from code (a
+   * closing menu), so its tooltip does not pop up unasked.
+   */
+  export function holdTooltips(): void {
+    heldUntil = performance.now() + HOLD_MS;
+  }
+</script>
+
 <script lang="ts">
   import { Tooltip } from 'bits-ui';
   import type { Snippet } from 'svelte';
@@ -34,12 +48,22 @@ Props:
   } = $props();
 
   const modal = insideModal();
+  let open = $state(false);
+
+  function setOpen(next: boolean): void {
+    open = next && performance.now() >= heldUntil;
+  }
 </script>
 
 {#if coarse.current}
   {@render trigger({})}
 {:else}
-  <Tooltip.Root delayDuration={TOOLTIP_DELAY_MS} disableHoverableContent ignoreNonKeyboardFocus>
+  <Tooltip.Root
+    bind:open={() => open, setOpen}
+    delayDuration={TOOLTIP_DELAY_MS}
+    disableHoverableContent
+    ignoreNonKeyboardFocus
+  >
     <Tooltip.Trigger {id}>
       {#snippet child({ props })}
         {@render trigger(props)}

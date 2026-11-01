@@ -166,7 +166,7 @@ Workstream A owns these. Each has a v1 fallback marked **[fallback]**.
 | `--line-strong` | `#8A8F98` | input and toggle borders (≥3:1, WCAG 1.4.11) |
 | `--ink-1` | `#17191C` | primary text, online marks |
 | `--ink-2` | `#5B6069` | secondary |
-| `--ink-3` | `#6F747C` | meta, offline text (≥4.5:1 on surface) |
+| `--ink-3` | `#676C74` | meta, offline text (≥4.5:1 on surface, sunken and attn-wash) |
 | `--ink-4` | `#B4B8BE` | decorative only, always paired with text |
 | `--accent` | `#2F62D0` | the one primary button, focus ring, selected chart series |
 | `--accent-fg` | `#FFFFFF` | text on accent |
@@ -201,8 +201,9 @@ Dark tokens apply under `@media (prefers-color-scheme: dark){:root:not([data-the
 | `--danger` | `#EC6B5F` |
 | `--danger-wash` | `#2C1715` |
 | `--changed` | `rgb(106 149 236 / .10)` |
+| `--scrim` | `rgb(0 0 0 / .6)` |
 
-Floating layers in dark mode get `box-shadow: inset 0 1px 0 rgb(255 255 255 / .08)` instead of a shadow.
+Floating layers in dark mode get `box-shadow: inset 0 1px 0 rgb(255 255 255 / .08)` in addition to a dark shadow (`0 8px 24px rgb(0 0 0 / .5)` for popovers, `0 24px 64px rgb(0 0 0 / .6)` for modals). Sheets, dialogs and the drawer also carry a hairline `--line` edge.
 
 `@media (forced-colors: active)`: status shapes stay visible and chart lines use `CanvasText`.
 

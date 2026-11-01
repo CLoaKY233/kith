@@ -477,6 +477,8 @@ Props:
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    /* Tabular figures would give the hyphen in `dev-box` a figure's width. */
+    font-variant-numeric: slashed-zero;
   }
   .addr {
     font: var(--t-small);

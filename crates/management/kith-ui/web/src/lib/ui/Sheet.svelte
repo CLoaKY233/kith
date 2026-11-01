@@ -5,8 +5,10 @@ right over the scrim (240 ms, `--e-sheet`); below 40rem it is a full-screen page
 row sits at the top, the body scrolls, and the footer with the primary action is pinned at
 the bottom (with the safe-area inset on phones). A sheet that is part of a flow stays open
 until the outcome or the user cancels: a click on the scrim does nothing, while Esc and the
-× close it. Focus starts on the first control of the body (on the sheet itself when the body
-has none, so it is read from the title) and returns to the element that opened it.
+× close it. Focus starts on the first text field of the body with a fine pointer, and on
+the sheet itself otherwise (it is read from its title, no focus ring shows and no soft
+keyboard pops up), unless the caller names a control. It returns to the element that opened
+it.
 Props:
   - open: boolean, bindable.
   - title: string (from copy.ts).
@@ -19,13 +21,15 @@ Props:
     the pointer nor keyboard focus is inside it (§7.3: 2 s after the device is online). The
     count restarts each time the pointer or keyboard focus leaves. Focus that stayed on a
     clicked button does not hold the sheet open.
+  - initialFocus?: () => HTMLElement | null | undefined, the control to focus on open (a
+    tier-1 confirm's Cancel). Falls back to the rule above.
   - onOpenChange?: (open: boolean) => void. Screens map this to the `?add=` URL param.
 -->
 <script lang="ts">
   import { Dialog } from 'bits-ui';
   import { tick, type Snippet } from 'svelte';
   import IconButton from './IconButton.svelte';
-  import { firstTabbable, modalLayer } from './layers.svelte';
+  import { coarse, firstTabbable, modalLayer } from './layers.svelte';
   import './overlay.css';
 
   let {
@@ -36,6 +40,7 @@ Props:
     footer,
     closeLabel,
     autoCloseMs = null,
+    initialFocus,
     onOpenChange,
   }: {
     open?: boolean;
@@ -45,6 +50,7 @@ Props:
     footer?: Snippet;
     closeLabel: string;
     autoCloseMs?: number | null;
+    initialFocus?: () => HTMLElement | null | undefined;
     onOpenChange?: (open: boolean) => void;
   } = $props();
 
@@ -87,15 +93,22 @@ Props:
     onOpenChange?.(false);
   }
 
+  const TEXT_FIELD = 'input:not([type="radio"]):not([type="checkbox"]), textarea';
+
   function focusFirst(event: Event): void {
     event.preventDefault();
-    void tick().then(() => (firstTabbable(body) ?? content)?.focus());
+    void tick().then(() => {
+      const named = initialFocus?.();
+      if (named) return named.focus();
+      const first = coarse.current ? null : firstTabbable(body);
+      (first?.matches(TEXT_FIELD) ? first : content)?.focus();
+    });
   }
 </script>
 
 <Dialog.Root bind:open {onOpenChange}>
   <Dialog.Portal>
-    <Dialog.Overlay class="kith-scrim" />
+    <Dialog.Overlay class="kith-scrim sheet" />
     <Dialog.Content
       bind:ref={content}
       class="kith-sheet"
@@ -112,7 +125,7 @@ Props:
         }
       }}
     >
-      <header class="kith-sheet-head">
+      <div class="kith-sheet-head" class:described={description !== undefined}>
         <div class="kith-dialog-titles">
           <Dialog.Title level={2} class="kith-sheet-title">{title}</Dialog.Title>
           {#if description}
@@ -120,9 +133,9 @@ Props:
           {/if}
         </div>
         <IconButton icon="x" label={closeLabel} onclick={close} />
-      </header>
+      </div>
       <div class="kith-sheet-body" bind:this={body}>{@render children?.()}</div>
-      {#if footer}<footer class="kith-sheet-foot">{@render footer()}</footer>{/if}
+      {#if footer}<div class="kith-sheet-foot">{@render footer()}</div>{/if}
     </Dialog.Content>
   </Dialog.Portal>
 </Dialog.Root>
@@ -136,7 +149,9 @@ Props:
     z-index: var(--z-dialog);
     width: min(var(--sheet), 100vw);
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto;
+    border-left: var(--hairline) solid var(--line);
     background: var(--surface);
     color: var(--ink-1);
     box-shadow: var(--shadow-pop);
@@ -144,11 +159,14 @@ Props:
   }
   :global(.kith-sheet-head) {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: var(--s-3);
     padding: var(--s-4) var(--s-5);
     border-bottom: var(--hairline) solid var(--line);
+  }
+  :global(.kith-sheet-head.described) {
+    align-items: flex-start;
   }
   :global(.kith-sheet-title) {
     font: var(--t-title);
@@ -165,6 +183,7 @@ Props:
   }
   :global(.kith-sheet-foot) {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     gap: var(--s-3);
     padding: var(--s-4) var(--s-5);
@@ -172,9 +191,24 @@ Props:
     border-top: var(--hairline) solid var(--line);
     background: var(--surface);
   }
+  /* A label longer than the sheet wraps inside its button instead of widening the sheet. */
+  :global(.kith-sheet-foot > *) {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  :global(.kith-sheet .kith-sheet-foot > .btn) {
+    height: auto;
+    min-height: var(--control);
+    padding-block: var(--s-1);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+  }
   @media (width < 40rem) {
     :global(.kith-sheet) {
       width: 100vw;
+      border-left: none;
       box-shadow: none;
     }
     :global(.kith-sheet-head) {

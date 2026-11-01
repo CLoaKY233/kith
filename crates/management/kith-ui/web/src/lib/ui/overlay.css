@@ -28,6 +28,7 @@
   border-radius: var(--r-3);
   background: var(--surface);
   color: var(--ink-1);
+  border: var(--hairline) solid var(--line);
   box-shadow: var(--shadow-modal);
   outline: none;
 }
@@ -59,7 +60,13 @@
 .kith-dialog-body {
   display: grid;
   gap: var(--s-3);
-  margin-top: var(--s-4);
+  margin-top: var(--s-3);
+}
+
+/* Further consequence lines read like the description, not louder than it. */
+.kith-dialog-body > p {
+  color: var(--ink-2);
+  max-width: var(--measure);
 }
 
 .kith-dialog-status {
@@ -108,6 +115,13 @@
   }
   .kith-scrim[data-state='closed'] {
     animation: kith-fade-out var(--d-dialog) var(--e-pop);
+  }
+  /* A sheet's scrim follows the panel's timing, so it never clears before the panel. */
+  .kith-scrim.sheet[data-state='open'] {
+    animation: kith-fade-in var(--d-sheet) var(--e-sheet);
+  }
+  .kith-scrim.sheet[data-state='closed'] {
+    animation: kith-fade-out var(--d-sheet) var(--e-sheet);
   }
   .kith-dialog[data-state='open'] {
     animation: kith-dialog-in var(--d-dialog) var(--e-pop);

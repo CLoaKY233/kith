@@ -1,7 +1,9 @@
 <!--
 @component
 Command (spec §10): the ⌘K palette primitive. Bits Command inside a modal Dialog near the top
-of the screen. Groups show in the order given (Devices · Actions · Go to · Networks). Typing
+of the screen. Groups show in the order given (Devices · Actions · Go to · Networks) until
+something is typed; then the group holding the best match comes first, so the first item,
+which Enter picks, is the best one. Typing
 `>` first limits the list to actions and `@` to devices; `nas:22` finds the device nas and
 hands the port to its onSelect. Results rank by recency (picks are remembered in this
 browser), then by match. ↑/↓ move, Enter picks, Esc closes. A pick closes the palette, waits
@@ -36,11 +38,13 @@ Props:
 
 <script lang="ts">
   import { Command, Dialog } from 'bits-ui';
+  import { tick } from 'svelte';
+  import { announce } from '../announce';
   import { copy } from '../copy';
   import Icon from '../icons/Icon.svelte';
   import { modalLayer } from './layers.svelte';
   import './overlay.css';
-  import { parseQuery, rank, remember } from './rank';
+  import { compareRanked, parseQuery, rankScored, remember } from './rank';
 
   let {
     open = $bindable(false),
@@ -56,7 +60,10 @@ Props:
   const RECENT_MAX = 20;
 
   const layer = modalLayer(() => open);
+  const listId = $props.id();
   let search = $state('');
+  let selected = $state('');
+  let list: HTMLElement | null = $state(null);
   let recent = $state<string[]>(load());
 
   function load(): string[] {
@@ -86,23 +93,72 @@ Props:
 
   const query = $derived(parseQuery(search));
 
-  const results = $derived(
-    groups
+  const results = $derived.by(() => {
+    const ranked = groups
       .map((group) => ({ group, kind: group.kind ?? byHeading[group.heading] }))
       .filter(({ kind }) => query.scope === 'all' || kind === query.scope)
       .filter(({ kind }) => query.port === undefined || kind === 'devices')
-      .map(({ group, kind }) => ({ group, kind, items: rank(group.items, query.text, recent) }))
-      .filter(({ items }) => items.length > 0),
-  );
+      .map(({ group, kind }, order) => ({
+        group,
+        kind,
+        order,
+        scored: rankScored(group.items, query.text, recent),
+      }))
+      .filter(({ scored }) => scored.length > 0);
+    if (query.text !== '') {
+      ranked.sort((a, b) => {
+        const [x, y] = [a.scored[0], b.scored[0]];
+        return (x && y ? compareRanked({ ...x, index: 0 }, { ...y, index: 0 }) : 0) || a.order - b.order;
+      });
+    }
+    return ranked.map(({ group, kind, scored }) => ({
+      group,
+      kind,
+      items: scored.map((entry) => entry.item),
+    }));
+  });
 
   $effect(() => {
     if (!open) search = '';
   });
 
+  // Silence after typing would leave a screen reader guessing; say when nothing matches.
+  let hadResults = true;
+  $effect(() => {
+    const any = results.length > 0;
+    if (open && hadResults && !any) announce(copy.palette.empty);
+    hadResults = any;
+  });
+
+  // Keep the selection in view, also when ↑/↓ wrap around the ends.
+  $effect(() => {
+    if (!open || selected === '') return;
+    void tick().then(() =>
+      list?.querySelector('.kith-palette-item[data-selected]')?.scrollIntoView({ block: 'nearest' }),
+    );
+  });
+
+  /**
+   * After a pick that changed the screen, the opener is gone and focus would fall to <body>;
+   * it goes to the new screen's heading instead, as row Enter does (§10, §11.2).
+   */
+  function land(): void {
+    const active = document.activeElement;
+    const content = document.getElementById('content');
+    if (active && active !== document.body && active !== content && active.isConnected) return;
+    const heading = [...document.querySelectorAll<HTMLElement>('#content :is(h1, h2)[tabindex="-1"]')].find(
+      (el) => el.getClientRects().length > 0,
+    );
+    (heading ?? content)?.focus();
+  }
+
   function pick(item: CommandItem): void {
     const port = query.port;
     save(remember(recent, item.id, RECENT_MAX));
-    layer.afterClose(() => item.onSelect(port === undefined ? {} : { port }));
+    layer.afterClose(() => {
+      item.onSelect(port === undefined ? {} : { port });
+      void tick().then(() => requestAnimationFrame(land));
+    });
     open = false;
     onOpenChange?.(false);
   }
@@ -117,7 +173,8 @@ Props:
       onCloseAutoFocus={layer.onCloseAutoFocus}
     >
       <Dialog.Title class="sr-only">{copy.palette.label}</Dialog.Title>
-      <Command.Root label={copy.palette.label} shouldFilter={false} loop>
+      <!-- The dialog title names the palette; the root's label only names the input. -->
+      <Command.Root label={copy.palette.placeholder} shouldFilter={false} loop bind:value={selected}>
         <div class="kith-palette-search">
           <Icon name="search" />
           <Command.Input
@@ -130,29 +187,37 @@ Props:
             bind:value={search}
           />
         </div>
-        <Command.List class="kith-palette-list">
-          {#if results.length === 0}
-            <p class="kith-palette-empty">{copy.palette.empty}</p>
-          {/if}
-          {#each results as { group, kind, items } (group.heading)}
-            <Command.Group value={group.heading} class="kith-palette-group">
-              <Command.GroupHeading class="kith-palette-heading">{group.heading}</Command.GroupHeading>
-              <Command.GroupItems>
-                {#each items as item (item.id)}
-                  <Command.Item
-                    value={item.id}
-                    class="kith-palette-item"
-                    onSelect={() => pick(item)}
-                  >
-                    <span class="kith-palette-label">{item.label}</span>
-                    {#if item.hint}
-                      <span class="kith-palette-hint" class:mono={kind === 'devices'}>{item.hint}</span>
-                    {/if}
-                  </Command.Item>
-                {/each}
-              </Command.GroupItems>
-            </Command.Group>
-          {/each}
+        <Command.List
+          id={listId}
+          bind:ref={list}
+          class="kith-palette-list"
+          tabindex={-1}
+          aria-label={copy.palette.results}
+        >
+          <Command.Viewport>
+            {#if results.length === 0}
+              <p class="kith-palette-empty">{copy.palette.empty}</p>
+            {/if}
+            {#each results as { group, kind, items } (group.heading)}
+              <Command.Group value={group.heading} class="kith-palette-group">
+                <Command.GroupHeading class="kith-palette-heading">{group.heading}</Command.GroupHeading>
+                <Command.GroupItems>
+                  {#each items as item (item.id)}
+                    <Command.Item
+                      value={item.id}
+                      class="kith-palette-item"
+                      onSelect={() => pick(item)}
+                    >
+                      <span class="kith-palette-label">{item.label}</span>
+                      {#if item.hint}
+                        <span class="kith-palette-hint" class:mono={kind === 'devices'}>{item.hint}</span>
+                      {/if}
+                    </Command.Item>
+                  {/each}
+                </Command.GroupItems>
+              </Command.Group>
+            {/each}
+          </Command.Viewport>
         </Command.List>
       </Command.Root>
     </Dialog.Content>
@@ -169,6 +234,7 @@ Props:
     overflow: hidden;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
+    box-shadow: var(--shadow-pop);
   }
   :global(.kith-palette [data-command-root]) {
     display: grid;
@@ -243,6 +309,10 @@ Props:
   }
   :global(.kith-palette-hint.mono) {
     font: var(--t-mono);
+  }
+  /* On the --sunken selection, meta text steps up to --ink-2 to keep 4.5:1. */
+  :global(.kith-palette-item[data-selected] .kith-palette-hint) {
+    color: var(--ink-2);
   }
   :global(.kith-palette-empty) {
     padding: var(--s-4) var(--s-3);

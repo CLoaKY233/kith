@@ -85,14 +85,26 @@ Props:
     border-radius: var(--r-1);
     background: transparent;
     color: var(--ink-1);
-    font: var(--t-small);
-    font-weight: 600;
+    font: var(--t-micro);
+    letter-spacing: var(--t-micro-tracking);
     white-space: nowrap;
     -webkit-tap-highlight-color: transparent;
     transition: background-color var(--d-hover) var(--e-linear);
   }
   button.chip {
+    position: relative;
     cursor: pointer;
+  }
+  /* The chip stays 20 px; its hit area reaches 24 px, and 44 px on touch (§11.4). */
+  button.chip::before {
+    content: '';
+    position: absolute;
+    inset: calc((var(--chip) - var(--target-fine)) / 2) 0;
+  }
+  @media (pointer: coarse) {
+    button.chip::before {
+      inset: calc((var(--chip) - var(--target-touch)) / 2) 0;
+    }
   }
   button.chip:hover,
   button.chip[aria-expanded='true'] {
@@ -106,6 +118,15 @@ Props:
   .admin {
     background: var(--sunken);
     border-color: transparent;
+  }
+  /* Dark --sunken barely differs from the page, so the chip keeps a hairline shape. */
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme='light'])) .admin {
+      border-color: var(--line);
+    }
+  }
+  :global(:root[data-theme='dark']) .admin {
+    border-color: var(--line);
   }
   button.admin:hover,
   button.admin[aria-expanded='true'] {

@@ -117,7 +117,8 @@ Props:
 
   /** Day labels follow the server clock; this changes once a day. */
   const today = $derived(startOfDay(live.lastTickMs || live.now()));
-  const rows = $derived(buildFeed(live.journal, shown, filter, ctx, live.gaps, today));
+  const gaps = $derived(live.gaps.map((gap) => ({ from: gap.from, to: gap.to, at_ms: gap.fromMs })));
+  const rows = $derived(buildFeed(live.journal, shown, filter, ctx, gaps, today));
 
   // Rows expanded by the person, kept here because virtualised rows unmount.
   const open = new SvelteSet<string>();
@@ -352,7 +353,7 @@ Props:
     display: inline-flex;
   }
   .select select {
-    height: var(--control-coarse);
+    height: var(--control);
     max-width: 100%;
     padding: 0 var(--s-6) 0 var(--s-3);
     border: var(--hairline) solid var(--line-strong);

@@ -42,6 +42,7 @@ Props:
   import type { Snippet } from 'svelte';
   import Icon from '../icons/Icon.svelte';
   import { insideModal, MENU_OFFSET } from './layers.svelte';
+  import { holdTooltips } from './Tooltip.svelte';
   import './overlay.css';
 
   let {
@@ -77,6 +78,7 @@ Props:
       sideOffset={MENU_OFFSET}
       collisionPadding={MENU_OFFSET}
       aria-label={label}
+      onCloseAutoFocus={holdTooltips}
     >
       {#each items as item, index (index)}
         {#if 'separator' in item}

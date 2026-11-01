@@ -191,4 +191,12 @@
   select {
     font: var(--t-input);
   }
+  /* The `font` shorthand resets figures; controls keep the tabular ones of the body. */
+  button,
+  input,
+  textarea,
+  select {
+    font-feature-settings: var(--ff-features);
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
 }

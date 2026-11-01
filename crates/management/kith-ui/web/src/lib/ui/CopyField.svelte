@@ -26,6 +26,8 @@ States: rest, hover, :focus-visible, copied.
   }: { value: string; display?: string; label?: string; onCopy?: () => void } = $props();
 
   let copied = $state(false);
+  /** A shell command stays on one line that scrolls, so a break never strands a `|`. */
+  const command = $derived(/\s/.test(display ?? value));
   let shown: HTMLElement | null = $state(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -61,7 +63,9 @@ States: rest, hover, :focus-visible, copied.
 </script>
 
 <div class="copy-field" role={label ? 'group' : undefined} aria-label={label}>
-  <code class="value" bind:this={shown}>{display ?? value}</code>
+  <!-- The one-line command scrolls, so the keyboard must reach it. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <code class="value" class:command bind:this={shown} tabindex={command ? 0 : undefined}>{display ?? value}</code>
   <button type="button" class="action" onclick={write}>
     <span class="face" class:gone={copied}>{copy.copyField.copy}</span>
     <span class="face" class:gone={!copied}>
@@ -91,6 +95,16 @@ States: rest, hover, :focus-visible, copied.
     color: var(--ink-1);
     user-select: all;
   }
+  .value.command {
+    overflow-x: auto;
+    overflow-wrap: normal;
+    white-space: pre;
+    scrollbar-width: thin;
+  }
+  .value.command:focus-visible {
+    outline: var(--focus-ring) solid var(--accent);
+    outline-offset: var(--focus-offset);
+  }
   .action {
     flex: none;
     display: inline-grid;
@@ -114,6 +128,12 @@ States: rest, hover, :focus-visible, copied.
   .action:focus-visible {
     outline: var(--focus-ring) solid var(--accent);
     outline-offset: var(--focus-offset);
+  }
+  @media (pointer: coarse) {
+    .action {
+      height: var(--target-touch);
+      min-width: var(--target-touch);
+    }
   }
   .face {
     grid-area: 1 / 1;

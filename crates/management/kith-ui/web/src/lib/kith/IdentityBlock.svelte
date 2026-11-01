@@ -108,6 +108,9 @@ Props:
     text-overflow: ellipsis;
     white-space: nowrap;
     border-radius: var(--r-1);
+    display: block;
+    min-height: var(--target-fine);
+    align-content: center;
   }
   .name:hover {
     text-decoration: underline;
@@ -160,6 +163,12 @@ Props:
   .initial:hover,
   .initial[aria-expanded='true'] {
     background: var(--line);
+  }
+  @media (pointer: coarse) {
+    .initial {
+      width: var(--target-touch);
+      height: var(--target-touch);
+    }
   }
   .compact {
     display: grid;

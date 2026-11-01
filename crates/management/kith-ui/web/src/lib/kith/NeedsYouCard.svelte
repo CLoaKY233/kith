@@ -396,7 +396,13 @@ Props:
       <div class="actions">
         <Button variant="ghost" onclick={ignore}>{copy.blocked.ignore}</Button>
         {#if admin}
-          <Button disabled={frozen} onclick={() => (allowOpen = true)}>{copy.blocked.allowThis}</Button>
+          <Button
+            disabled={frozen}
+            data-focus-key={`allow-${blocked.id}`}
+            onclick={() => (allowOpen = true)}
+          >
+            {copy.blocked.allowThis}
+          </Button>
         {:else}
           <Button onclick={() => (asking = true)}>{copy.exits.askAdmin}</Button>
         {/if}
