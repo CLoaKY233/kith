@@ -202,7 +202,8 @@ mod tests {
         }
     }
 
-    /// A daemon that answers status and record changes and reports what it received.
+    /// A daemon that answers the server's follower, status and record changes, and reports
+    /// the changes it received.
     fn fake_daemon(socket: &Path) -> TestResult<mpsc::UnboundedReceiver<Ipc>> {
         let server = IpcServer::bind(socket)?;
         let (seen, received) = mpsc::unbounded_channel();
@@ -215,15 +216,21 @@ mod tests {
                             clippy::wildcard_enum_match_arm,
                             reason = "the fake answers only what the test sends"
                         )]
-                        let response = match &request {
-                            Ipc::Status => Answer::Status(status()),
-                            Ipc::SetRecord { .. } => Answer::RecordSet,
-                            _ => Answer::Error {
-                                code: kith_ipc::ErrorCode::Internal,
-                                message: "not faked".into(),
-                            },
+                        let (response, change) = match &request {
+                            Ipc::Journal { .. } => (Answer::Journaling { next: 0 }, false),
+                            Ipc::Traffic => (Answer::Traffic(Vec::new()), false),
+                            Ipc::Topology { .. } => (Answer::Topology(Vec::new()), false),
+                            Ipc::Status => (Answer::Status(status()), false),
+                            Ipc::SetRecord { .. } => (Answer::RecordSet, true),
+                            _ => (
+                                Answer::Error {
+                                    code: kith_ipc::ErrorCode::Internal,
+                                    message: "not faked".into(),
+                                },
+                                true,
+                            ),
                         };
-                        if seen.send(request).is_err()
+                        if (change && seen.send(request).is_err())
                             || connection.respond(response).await.is_err()
                         {
                             return;
@@ -255,7 +262,6 @@ mod tests {
         let status: Value = serde_json::from_str(&text(status).await?)?;
         assert_eq!(status["networks"][0]["id"], NET.to_string());
         assert_eq!(status["memberships"][0]["role"], "admin");
-        assert_eq!(received.recv().await, Some(Ipc::Status));
 
         let path = format!("/api/networks/{NET}/records");
         let record = json!({ "name": "nas", "type": "A", "value": "100.64.0.2", "based_on": null });

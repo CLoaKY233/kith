@@ -73,10 +73,19 @@ struct Shared {
     port: u16,
     dev_origins: Vec<String>,
     assets: Option<&'static [Asset]>,
+    /// The boot id of the first run. The current one is [`stream::Live::position`], which
+    /// changes when the daemon restarts.
     boot: String,
+    /// The journal, ticks and traffic history that every stream and snapshot reads.
+    live: Arc<stream::Live>,
+    /// Keeps `live` current; stops when the router is dropped.
+    _follower: ipc::Follower,
 }
 
 /// The whole server: the API, the event stream and the page.
+///
+/// Call it inside a tokio runtime: it starts the task that follows the daemon or replays
+/// the fixture.
 pub fn router(config: Config) -> io::Result<Router> {
     let boot = match &config.source {
         Source::Fixture(fixture) => fixture.boot.clone(),
@@ -86,13 +95,18 @@ pub fn router(config: Config) -> io::Result<Router> {
             .unwrap_or_default()
             .to_owned(),
     };
+    let source = ipc::Source::new(config.source);
+    let live = Arc::new(stream::Live::new(&boot));
+    let follower = ipc::follow(&source, Arc::clone(&live))?;
     let shared = Arc::new(Shared {
-        source: ipc::Source::new(config.source),
-        sessions: session::Sessions::new(config.token),
+        source,
+        sessions: session::Sessions::new(config.token, config.port),
         port: config.port,
         dev_origins: config.dev_origins,
         assets: config.assets,
         boot,
+        live,
+        _follower: follower,
     });
     let networks = Router::new()
         .route("/peers", get(api::peers::list))

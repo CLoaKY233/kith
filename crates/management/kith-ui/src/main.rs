@@ -35,6 +35,8 @@ struct Opts {
     fixture: Option<PathBuf>,
 }
 
+/// Serves until Ctrl-C. Stopping does not wait for connections to close, because the
+/// page's event stream never does.
 async fn run(opts: Opts) -> Result<(), String> {
     let source = match (opts.fixture, opts.socket) {
         (Some(path), _) => Source::Fixture(Box::new(
@@ -81,12 +83,12 @@ async fn run(opts: Opts) -> Result<(), String> {
     }
     let _ignored = writeln!(out, "Press Ctrl-C to stop.");
     drop(out);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _interrupted = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .map_err(|error| format!("stopped serving: {error}"))
+    tokio::select! {
+        served = axum::serve(listener, app) => {
+            served.map_err(|error| format!("stopped serving: {error}"))
+        }
+        _interrupted = tokio::signal::ctrl_c() => Ok(()),
+    }
 }
 
 fn main() -> ExitCode {
