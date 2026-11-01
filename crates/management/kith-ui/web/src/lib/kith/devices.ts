@@ -226,18 +226,13 @@ export function agoMs(ms: number): string {
   return ago(Math.max(0, ms) / 1000);
 }
 
-/** The blocked connection from this device to `node`, if policy refused one (§12.4). */
+/** A connection from `node` that policy refused, if any (§12.4): the device being blocked. */
 export function blockedTo(
   blocked: readonly BlockedGroup[],
   netId: string,
-  selfNode: string | null,
   node: string,
 ): BlockedGroup | null {
-  return (
-    blocked.find(
-      (b) => b.network === netId && b.from === selfNode && b.to === node && b.port !== null,
-    ) ?? null
-  );
+  return blocked.find((b) => b.network === netId && b.from === node && b.port !== null) ?? null;
 }
 
 /** A blocked group involving `node` either way: the row needs a person (§5 DeviceRow). */
@@ -266,6 +261,8 @@ export type VerdictInput = {
   readonly peer: PeerInfo;
   /** The relay's name, for a relayed path. */
   readonly relay: string | null;
+  /** The device it connects through (a phone's gateway), `this device` when it is this one. */
+  readonly gateway?: string | null;
   readonly rttMs: number | null;
   /** How long ago the device was last heard from, in ms; null if never. */
   readonly seenAgoMs: number | null;
@@ -304,6 +301,9 @@ export function verdict(input: VerdictInput): Verdict {
   if (peer.path_mtu !== null) return plain(v.smallMtu(peer.path_mtu));
   if (seenAgoMs > QUIET_HANDSHAKE_MS) return plain(v.quiet);
   const rtt = rttMs === null ? null : formatRtt(rttMs);
+  if (input.gateway) {
+    return plain(rtt ? v.relayed(input.gateway, rtt) : more.relayed(input.gateway));
+  }
   if (isRelayed(peer.path)) {
     const name = relay ?? '';
     return {

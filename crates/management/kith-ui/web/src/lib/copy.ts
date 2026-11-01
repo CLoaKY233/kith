@@ -156,6 +156,9 @@ export const copy = {
     notConnectedYet: 'not connected yet',
     addedBy: (who: string, ago: string): string => `added by ${who} ${ago}`,
     waitingFirst: 'waiting for first connection',
+    /** §11.5: the needs-you row says why in words. */
+    needsBlocked: 'blocked connection',
+    needsWaiting: 'waiting too long',
     removing: 'Removing…',
     removed: 'Removed',
     more: 'More',
@@ -188,6 +191,8 @@ export const copy = {
 
   chart: {
     ranges: { '1m': '1m', '15m': '15m', '1h': '1h' } as const,
+    /** Spoken names for the range control: `1m` reads as a meter otherwise. */
+    rangeNames: { '1m': '1 minute', '15m': '15 minutes', '1h': '1 hour' } as const,
     rangeLabel: 'Range',
     now: 'now',
     minutesBack: (m: number): string => `−${m}m`,
@@ -386,12 +391,16 @@ export const copy = {
   /** §6.6 Names. */
   names: {
     add: 'Add name',
+    askAdd: 'Ask an admin to add a name…',
+    replace: 'Replace name',
     name: 'Name',
     value: 'Points to',
     more: 'More',
     type: 'Type',
     txt: 'Text record',
     target: (value: string): string => `→ ${value}`,
+    /** The arrow before a target, set apart so it stays in the body face. */
+    arrow: '→ ',
     setBy: (who: string): string => `set by ${who}`,
     setByColumn: 'Set by',
     empty: (network: string): string =>
@@ -408,6 +417,9 @@ export const copy = {
       `Use an address like 100.64.0.4 or a name like nas.${network}.`,
     replaces: (name: string, target: string): string =>
       `${name} points to ${target} now. Adding it again replaces that.`,
+    replacesText: (name: string, value: string): string =>
+      `${name} holds ${quoted(value)} now. Saving replaces it.`,
+    tryAgain: 'Try again',
     deviceName: (name: string): string =>
       `${name} is a device's own name. Choose another.`,
     copyName: (name: string): string => `Copy ${name}`,
@@ -440,6 +452,15 @@ export const copy = {
       `Couldn't switch: ${exit} isn't reachable right now. You're still using ${current}.`,
     failedNone: (exit: string): string =>
       `Couldn't switch: ${exit} isn't reachable right now. You're still using this device's own connection.`,
+    /** A failure that is not about reachability: the §12.5 cause, then what is still in use. */
+    failedOther: (exit: string | null, cause: string, current: string | null): string =>
+      `Couldn't switch${exit === null ? '' : ` to ${exit}`}: ${cause} You're still using ${
+        current ?? "this device's own connection"
+      }.`,
+    notAllowed: 'Not allowed yet',
+    /** This device in a list of devices, which it leads. */
+    selfFirst: 'This device',
+    switchHint: 'Press Space to switch.',
     noExitYet: 'No exit yet. Set one up in Exits →',
     empty: 'No device offers itself as an exit yet. On the one that should, run:',
     offerCommand: 'kith server --exit',
@@ -558,6 +579,9 @@ export const copy = {
   error: {
     permissionDenied: 'Only admins can do this. This device is a member.',
     notFound: (device: string): string => `${device} is no longer in this network.`,
+    /** A name that was never in the network this session. */
+    noDevice: (device: string, network: string): string =>
+      `No device called ${device} in ${network}.`,
     conflict: (who: string): string => `${who} changed this a moment ago. Showing the latest.`,
     nameChars: 'Names can use a–z, 0–9 and hyphens.',
     nameEmpty: 'Give it a name.',
@@ -909,6 +933,11 @@ export const copy = {
     selfMac: 'This Mac',
     selfDevice: 'This device',
     endpoint: 'Endpoint',
+    noTraffic: {
+      '1m': 'No traffic in the last minute.',
+      '15m': 'No traffic in the last 15 minutes.',
+      '1h': 'No traffic in the last hour.',
+    } as const,
     pathLabel: (hops: readonly string[], latency: string | null): string =>
       `${hops.join(' to ')}${latency ? `, ${latency}` : ''}`,
     nameLabel: 'Device name',

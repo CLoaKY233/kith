@@ -19,12 +19,22 @@ export const deviceSort = new SvelteMap<string, DeviceSort>();
  */
 export const rowProgress = new SvelteMap<string, string>();
 
+/** The device last opened from the list per network id, refocused when its page closes. */
+// eslint-disable-next-line svelte/prefer-svelte-reactivity -- read once on mount, never rendered
+export const lastOpened = new Map<string, string>();
+
 /** The list's scroll position per network id, restored when a full-page detail closes (§4.4). */
 // eslint-disable-next-line svelte/prefer-svelte-reactivity -- read once on mount, never rendered
 export const listScroll = new Map<string, number>();
 
 /** A rename asked for from a row's ⋯ menu; the detail starts editing when it opens. */
 export const renameRequest = $state<{ key: string | null }>({ key: null });
+
+/** A member's ask from a row's ⋯ menu; the detail opens the Ask-an-admin sheet for it. */
+export const askRequest = $state<{ key: string | null; request: string | null }>({
+  key: null,
+  request: null,
+});
 
 /** Whether the detail was opened from the list, so its back arrow can go back in history. */
 export const openedFromList = $state<{ value: boolean }>({ value: false });

@@ -27,11 +27,15 @@ Props:
   - menuOpen?: boolean, bindable: the ⋯ menu (`.` opens it).
 -->
 <script lang="ts">
+  import { connection } from '../../frame/conn.svelte';
+  import { needs } from '../../frame/needs.svelte';
+  import { removalLine, removalOf } from '../../sheets/RemoveDevice.svelte';
+  import { announce } from '../announce';
   import Spark from '../charts/Spark.svelte';
-  import { copy } from '../copy';
+  import { copy, DOT } from '../copy';
   import { rate as formatRate, rtt as formatRtt } from '../format';
   import { live } from '../live/store.svelte';
-  import { PHONE_ABANDONED_MS } from '../live/timing';
+  import { IDLE_BYTES_PER_SEC, PHONE_ABANDONED_MS } from '../live/timing';
   import type { DotState } from '../types';
   import type { PeerInfo } from '../types.gen';
   import Badge from '../ui/Badge.svelte';
@@ -40,10 +44,9 @@ Props:
   import StatusDot from '../ui/StatusDot.svelte';
   import { toast } from '../ui/Toast.svelte';
   import { setQuery } from '../../router';
-  import { renameRequest, rowProgress, snapshotSeenAt } from './deviceState.svelte';
+  import { askRequest, renameRequest, rowProgress, snapshotSeenAt } from './deviceState.svelte';
   import {
     agoMs,
-    blockedInvolving,
     facts,
     fqdn,
     isFlapping,
@@ -51,6 +54,7 @@ Props:
     lastSeenAt,
     pathText,
     presenceOf,
+    isPhone,
     relayName,
     spokenRate,
   } from './devices';
@@ -84,28 +88,59 @@ Props:
 
   const key = $derived(`${net}/${peer.node}`);
   const clock = $derived(now ?? live.now());
-  const isStale = $derived(stale ?? (live.conn === 'stale' || live.conn === 'daemon_down'));
+  const isStale = $derived(stale ?? connection.stale);
+  /** Nothing can change (§8.5): admin items stay, aria-disabled, with the reason. */
+  const frozen = $derived(isStale || connection.frozen);
   const numbers = $derived(live.numbers[key] ?? null);
   const network = $derived(live.status?.networks.find((n) => n.id === net) ?? null);
   const admin = $derived(network?.admin ?? false);
-  const relay = $derived(relayName(live.peers[net], numbers?.relay ?? null));
+  const selfName = $derived(
+    live.status?.memberships.find((m) => m.network === net)?.name ?? null,
+  );
+  /** A phone hangs off its gateway: the path reads `via desk` (`via this device`). */
+  const gateway = $derived(
+    peer.gateway === null
+      ? null
+      : peer.gateway === selfName
+        ? copy.device.thisDevice
+        : peer.gateway,
+  );
+  const relay = $derived(gateway ?? relayName(live.peers[net], numbers?.relay ?? null));
+  const path = $derived(gateway !== null ? ('relay' as const) : peer.path);
   const seenAt = $derived(
     lastSeenAt(live.journal, net, peer, snapshotSeenAt(key, peer.last_seen_secs, clock)),
   );
   const addedAt = $derived(joinedAt(live.journal, net, peer.node));
   const presence = $derived(self ? ({ kind: 'online' } as const) : presenceOf(peer, seenAt, addedAt));
-  const progress = $derived(rowProgress.get(key) ?? null);
+  const removal = $derived(removalOf(net, peer.node));
+  const progress = $derived(removal ? removalLine(removal) : (rowProgress.get(key) ?? null));
+  // §11.1: the person hears where their removal ended up.
+  $effect(() => {
+    const seen = removal?.handle.seen;
+    if (removal && seen && seen.by >= seen.of) announce(removalLine(removal));
+  });
   const flapping = $derived(peer.online && isFlapping(live.journal, net, peer.node, clock));
-  const changed = $derived(live.changed.has(key));
-  const needsYou = $derived(
-    admin &&
-      !self &&
-      !removed &&
-      (blockedInvolving(live.pending.blocked, net, peer.node) !== null ||
-        (presence.kind === 'waiting' &&
-          addedAt !== null &&
-          clock - addedAt > PHONE_ABANDONED_MS)),
+  /** The tint's stamp: a second change inside 4 s restarts the fade (§8.4). */
+  const stamp = $derived(live.changed.get(key) ?? null);
+  // The shared needs list, so an ignored blocked card stops marking the row.
+  const blockedNeed = $derived(
+    needs.live.some(
+      (n) =>
+        n.kind === 'blocked' &&
+        n.network === net &&
+        (n.blocked.from === peer.node || n.blocked.to === peer.node),
+    ),
   );
+  const waitingTooLong = $derived(
+    presence.kind === 'waiting' && addedAt !== null && clock - addedAt > PHONE_ABANDONED_MS,
+  );
+  const needsYou = $derived(admin && !self && !removed && (blockedNeed || waitingTooLong));
+  /** §11.5: the needs-you state has a word, not only a colour. */
+  const needsWord = $derived(
+    needsYou ? (blockedNeed ? copy.device.needsBlocked : copy.device.needsWaiting) : null,
+  );
+  /** Members see `idle / light / busy` for other devices' links (§5 Rate). */
+  const band = $derived(admin || self ? null : (numbers?.band ?? null));
 
   const dot: DotState = $derived.by(() => {
     if (removed) return 'offline';
@@ -117,6 +152,11 @@ Props:
     presence.kind === 'online' ? (isStale ? copy.status.stale : copy.status.online) : copy.status.offline,
   );
 
+  /** `just now` under a second, so an offline device never reads `seen now`. */
+  function since(ms: number): string {
+    return ms < 1000 ? copy.join.justNow : agoMs(ms);
+  }
+
   /** The words in the path slot when the device has no path to show. */
   const note: string | null = $derived.by(() => {
     if (removed) return copy.device.removed;
@@ -125,7 +165,7 @@ Props:
       case 'online':
         return null;
       case 'offline':
-        return copy.device.seenAgo(agoMs(clock - presence.seenAt));
+        return copy.device.seenAgo(since(clock - presence.seenAt));
       case 'never':
         return copy.device.notConnectedYet;
       case 'waiting':
@@ -133,16 +173,16 @@ Props:
     }
   });
   /**
-   * The last-seen column. Online means something authenticated arrived moments ago, and
-   * the store holds no fresher time than that, so an online device reads `now`.
+   * The last-seen column. Online means something authenticated arrived moments ago, so it
+   * stays empty and the offline `seen 3 h ago` stands out.
    */
   const seenText = $derived.by(() => {
     if (removed) return '';
     switch (presence.kind) {
       case 'online':
-        return copy.time.now;
+        return '';
       case 'offline':
-        return copy.device.seenAgo(agoMs(clock - presence.seenAt));
+        return copy.device.seenAgo(since(clock - presence.seenAt));
       case 'never':
       case 'waiting':
         return presence.addedAt === null
@@ -153,15 +193,21 @@ Props:
 
   const rx = $derived(isStale || presence.kind !== 'online' ? null : (numbers?.rx ?? null));
   const rttMs = $derived(presence.kind === 'online' ? (numbers?.rttMs ?? null) : null);
-  /** Line 2 of the phone layout. */
+  /** Below 1 kB/s the rate reads `idle`, with no arrow (§5 Rate). */
+  const rateFact = $derived.by(() => {
+    if (band) return copy.rateBand[band];
+    if (rx !== null && rx < IDLE_BYTES_PER_SEC) return copy.units.idle;
+    return `${copy.units.down} ${formatRate(rx)}`;
+  });
+  /** Line 2 of the phone layout, after the mono address. */
   const line2 = $derived(
     presence.kind === 'online' && !removed && !progress
       ? facts([
-          peer.address,
           self || rttMs === null ? null : formatRtt(isStale ? null : rttMs),
-          self ? null : `${copy.units.down} ${formatRate(rx)}`,
+          self ? null : rateFact,
         ])
-      : facts([peer.address, presence.kind === 'online' ? null : seenText]),
+      : // An offline row already says `seen 3 h ago` in its path slot.
+        facts([presence.kind === 'online' || presence.kind === 'offline' ? null : seenText]),
   );
 
   let label = $state('');
@@ -171,11 +217,13 @@ Props:
     if (removed) parts.push(copy.device.removed);
     else if (progress) parts.push(progress);
     else parts.push(statusWord);
+    if (needsWord) parts.push(needsWord);
     if (presence.kind === 'online' && !self && !removed) {
-      const path = pathText(peer.path, relay);
-      if (path) parts.push(path);
+      const text = pathText(path, relay);
+      if (text) parts.push(text);
       if (rttMs !== null && !isStale) parts.push(copy.spoken.milliseconds(Math.round(rttMs)));
-      if (rx !== null) parts.push(copy.spoken.receiving(spokenRate(rx)));
+      if (band) parts.push(copy.rateBand[band]);
+      else if (rx !== null) parts.push(copy.spoken.receiving(spokenRate(rx)));
     } else if (note && note !== progress) {
       parts.push(note);
     }
@@ -191,18 +239,27 @@ Props:
     }
   }
 
+  /** A member's ask: the detail opens with the Ask-an-admin sheet for it (§7.10). */
+  function ask(request: string): void {
+    askRequest.key = key;
+    askRequest.request = request;
+    onOpen?.();
+  }
+
   const menu: MenuItem[] = $derived.by(() => {
     const name = network?.name ?? '';
     const items: MenuItem[] = [
       { label: copy.deviceView.copyAddress, onSelect: () => void write(peer.address) },
       { label: copy.deviceView.copyName, onSelect: () => void write(fqdn(peer.name, name)) },
     ];
-    // Nothing is queued while stale (§8.5), so the menu offers only what needs no daemon.
-    if (removed || isStale) return items;
+    if (removed) return items;
+    // §8.5: while frozen the changes stay, aria-disabled, with the reason as the last line.
+    const disabled = frozen;
     if (admin) {
       items.push({ separator: true });
       items.push({
         label: copy.detail.rename,
+        disabled,
         onSelect: () => {
           renameRequest.key = key;
           onOpen?.();
@@ -212,48 +269,89 @@ Props:
         items.push({
           label: copy.detail.remove(name),
           tone: 'danger',
+          disabled,
           onSelect: () => setQuery({ remove: peer.name }),
         });
       }
     } else if (!self) {
       items.push({ separator: true });
-      items.push({ label: copy.detail.askAdmin, onSelect: () => onOpen?.() });
+      items.push({
+        label: copy.deviceView.askRemove(peer.name, name),
+        disabled,
+        onSelect: () => ask(copy.deviceView.removeCommand(name, peer.name)),
+      });
+      if (!isPhone(peer)) {
+        items.push({
+          label: copy.deviceView.askAllowExit(peer.name),
+          disabled,
+          onSelect: () => ask(copy.deviceView.allowExitCommand(name, peer.name)),
+        });
+      }
+    }
+    if (disabled && items.length > 2) {
+      items.push({ label: copy.conn.staleActions, disabled: true, onSelect: () => {} });
     }
     return items;
   });
+
+  let rowEl: HTMLElement | null = $state(null);
+  let moreEl: HTMLButtonElement | null = $state(null);
 
   function keydown(event: KeyboardEvent): void {
     if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter') {
       event.preventDefault();
       onOpen?.();
-    } else if (event.key === '.') {
+    } else if (
+      event.key === '.' ||
+      event.key === 'ContextMenu' ||
+      (event.key === 'F10' && event.shiftKey)
+    ) {
       event.preventDefault();
       menuOpen = true;
+    } else if (event.key === 'ArrowRight') {
+      // The ⋯ button is out of the tab order (one stop per grid); → reaches it.
+      event.preventDefault();
+      moreEl?.focus();
+    }
+  }
+
+  function keydownMore(event: KeyboardEvent): void {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      rowEl?.focus();
     }
   }
 </script>
 
 <div
+  bind:this={rowEl}
   class="kith-device-cols row"
   class:offline={presence.kind !== 'online' || removed}
   class:selected
   class:needs={needsYou}
-  class:changed
   role="row"
   tabindex={active ? 0 : -1}
   aria-selected={selected}
   aria-label={label || peer.display_name}
+  aria-keyshortcuts="."
   data-key={key}
   data-name={peer.name}
   onfocus={describe}
   onclick={() => onOpen?.()}
   onkeydown={keydown}
 >
-  <span class="c-dot" role="gridcell"><StatusDot state={dot} /></span>
+  {#key stamp}
+    {#if stamp !== null}<span class="tint" aria-hidden="true"></span>{/if}
+  {/key}
+  <span class="c-dot" role="gridcell">
+    <StatusDot state={dot} />
+    <span class="sr-only">{statusWord}</span>
+  </span>
   <span class="c-name" role="gridcell">
     <span class="name">{peer.display_name}</span>
     {#if self}<Badge>{copy.device.you}</Badge>{/if}
+    {#if needsWord}<span class="needs-word">{needsWord}</span>{/if}
     <span class="addr">{peer.address}</span>
   </span>
   <span class="c-path" role="gridcell">
@@ -265,7 +363,7 @@ Props:
       >
     {:else if !self}
       <PathBadge
-        path={peer.path}
+        {path}
         {relay}
         {flapping}
         endpoint={peer.endpoint}
@@ -285,24 +383,35 @@ Props:
   </span>
   <span class="c-rate" role="gridcell">
     {#if !self && presence.kind === 'online' && !removed}
-      <Rate value={rx} stale={isStale} />
+      <Rate value={rx} {band} stale={isStale} />
     {/if}
   </span>
   <span class="c-seen" role="gridcell" title={seenText}>{seenText}</span>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <span class="c-more" role="gridcell" tabindex="-1" onclick={(event) => event.stopPropagation()}>
-    <DropdownMenu items={menu} bind:open={menuOpen}>
+    <DropdownMenu
+      items={menu}
+      bind:open={menuOpen}
+      onCloseAutoFocus={(event) => {
+        // Back to the row, so arrow keys keep moving through the grid (§5, §10).
+        event.preventDefault();
+        rowEl?.focus();
+      }}
+    >
       {#snippet trigger(props)}
         <IconButton
+          bind:ref={moreEl}
           icon="ellipsis"
           label={copy.deviceView.rowMenu(peer.display_name)}
-          tabindex={-1}
-          triggerProps={props}
+          onkeydown={keydownMore}
+          triggerProps={{ ...props, tabindex: -1 }}
         />
       {/snippet}
     </DropdownMenu>
   </span>
-  <span class="c-facts" aria-hidden="true">{line2}</span>
+  <span class="c-facts" aria-hidden="true"
+    ><span class="facts-addr">{peer.address}</span>{#if line2}{DOT}{line2}{/if}</span
+  >
 </div>
 
 <style>
@@ -310,7 +419,10 @@ Props:
    * Columns are picked by the width of the nearest `devices` container (DeviceList), so
    * the list's column header shares them: it uses the same global class. Container
    * widths are in px because `rem` there follows the root's 14 px body font: 528 px fits
-   * the narrow columns, 660 px adds the spark, 984 px (the content width at 1280 px) is full.
+   * the narrow columns, 600 px adds the spark (the tablet list), 984 px (the content width
+   * at 1280 px) is full. Every cell's `display` lives in these global rules, never in a
+   * scoped one: a scoped rule has the same specificity and comes later, so it would undo
+   * a tier's `display: none`.
    */
   :global(.kith-device-cols) {
     display: grid;
@@ -319,7 +431,8 @@ Props:
     padding-inline: var(--s-3);
     /* §5: 20px dot … 32px ⋯; the ⋯ column grows with the 44 px touch target. */
     --more: var(--control);
-    grid-template-columns: 20px auto minmax(0, 1fr) var(--more);
+    /* Line 2's facts never size a column, so every row's spark has one width and edge. */
+    grid-template-columns: 20px minmax(0, 1fr) auto var(--more);
     grid-template-areas:
       'dot name path more'
       '. facts spark more';
@@ -342,12 +455,18 @@ Props:
   }
   :global(.kith-device-cols > .c-spark) {
     grid-area: spark;
+    display: flex;
+    align-items: center;
+    justify-self: end;
+    min-width: 0;
   }
   :global(.kith-device-cols > .c-more) {
     grid-area: more;
+    align-self: start;
   }
   :global(.kith-device-cols > .c-facts) {
     grid-area: facts;
+    display: block;
   }
   :global(.kith-device-cols > .c-rtt),
   :global(.kith-device-cols > .c-rate),
@@ -369,6 +488,9 @@ Props:
       :global(.kith-device-cols > .c-path) {
         justify-self: start;
       }
+      :global(.kith-device-cols > .c-more) {
+        align-self: center;
+      }
       :global(.kith-device-cols > .c-rtt) {
         display: block;
         grid-area: rtt;
@@ -385,18 +507,23 @@ Props:
       }
     }
     /* tablet: drops the address and last seen. */
-    @container devices (min-width: 660px) {
+    @container devices (min-width: 600px) {
       :global(.kith-device-cols) {
+        column-gap: var(--s-2);
         grid-template-columns: 20px minmax(0, 1fr) 150px 64px var(--spark-w) 84px var(--more);
         grid-template-areas: 'dot name path rtt spark rate more';
       }
       :global(.kith-device-cols > .c-spark) {
-        display: block;
+        display: flex;
+        justify-self: start;
+        /* Room between the right-aligned latency and the spark, on header and rows. */
+        margin-inline-start: var(--s-2);
       }
     }
     /* full: every column. */
     @container devices (min-width: 984px) {
       :global(.kith-device-cols) {
+        column-gap: var(--s-3);
         grid-template-columns: 20px minmax(0, 1fr) 150px 64px var(--spark-w) 84px 96px var(--more);
         grid-template-areas: 'dot name path rtt spark rate seen more';
       }
@@ -445,8 +572,15 @@ Props:
   .row.needs::before {
     background: var(--attn);
   }
-  .row.changed::after {
-    content: '';
+  /* Selection and hover stay visible on a needs-you row (§5 DeviceRow states). */
+  .row.needs.selected::before {
+    background: var(--ink-1);
+  }
+  .row.needs.selected,
+  .row.needs:hover {
+    background: color-mix(in srgb, var(--attn-wash), var(--ink-1) 4%);
+  }
+  .tint {
     position: absolute;
     inset: 0;
     pointer-events: none;
@@ -478,6 +612,12 @@ Props:
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .needs-word {
+    flex: none;
+    font: var(--t-small);
+    color: var(--attn-text);
+    white-space: nowrap;
+  }
   .addr {
     font: var(--t-small);
     font-family: var(--ff-mono);
@@ -502,6 +642,18 @@ Props:
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* ink-3 is under 4.5:1 on sunken and attn-wash; these rows use ink-2 (§11.3). */
+  .row:hover .addr,
+  .row:hover .c-seen,
+  .row:hover .note,
+  .row.selected .addr,
+  .row.selected .c-seen,
+  .row.selected .note,
+  .row.needs .addr,
+  .row.needs .c-seen,
+  .row.needs .note {
+    color: var(--ink-2);
+  }
   .c-facts {
     min-width: 0;
     overflow: hidden;
@@ -510,13 +662,11 @@ Props:
     font: var(--t-small);
     color: var(--ink-2);
   }
+  .facts-addr {
+    font-family: var(--ff-mono);
+  }
   .offline .c-facts {
     color: var(--ink-3);
-  }
-  .c-spark {
-    display: flex;
-    align-items: center;
-    min-width: 0;
   }
   .c-more {
     display: flex;

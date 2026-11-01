@@ -117,11 +117,22 @@ Module exports, for DeviceRow (spec §5 Removing state):
   const lastAdmin = $derived(admins.length === 1 && admins[0] === name);
   const stale = $derived(cannotAct(live.conn));
 
-  /** `laptop and tv use phone as their exit.` Only devices other than this one. */
-  const exitUsers = $derived(
-    (live.exits[netId] ?? []).find((e) => e.node === node)?.in_use_by.filter((n) => n !== name) ??
-      [],
-  );
+  /** `laptop and tv use phone as their exit.` Every device but the one being removed. */
+  const exitUsers = $derived.by(() => {
+    const me = context?.membership?.name ?? null;
+    const users =
+      (live.exits[netId] ?? []).find((e) => e.node === node)?.in_use_by.filter((n) => n !== name) ??
+      [];
+    // This device reads `this device`, first, so the person sees their own machine.
+    if (me === null || !users.includes(me)) return users;
+    return [copy.device.thisDevice, ...users.filter((n) => n !== me)];
+  });
+  const exitLine = $derived.by(() => {
+    const line = copy.remove.exitUsers(copy.remove.andList(exitUsers), name);
+    return exitUsers[0] === copy.device.thisDevice
+      ? line.charAt(0).toUpperCase() + line.slice(1)
+      : line;
+  });
 
   let lost = $state(false);
   let typed = $state('');
@@ -138,9 +149,12 @@ Module exports, for DeviceRow (spec §5 Removing state):
     if (failure) announce(failure);
   });
 
+  /** The race below fires only once the device was there while this was open. */
+  let seenPeer = false;
   $effect(() => {
     if (!open) return;
     untrack(() => {
+      seenPeer = false;
       lost = false;
       typed = '';
       handle = null;
@@ -150,9 +164,16 @@ Module exports, for DeviceRow (spec §5 Removing state):
 
   /** §7.9 step 4: removed by someone else while this was open. */
   $effect(() => {
-    if (!open || self || peer !== null || handle !== null) return;
+    if (!open || self || handle !== null) return;
+    if (peer !== null) {
+      seenPeer = true;
+      return;
+    }
+    if (!seenPeer) return;
+    const who = untrack(() => name);
     open = false;
-    toast.done(copy.remove.racedPlain(name));
+    // The journal's `device_removed` carries no signer, so the toast cannot name who.
+    toast.done(copy.remove.racedPlain(who));
   });
 
   let last: boolean | null = null;
@@ -165,12 +186,20 @@ Module exports, for DeviceRow (spec §5 Removing state):
   function settle(next: ActionHandle<Outcome>): void {
     void next.done.then((result) => {
       if (handle !== next) return;
+      const who = name;
       if (result.state === 'accepted') {
         open = false;
         if (self) go('/');
+        else {
+          const removal = removalOf(netId, node);
+          if (removal) announce(removalLine(removal));
+        }
+      } else if (result.state === 'conflict' && result.conflict) {
+        open = false;
+        toast.done(copy.remove.raced(who, result.conflict.resolved_by));
       } else if (result.state === 'conflict' || result.error?.code === 'not_found') {
         open = false;
-        toast.done(copy.remove.racedPlain(name));
+        toast.done(copy.remove.racedPlain(who));
       }
     });
   }
@@ -253,7 +282,7 @@ Module exports, for DeviceRow (spec §5 Removing state):
       <span>{copy.remove.lost(name)}</span>
     </label>
     {#if exitUsers.length > 0}
-      <p class="body">{copy.remove.exitUsers(copy.remove.andList(exitUsers), name)}</p>
+      <p class="body">{exitLine}</p>
     {/if}
     {#if failure}<p class="fail">{failure}</p>{/if}
     {#if stale}<p class="note">{copy.conn.staleActions}</p>{/if}

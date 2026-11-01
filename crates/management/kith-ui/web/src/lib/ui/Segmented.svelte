@@ -8,7 +8,8 @@ Keyboard: Tab lands on the selected segment; ←/→ (and ↑/↓, Home, End) mo
 select the segment reached unless it is disabled; Enter and Space select.
 Props:
   - value: string, bindable.
-  - options: SegmentOption[] = { value: string; label: string; disabled?: boolean; reason?: string }[]
+  - options: SegmentOption[] = { value: string; label: string; ariaLabel?: string; disabled?: boolean; reason?: string }[]
+    `ariaLabel` is the spoken name when the label is an abbreviation (`1m`).
   - label: string (from copy.ts), the group's accessible name.
   - disabled?: boolean. The whole control as `aria-disabled` (a stale connection): focus
     still moves, nothing changes. Pair it with inline reason text.
@@ -19,6 +20,7 @@ Labels never shift: each segment is as wide as its label in the selected weight.
   export type SegmentOption = {
     value: string;
     label: string;
+    ariaLabel?: string;
     disabled?: boolean;
     reason?: string;
   };
@@ -101,6 +103,7 @@ Labels never shift: each segment is as wide as its label in the selected weight.
                 <button
                   {...mergeProps(itemProps, {
                     class: 'segment',
+                    'aria-label': option.ariaLabel,
                     tabindex: option.value === tabStop ? 0 : -1,
                     'aria-disabled': option.disabled ? ('true' as const) : undefined,
                     'aria-describedby': option.disabled && option.reason ? reasonId(index) : undefined,

@@ -17,6 +17,8 @@ Props:
       a single-choice group; the chosen option carries a check and `aria-checked`.
   - open?: boolean, bindable. Set it to open the menu from code (the `.` key on a row).
   - label?: string, the menu's accessible name when the trigger's text does not say it.
+  - onCloseAutoFocus?: (event: Event) => void. Prevent it to send focus somewhere other
+    than the trigger, such as back to a grid row.
   - align?: 'start' | 'center' | 'end' (default 'end'); side?: 'top' | 'bottom' (default 'bottom').
 -->
 <script lang="ts" module>
@@ -51,6 +53,7 @@ Props:
     label,
     align = 'end',
     side = 'bottom',
+    onCloseAutoFocus,
   }: {
     trigger: Snippet<[Record<string, unknown>]>;
     items: readonly MenuItem[];
@@ -58,6 +61,7 @@ Props:
     label?: string;
     align?: 'start' | 'center' | 'end';
     side?: 'top' | 'bottom';
+    onCloseAutoFocus?: (event: Event) => void;
   } = $props();
 
   const modal = insideModal();
@@ -77,6 +81,7 @@ Props:
       sideOffset={MENU_OFFSET}
       collisionPadding={MENU_OFFSET}
       aria-label={label}
+      {onCloseAutoFocus}
     >
       {#each items as item, index (index)}
         {#if 'separator' in item}
