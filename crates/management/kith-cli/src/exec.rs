@@ -389,7 +389,11 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         Cmd::Log { follow, events } => {
             return crate::watch::log(&socket_path(opts)?, *follow, *events, out).await;
         }
-        Cmd::Top => return crate::watch::top(&socket_path(opts)?, out).await,
+        Cmd::Top => {
+            use std::io::IsTerminal as _;
+            let live = std::io::stdout().is_terminal();
+            return crate::watch::top(&socket_path(opts)?, live, out).await;
+        }
         Cmd::Admission(cmd) => return crate::admission::run(cmd, &socket_path(opts)?, out).await,
         Cmd::Doctor => return doctor(opts, out).await,
     }

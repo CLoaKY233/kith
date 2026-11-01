@@ -752,6 +752,106 @@ fn up_writes_a_missing_service_once_and_points_it_at_this_binary() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn log_prints_the_journal_and_following_fails_when_the_daemon_goes() {
+    use kith_ipc::{Entry, EntryKind};
+
+    let path = std::env::temp_dir().join(format!("kith-cli-log-{}.sock", std::process::id()));
+    let server = IpcServer::bind(&path).unwrap();
+    let (asked, mut asked_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let mut conn = server.accept().await.unwrap();
+            let asked = asked.clone();
+            tokio::spawn(async move {
+                while let Some(request) = conn.next_request().await.unwrap() {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "the fake answers only what log and watch ask"
+                    )]
+                    match request {
+                        Request::Journal { since } => {
+                            asked.send(since).unwrap();
+                            conn.respond(Response::Journaling { next: 2 }).await.unwrap();
+                            if since.is_none() {
+                                let warning = EntryKind::Warning {
+                                    message: "disk full".into(),
+                                };
+                                let log = EntryKind::Log {
+                                    level: "info".into(),
+                                    target: "kith".into(),
+                                    message: "hello".into(),
+                                };
+                                for (seq, kind) in [(0, warning), (1, log)] {
+                                    let entry = Entry {
+                                        seq,
+                                        at_ms: 0,
+                                        kind,
+                                    };
+                                    conn.send_entry(entry).await.unwrap();
+                                }
+                            }
+                            return;
+                        }
+                        Request::Status => conn
+                            .respond(Response::Status(fake_status()))
+                            .await
+                            .unwrap(),
+                        Request::Peers { .. } => {
+                            conn.respond(Response::Peers(vec![])).await.unwrap();
+                        }
+                        _ => conn.respond(Response::Left).await.unwrap(),
+                    }
+                }
+            });
+        }
+    });
+    let run = |args: &'static [&'static str]| {
+        let path = path.clone();
+        async move {
+            let mut full = vec!["--socket", path.to_str().unwrap()];
+            full.extend(args);
+            let opts = opts().run_inner(&full[..]).unwrap();
+            let mut out = Vec::new();
+            let result = exec::run(&opts, &mut out).await;
+            (result, String::from_utf8(out).unwrap())
+        }
+    };
+
+    let (result, text) = run(&["log"]).await;
+    assert_eq!(result, Ok(()));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(lines[0].ends_with("warning: disk full") && lines[1].ends_with("info  kith: hello"));
+
+    let (result, text) = run(&["log", "--events"]).await;
+    assert_eq!(result, Ok(()));
+    assert_eq!(text.lines().count(), 1, "{text}");
+
+    let (result, _) = run(&["log", "-f"]).await;
+    assert_eq!(
+        result,
+        Err(exec::CliError("the daemon stopped".into())),
+        "a follower whose daemon goes away fails"
+    );
+
+    let (result, text) = run(&["watch"]).await;
+    assert_eq!(result, Err(exec::CliError("the daemon stopped".into())));
+    assert!(text.contains("watching for changes"), "{text}");
+    asked_rx.close();
+    let mut asked = Vec::new();
+    while let Some(since) = asked_rx.recv().await {
+        asked.push(since);
+    }
+    assert_eq!(
+        asked.last(),
+        Some(&Some(u64::MAX)),
+        "watch asks for no backlog: the status it prints covers it"
+    );
+    std::fs::remove_file(&path).unwrap();
+}
+
 #[test]
 fn names_from_other_devices_cannot_drive_the_terminal() {
     use kith_ipc::{Entry, EntryKind};

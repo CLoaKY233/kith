@@ -141,7 +141,7 @@ pub(crate) enum Cmd {
         /// Leave out the daemon's log lines
         events: bool,
     },
-    /// Show live traffic per peer, busiest first
+    /// Show live traffic per peer, busiest first (printed once when not on a terminal)
     #[bpaf(command)]
     Top,
     /// Check what is wrong and say how to fix it
