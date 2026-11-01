@@ -126,8 +126,56 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # The desktop shell (apps/kith-app): its own workspace, built with the Tauri CLI into
+  # native bundles. It embeds the committed kith-ui/web/dist, like kith-ui.
+  app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest, bundles: "app,dmg" }
+          - { target: x86_64-apple-darwin, os: macos-latest, bundles: "app,dmg" }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, bundles: "deb,appimage" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/kith-app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: "app-${{ matrix.target }}"
+          workspaces: "apps/kith-app -> target"
+      - if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - run: npm ci
+      - run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
+      - name: package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          bundle="target/${TARGET}/release/bundle"
+          for file in "$bundle"/dmg/*.dmg "$bundle"/deb/*.deb "$bundle"/appimage/*.AppImage; do
+            [ -e "$file" ] || continue
+            cp "$file" "dist/kith-app-${version}-${TARGET}.${file##*.}"
+          done
+          ls dist/kith-app-*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-${{ matrix.target }}
+          path: apps/kith-app/dist/kith-app-*
+          if-no-files-found: error
+
   release:
-    needs: [page, build]
+    needs: [page, build, app]
     if: ${{ !cancelled() && needs.page.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -144,5 +192,5 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum kith-*.tar.gz > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag kith-*.tar.gz SHA256SUMS
+          sha256sum kith-*.tar.gz kith-app-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag kith-*.tar.gz kith-app-* SHA256SUMS
