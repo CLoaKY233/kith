@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kith_crypto::SigningKey;
-use kith_ledger::{JoinProof, Ledger, NetworkParams, OpBody};
+use kith_ledger::{AdmissionRequest, JoinProof, Ledger, NetworkParams, OpBody};
 use kith_sync::SyncSession;
 use kith_types::{NetworkId, NodeId, OpId, Timestamp};
 use proptest::prelude::*;
@@ -33,6 +33,7 @@ struct Node {
     ledgers: Mutex<BTreeMap<NetworkId, Ledger>>,
     gossip: Mutex<Vec<Gossip>>,
     presence: Mutex<Vec<Seen>>,
+    asks: Mutex<Vec<AdmissionRequest>>,
     joins: AtomicUsize,
 }
 
@@ -48,6 +49,7 @@ impl Node {
             ),
             gossip: Mutex::new(Vec::new()),
             presence: Mutex::new(Vec::new()),
+            asks: Mutex::new(Vec::new()),
             joins: AtomicUsize::new(0),
         })
     }
@@ -114,6 +116,14 @@ impl ChannelHandler for Node {
     }
 
     fn on_ledger_changed(&self, _network: NetworkId) {}
+
+    fn handle_ask(&self, request: AdmissionRequest, _from: SocketAddr) -> Result<(), String> {
+        if request.name == "pest" {
+            return Err("denied".to_owned());
+        }
+        self.asks.lock().map_err(|_| "poisoned")?.push(request);
+        Ok(())
+    }
 }
 
 fn found() -> Ledger {
@@ -413,6 +423,55 @@ async fn non_member_can_neither_sync_nor_gossip() {
     assert_eq!(member.op_ids(network), before);
     assert_eq!(member.gossip(), Vec::new());
     assert_eq!(member_channel.peers(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_device_asks_waits_and_gets_the_ledger_once_added() {
+    let ledger = found();
+    let network = ledger.network_id();
+    let member = Node::new(1, [ledger]);
+    let (_member_channel, server) = serve(&member).await;
+    let addr = server.local_addr();
+    let device = Node::new(9, []);
+    let channel = Channel::new(&device.key, Arc::clone(&device)).unwrap();
+    let at = Timestamp::from_millis(NOW);
+    let request = AdmissionRequest::create(network, &device.key, "phone", at).unwrap();
+    let before = member.op_ids(network);
+
+    let forged = AdmissionRequest::create(network, &key(8), "phone", at).unwrap();
+    let refused = ChannelClient::ask(&channel, addr, member.id(), forged).await;
+    assert!(
+        matches!(&refused, Err(ChannelError::JoinRejected(reason))
+            if reason == "the request names another device"),
+        "{refused:?}"
+    );
+    let pest = AdmissionRequest::create(network, &device.key, "pest", at).unwrap();
+    let refused = ChannelClient::ask(&channel, addr, member.id(), pest).await;
+    assert!(
+        matches!(&refused, Err(ChannelError::JoinRejected(reason)) if reason == "denied"),
+        "{refused:?}"
+    );
+
+    let pending = ChannelClient::ask(&channel, addr, member.id(), request.clone()).await;
+    assert!(matches!(pending, Ok(None)), "{pending:?}");
+    assert_eq!(*member.asks.lock().unwrap(), vec![request.clone()]);
+    assert_eq!(
+        member.op_ids(network),
+        before,
+        "a request grants nothing by itself"
+    );
+
+    member.act(network, add_device(9));
+    let joined = ChannelClient::ask(&channel, addr, member.id(), request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(joined.view().is_member(&device.id()));
+    assert_eq!(
+        joined.op_ids().copied().collect::<Vec<_>>(),
+        member.op_ids(network)
+    );
+    assert_eq!(member.asks.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

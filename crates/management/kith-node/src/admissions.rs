@@ -6,7 +6,7 @@
 //! and gossip cannot bring an expired one back. Denials stay local to the members and are
 //! gossiped only so the request leaves every admin's list.
 
-use core::net::SocketAddr;
+use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 use std::collections::BTreeMap;
 
@@ -17,13 +17,22 @@ use kith_types::{NetworkId, NodeId, Timestamp};
 /// How long a request stays pending.
 pub(crate) const REQUEST_LIFETIME: Duration = Duration::from_mins(10);
 
+/// How old a pending request must be before the same device may replace it, and how long
+/// a denial keeps the device from asking again. Both stop one device flooding admins.
+pub(crate) const REFRESH_AFTER: Duration = Duration::from_mins(5);
+
 /// How far ahead of this device's clock a request may be dated.
 const CLOCK_SKEW: Duration = Duration::from_secs(60);
 
 /// The most requests pending at once in one network.
 pub(crate) const MAX_PENDING: usize = 32;
 
+/// The most requests pending at once in one network that reached this device from one
+/// address, or one IPv6 /64.
+pub(crate) const MAX_PENDING_PER_SOURCE: usize = 4;
+
 const _: () = assert!(MAX_PENDING <= MAX_ADMISSIONS);
+const _: () = assert!(REFRESH_AFTER.as_millis() < REQUEST_LIFETIME.as_millis());
 
 /// Why a request was not held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -40,6 +49,9 @@ pub(crate) enum Refusal {
     /// [`MAX_PENDING`] other requests are waiting.
     #[error("too many devices are waiting for approval; try again later")]
     Full,
+    /// [`MAX_PENDING_PER_SOURCE`] other requests from the same address are waiting.
+    #[error("too many requests from this address are waiting; try again later")]
+    Busy,
 }
 
 /// One pending request and where it came from, if it reached this device directly.
@@ -84,7 +96,7 @@ pub(crate) struct Admissions {
 
 impl Admissions {
     /// Holds `request` pending. Returns whether it is new, so it is worth announcing; a
-    /// device's newer request replaces its older one.
+    /// device's newer request replaces its older one once that is [`REFRESH_AFTER`] old.
     pub(crate) fn offer(
         &mut self,
         request: AdmissionRequest,
@@ -100,30 +112,41 @@ impl Admissions {
         if network
             .denied
             .get(&request.device)
-            .is_some_and(|at| *at >= request.requested_at)
+            .is_some_and(|at| request.requested_at < at.saturating_add(REFRESH_AFTER))
         {
             return Err(Refusal::Denied);
         }
-        let full = network.pending.len() >= MAX_PENDING;
-        match network.pending.get_mut(&request.device) {
-            Some(held) if held.request.requested_at >= request.requested_at => {
+        if let Some(held) = network.pending.get_mut(&request.device) {
+            if request.requested_at < held.request.requested_at.saturating_add(REFRESH_AFTER) {
                 if held.request == request && held.from.is_none() {
                     held.from = from;
                 }
-                Ok(false)
+                return Ok(false);
             }
-            Some(held) => {
-                *held = Pending { request, from };
-                Ok(true)
-            }
-            None if full => Err(Refusal::Full),
-            None => {
-                network
-                    .pending
-                    .insert(request.device, Pending { request, from });
-                Ok(true)
+            *held = Pending {
+                request,
+                from: from.or(held.from),
+            };
+            return Ok(true);
+        }
+        if network.pending.len() >= MAX_PENDING {
+            return Err(Refusal::Full);
+        }
+        if let Some(source) = from.map(|addr| source(addr.ip())) {
+            let same = network
+                .pending
+                .values()
+                .filter_map(|held| held.from)
+                .filter(|addr| self::source(addr.ip()) == source)
+                .count();
+            if same >= MAX_PENDING_PER_SOURCE {
+                return Err(Refusal::Busy);
             }
         }
+        network
+            .pending
+            .insert(request.device, Pending { request, from });
+        Ok(true)
     }
 
     /// Denies `device`'s pending request in `network` and returns it.
@@ -225,6 +248,14 @@ impl Admissions {
     }
 }
 
+/// The address a request came from, widened to its /64 for IPv6, where one host holds many.
+fn source(ip: IpAddr) -> u128 {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => u128::from(v4.to_bits()),
+        IpAddr::V6(v6) => (v6.to_bits() >> 64) | (1 << 64),
+    }
+}
+
 fn is_live(requested_at: Timestamp, now: Timestamp) -> bool {
     requested_at <= now.saturating_add(CLOCK_SKEW)
         && now.saturating_duration_since(requested_at) < REQUEST_LIFETIME
@@ -232,11 +263,16 @@ fn is_live(requested_at: Timestamp, now: Timestamp) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use core::net::SocketAddr;
+    use core::time::Duration;
+
     use kith_crypto::SigningKey;
     use kith_ledger::AdmissionRequest;
     use kith_types::{NetworkId, Timestamp};
 
-    use super::{Admissions, MAX_PENDING, REQUEST_LIFETIME, Refusal};
+    use super::{
+        Admissions, MAX_PENDING, MAX_PENDING_PER_SOURCE, REFRESH_AFTER, REQUEST_LIFETIME, Refusal,
+    };
 
     const NETWORK: NetworkId = NetworkId::from_bytes([7; 32]);
 
@@ -245,20 +281,32 @@ mod tests {
             .unwrap()
     }
 
+    fn addr(text: &str) -> Option<SocketAddr> {
+        text.parse().ok()
+    }
+
     #[test]
     fn requests_expire_are_bounded_and_one_per_device() {
         let start = Timestamp::from_millis(1_000_000_000);
         let mut admissions = Admissions::default();
 
         assert_eq!(admissions.offer(request(1, start), None, start), Ok(true));
-        let later = start.saturating_add(core::time::Duration::from_secs(5));
+        let soon = start.saturating_add(Duration::from_secs(5));
+        assert_eq!(
+            admissions.offer(request(1, soon), None, soon),
+            Ok(false),
+            "a device cannot flood admins by re-signing its request"
+        );
+        let later = start.saturating_add(REFRESH_AFTER);
         assert_eq!(admissions.offer(request(1, later), None, later), Ok(true));
         assert_eq!(
             admissions.offer(request(1, start), None, later),
             Ok(false),
             "an older request does not replace the newer one"
         );
-        assert_eq!(admissions.pending(NETWORK, later).len(), 1);
+        let pending = admissions.pending(NETWORK, later);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request.requested_at, later);
 
         for seed in 2..=u8::try_from(MAX_PENDING).unwrap() {
             assert_eq!(
@@ -277,6 +325,12 @@ mod tests {
             admissions.offer(forged, None, later),
             Err(Refusal::BadSignature)
         );
+        let future = later.saturating_add(Duration::from_mins(2));
+        assert_eq!(
+            admissions.offer(request(202, future), None, later),
+            Err(Refusal::Expired),
+            "a request dated in the future would outlive its lifetime"
+        );
 
         let expired = later.saturating_add(REQUEST_LIFETIME);
         assert!(admissions.pending(NETWORK, expired).is_empty());
@@ -292,7 +346,37 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_request_stays_denied_but_the_device_may_ask_again() {
+    fn one_address_cannot_fill_the_queue() {
+        let at = Timestamp::from_millis(1_000_000_000);
+        let mut admissions = Admissions::default();
+        let mut seed = 1;
+        for port in 0..MAX_PENDING_PER_SOURCE {
+            let from = addr(&format!("[2001:db8::{port}]:{}", 1000 + port));
+            assert_eq!(admissions.offer(request(seed, at), from, at), Ok(true));
+            seed += 1;
+        }
+        assert_eq!(
+            admissions.offer(request(seed, at), addr("[2001:db8::ffff]:1"), at),
+            Err(Refusal::Busy),
+            "addresses in one /64 count together"
+        );
+        assert_eq!(
+            admissions.offer(request(seed, at), addr("[2001:db8:0:1::1]:1"), at),
+            Ok(true)
+        );
+        assert_eq!(
+            admissions.offer(request(seed + 1, at), addr("192.0.2.1:1"), at),
+            Ok(true)
+        );
+        assert_eq!(
+            admissions.offer(request(seed + 2, at), None, at),
+            Ok(true),
+            "gossiped requests are bounded by the network-wide cap"
+        );
+    }
+
+    #[test]
+    fn a_denial_holds_the_device_off_for_a_while_and_spreads_from_admins() {
         let start = Timestamp::from_millis(1_000_000_000);
         let asked = request(1, start);
         let mut admissions = Admissions::default();
@@ -302,14 +386,21 @@ mod tests {
             admissions.offer(asked.clone(), None, start),
             Err(Refusal::Denied)
         );
+        let soon = start.saturating_add(Duration::from_secs(1));
+        assert_eq!(
+            admissions.offer(request(1, soon), None, soon),
+            Err(Refusal::Denied),
+            "a denied device cannot ask again straight away"
+        );
 
         let mut other_admin = Admissions::default();
         other_admin.offer(asked, None, start).unwrap();
         let (_, denied) = admissions.snapshot(NETWORK, start);
-        assert!(other_admin.absorb_denials(NETWORK, denied, start));
+        assert!(other_admin.absorb_denials(NETWORK, denied.clone(), start));
+        assert!(!other_admin.absorb_denials(NETWORK, denied, start));
         assert!(other_admin.pending(NETWORK, start).is_empty());
 
-        let again = start.saturating_add(core::time::Duration::from_secs(1));
+        let again = start.saturating_add(REFRESH_AFTER);
         assert_eq!(admissions.offer(request(1, again), None, again), Ok(true));
 
         for seed in 2..=200 {

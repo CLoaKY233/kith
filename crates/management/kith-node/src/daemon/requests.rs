@@ -10,7 +10,7 @@ use kith_ledger::{AdmissionRequest, OpBody};
 use kith_types::{NetworkId, NodeId};
 
 use super::Daemon;
-use crate::admissions::{REQUEST_LIFETIME, Refusal};
+use crate::admissions::{REFRESH_AFTER, Refusal};
 use crate::channel::{lock_admissions, now};
 use crate::types::NodeError;
 
@@ -24,7 +24,8 @@ impl Daemon {
     }
 
     /// Asks a member in `code` to hold this device's request, or learns the answer. The
-    /// same signed request is reused until it expires, so admins see one request.
+    /// same signed request is reused for [`REFRESH_AFTER`], so admins see one request, and
+    /// then re-signed, so it outlives a member whose clock runs ahead.
     pub(super) async fn request_join(
         &mut self,
         code: &RequestCode,
@@ -39,7 +40,8 @@ impl Daemon {
         let at = now();
         let reusable = self.asks.get(&network).filter(|asked| {
             asked.name == device_name
-                && at.saturating_duration_since(asked.requested_at) < REQUEST_LIFETIME
+                && asked.requested_at <= at
+                && at.saturating_duration_since(asked.requested_at) < REFRESH_AFTER
         });
         let request = if let Some(asked) = reusable {
             asked.clone()
@@ -64,6 +66,12 @@ impl Daemon {
             {
                 self.asks.remove(&network);
                 Ok(Response::JoinDenied { network })
+            }
+            Err(NodeError::Channel(ChannelError::JoinRejected(reason)))
+                if reason == Refusal::Expired.to_string() =>
+            {
+                self.asks.remove(&network);
+                Err(NodeError::Channel(ChannelError::JoinRejected(reason)))
             }
             Err(error) => Err(error),
         }
@@ -102,6 +110,16 @@ impl Daemon {
         node: NodeId,
     ) -> Result<Response, NodeError> {
         self.require_admin(network)?;
+        let member = self
+            .networks
+            .maps()
+            .get(&network)
+            .and_then(|map| map.peers().get(&node))
+            .map(|peer| peer.label.clone());
+        if let Some(device) = member {
+            lock_admissions(self.channel.admissions()).take(network, node);
+            return Ok(Response::JoinApproved { device });
+        }
         let at = now();
         let held = lock_admissions(self.channel.admissions())
             .pending(network, at)
