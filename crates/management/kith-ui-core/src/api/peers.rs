@@ -6,6 +6,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use kith_ipc::{Request, Response};
 
+use crate::api::status::recorded_network;
 use crate::api::{Answer, ApiError, network_id};
 use crate::ipc::Source;
 use crate::{Shared, json};
@@ -13,13 +14,16 @@ use crate::{Shared, json};
 /// `GET /api/networks/:net/peers`.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     match &shared.source {
-        Source::Fixture(fixture) => Ok(Json(
-            fixture
-                .peers
-                .get(&net)
-                .cloned()
-                .ok_or_else(|| ApiError::bad("not a network id"))?,
-        )),
+        Source::Fixture(fixture) => {
+            recorded_network(fixture, &net)?;
+            Ok(Json(
+                fixture
+                    .peers
+                    .get(&net)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            ))
+        }
         Source::Daemon(daemon) => {
             let network = network_id(&net)?;
             let Response::Peers(peers) = daemon.ask(Request::Peers { network }).await? else {

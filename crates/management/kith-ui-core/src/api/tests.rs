@@ -292,11 +292,27 @@ struct Page {
 impl Page {
     async fn open(world: World, gate: Gate) -> TestResult<Self> {
         let (socket, received) = serve(world)?;
+        Self::start(Source::Daemon(socket), gate, received).await
+    }
+
+    /// The router on the recording the page is built against.
+    async fn recorded() -> TestResult<Self> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../kith-ui/web/fixtures/office.json");
+        let source = Source::Fixture(Box::new(crate::load_fixture(&path)?));
+        Self::start(source, Gate::System, mpsc::unbounded_channel().1).await
+    }
+
+    async fn start(
+        source: Source,
+        gate: Gate,
+        received: mpsc::UnboundedReceiver<Ipc>,
+    ) -> TestResult<Self> {
         let token = Token::random()?;
         let hex = token.hex();
         let app = build(
             Config {
-                source: Source::Daemon(socket),
+                source,
                 port: PORT,
                 token,
                 assets: None,
@@ -709,5 +725,43 @@ async fn taken_names_come_with_a_free_suggestion() -> TestResult {
     assert_eq!(network["problem"], "taken");
     let bad = check(&mut page, "", "-x").await?;
     assert_eq!(bad["problem"], "hyphen_at_edge");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reads_refuse_bad_ids_and_unknown_networks_alike_live_and_recorded() -> TestResult {
+    let unknown = NetworkId::from_bytes([0xcd; 32]);
+    let mut live = Page::open(World::new(true), Gate::System).await?;
+    let mut recorded = Page::recorded().await?;
+    for page in [&mut live, &mut recorded] {
+        for list in ["peers", "records", "exits", "invites", "request-code"] {
+            let (code, body) = page.get(&format!("/api/networks/not-an-id/{list}")).await?;
+            assert_eq!(code, StatusCode::BAD_REQUEST, "{list}");
+            assert_eq!(body["code"], "invalid_argument", "{list}");
+        }
+        let (code, body) = page
+            .get(&format!("/api/validate/name?net={unknown}&name=box"))
+            .await?;
+        assert_eq!(
+            (code, &body["code"]),
+            (StatusCode::NOT_FOUND, &json!("not_found"))
+        );
+        let (code, body) = page.get("/api/validate/name?net=").await?;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert_eq!(body["code"], "invalid_argument");
+    }
+    for list in ["peers", "records", "exits", "invites", "request-code"] {
+        let (code, body) = recorded
+            .get(&format!("/api/networks/{unknown}/{list}"))
+            .await?;
+        assert_eq!(code, StatusCode::NOT_FOUND, "{list}");
+        assert_eq!(body["code"], "not_found", "{list}");
+    }
+    let (code, invites) = live.get(&net("/invites")).await?;
+    assert_eq!((code, invites), (StatusCode::OK, json!([])));
+    let (_, check) = live
+        .get("/api/validate/name?net=home&name=Na%20--%20S")
+        .await?;
+    assert_eq!(check["name"], "na-s");
     Ok(())
 }

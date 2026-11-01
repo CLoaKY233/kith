@@ -10,7 +10,7 @@ use kith_ipc::{Request, Response};
 use serde_json::json;
 
 use crate::Shared;
-use crate::api::status::local;
+use crate::api::status::{local, recorded_network};
 use crate::api::{
     Answer, ApiError, accepted, as_admin, daemon, network_id, node_id, status_of, summary,
 };
@@ -24,6 +24,7 @@ use crate::wire::{ApiErrorCode, ExitIn, ExitView, GrantIn};
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     let daemon = match &shared.source {
         Source::Fixture(fixture) => {
+            recorded_network(fixture, &net)?;
             return Ok(Json(json!(
                 fixture.exits.get(&net).cloned().unwrap_or_default()
             )));
