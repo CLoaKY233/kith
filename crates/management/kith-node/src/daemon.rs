@@ -2279,22 +2279,50 @@ impl Daemon {
         Ok(Response::Blocked(self.blocked.list(network)))
     }
 
-    /// Adds `rule` to `network`'s policy, unless it is there already.
+    /// Adds `rule` to `network`'s policy, unless it is there already. Only an admin may,
+    /// and only for devices in the network.
     async fn allow_blocked(
         &mut self,
         network: NetworkId,
         rule: &Rule,
     ) -> Result<Response, NodeError> {
+        let map = self.member_map(network)?;
+        let local = self.identity.node_id();
+        let known = |device: NodeId| {
+            device == local
+                || map.peers().contains_key(&device)
+                || map.clients().contains_key(&device)
+        };
+        let (from, to, _) = crate::blocked::devices(rule).ok_or_else(|| {
+            NodeError::InvalidArgument("not a rule for one connection".to_owned())
+        })?;
+        if !known(from) || !known(to) {
+            return Err(NodeError::NotFound(format!(
+                "{} or {} is not a device in {network}",
+                from.short(),
+                to.short()
+            )));
+        }
+        if !self.is_admin(network)? {
+            return Err(NodeError::InvalidArgument(
+                "only an admin of this network can change its policy; ask an admin to allow this"
+                    .to_owned(),
+            ));
+        }
         let identity = Arc::clone(&self.identity);
         let runtime = self.runtime_mut(network)?;
         let mut rules = runtime.policy()?.rules().to_vec();
         if !rules.contains(rule) {
             rules.push(rule.clone());
+            let policy = Policy::new(rules)
+                .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+            runtime.set_policy(&identity, &policy, now())?;
+            self.commit(network).await?;
         }
-        let policy =
-            Policy::new(rules).map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
-        runtime.set_policy(&identity, &policy, now())?;
-        self.commit(network).await?;
+        // Refusals the dataplane sampled before the rule took effect are not new ones.
+        if let Ok(stats) = self.dataplane.stats().await {
+            self.observe_blocked(&stats);
+        }
         self.blocked.forget(network, rule);
         Ok(Response::BlockedAllowed)
     }
