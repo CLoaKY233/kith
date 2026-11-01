@@ -1,12 +1,16 @@
 <!--
 @component
-Switch: Bits Switch with a visible label. Border `--line-strong` (3:1, WCAG 1.4.11).
+Switch: a Bits Switch with a visible label on the left and the control on the right, in
+a row of `--row` height. Off: `--sunken` track with a `--line-strong` border (3:1, WCAG
+1.4.11) and an `--ink-3` thumb. On: `--accent` track with an `--accent-fg` thumb. Clicking
+the label toggles it; Space and Enter toggle it from the keyboard.
 Props:
   - checked: boolean, bindable.
   - label: string (from copy.ts).
-  - helper?: string, under the label in `--ink-3`.
-  - disabled?: boolean.
-  - onCheckedChange?: (checked: boolean) => void.
+  - helper?: string, under the label in `--ink-3` (the privacy switch's explanation).
+  - disabled?: boolean. `aria-disabled` (a stale connection): stays focusable, does not
+    toggle. Pair it with inline reason text.
+  - onCheckedChange?: (checked: boolean) => void, called only for a real change.
 -->
 <script lang="ts">
   import { Switch } from 'bits-ui';
@@ -26,6 +30,12 @@ Props:
   } = $props();
 
   const id = $props.id();
+
+  function set(next: boolean): void {
+    if (disabled || next === checked) return;
+    checked = next;
+    onCheckedChange?.(next);
+  }
 </script>
 
 <div class="switch-row">
@@ -35,9 +45,8 @@ Props:
   </div>
   <Switch.Root
     {id}
-    bind:checked
-    {disabled}
-    {onCheckedChange}
+    bind:checked={() => checked, set}
+    aria-disabled={disabled ? 'true' : undefined}
     aria-describedby={helper ? `${id}-help` : undefined}
     class="kith-switch"
   >
@@ -56,6 +65,10 @@ Props:
   .text {
     display: grid;
     gap: var(--s-1);
+    min-width: 0;
+  }
+  label {
+    cursor: pointer;
   }
   .helper {
     font: var(--t-small);
@@ -66,29 +79,75 @@ Props:
     flex: none;
     display: inline-flex;
     align-items: center;
-    width: calc(var(--s-6) + var(--s-2));
-    height: var(--s-5);
-    padding: calc(var(--s-1) / 2);
-    border-radius: var(--r-full);
+    width: var(--switch-w);
+    height: var(--switch-h);
+    padding: 0 calc((var(--switch-h) - var(--switch-thumb)) / 2 - var(--hairline));
     border: var(--hairline) solid var(--line-strong);
+    border-radius: var(--r-full);
     background: var(--sunken);
     cursor: pointer;
-    transition: background-color var(--d-hover) var(--e-linear);
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      background-color var(--d-hover) var(--e-linear),
+      border-color var(--d-hover) var(--e-linear);
+  }
+  .switch-row :global(.kith-switch:focus-visible) {
+    outline: var(--focus-ring) solid var(--accent);
+    outline-offset: var(--focus-offset);
+  }
+  .switch-row :global(.kith-switch:not([aria-disabled='true']):hover) {
+    border-color: var(--ink-3);
   }
   .switch-row :global(.kith-switch[data-state='checked']) {
     background: var(--accent);
     border-color: var(--accent);
   }
+  .switch-row :global(.kith-switch[data-state='checked']:not([aria-disabled='true']):hover) {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
+  .switch-row :global(.kith-switch[aria-disabled='true']) {
+    cursor: default;
+    border-color: var(--line);
+  }
+  .switch-row :global(.kith-switch[aria-disabled='true'][data-state='checked']) {
+    background: var(--ink-4);
+  }
   .switch-row :global(.kith-switch-thumb) {
     display: block;
-    width: var(--s-4);
-    height: var(--s-4);
-    margin-inline: calc(var(--s-1) / 2);
+    width: var(--switch-thumb);
+    height: var(--switch-thumb);
     border-radius: var(--r-full);
-    background: var(--surface);
-    transition: transform var(--d-hover) var(--e-linear);
+    background: var(--ink-3);
+    transition:
+      transform var(--d-pop-in) var(--e-pop),
+      background-color var(--d-hover) var(--e-linear);
   }
   .switch-row :global(.kith-switch-thumb[data-state='checked']) {
-    transform: translateX(var(--s-4));
+    background: var(--accent-fg);
+    transform: translateX(
+      calc(var(--switch-w) - var(--switch-h))
+    );
+  }
+  .switch-row:has(:global(.kith-switch[aria-disabled='true'])) label {
+    cursor: default;
+  }
+  @media (forced-colors: active) {
+    .switch-row :global(.kith-switch) {
+      border-color: ButtonText;
+      forced-color-adjust: none;
+      background: Canvas;
+    }
+    .switch-row :global(.kith-switch[data-state='checked']) {
+      background: Highlight;
+      border-color: Highlight;
+    }
+    .switch-row :global(.kith-switch-thumb) {
+      forced-color-adjust: none;
+      background: ButtonText;
+    }
+    .switch-row :global(.kith-switch-thumb[data-state='checked']) {
+      background: HighlightText;
+    }
   }
 </style>

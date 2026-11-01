@@ -149,6 +149,23 @@
   --scroll-pad-bottom: 80px;
   --journal-pause: 48px;
 
+  /* §5 controls (lib/ui), derived from the values above. */
+  /* Button labels stay 14/600 under a coarse pointer; only the height grows. */
+  --t-label: 600 14px / 20px var(--ff-body);
+  /* Hover and pressed fills for the two filled buttons, mixed toward ink so text on
+     them gains contrast in both themes. */
+  --accent-hover: color-mix(in oklab, var(--accent), var(--ink-1) 12%);
+  --accent-press: color-mix(in oklab, var(--accent), var(--ink-1) 20%);
+  --danger-hover: color-mix(in oklab, var(--danger), var(--ink-1) 12%);
+  --danger-press: color-mix(in oklab, var(--danger), var(--ink-1) 20%);
+  /* Text on a filled danger button. */
+  --danger-fg: var(--accent-fg);
+  /* §5 DeviceRow: the waiting phone's dashed 1 px outline. */
+  --dot-dash: 1px;
+  --switch-w: 40px;
+  --switch-h: 24px;
+  --switch-thumb: 16px;
+
   /* §3.4 Layers */
   --z-content: 0;
   --z-header: 10;
