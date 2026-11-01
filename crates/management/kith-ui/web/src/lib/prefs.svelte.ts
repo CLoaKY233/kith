@@ -4,11 +4,9 @@
 // without it. The theme and density apply as `data-theme` and `data-density` on <html>,
 // which tokens.css reads; importing this module applies them once.
 
-import { NOTIFY_PROMPT_SNOOZE_MS } from './live/timing';
 import type { Density, Prefs, Theme } from './types';
 
 const KEY = 'kith.prefs';
-const PROMPT_KEY = 'kith.notify-prompt-until';
 
 const DEFAULTS: Prefs = {
   theme: 'system',
@@ -92,43 +90,3 @@ export function setPref<K extends keyof Prefs>(key: K, value: Prefs[K]): void {
 }
 
 applyPrefs();
-
-// §7.12: the Activity card asks about notifications only after something that would have
-// notified arrived while the tab was hidden, so the page remembers when it was hidden.
-const hiddenSpans: { from: number; to: number | null }[] = [];
-
-if (typeof document !== 'undefined') {
-  const track = (): void => {
-    const now = Date.now();
-    const open = hiddenSpans[hiddenSpans.length - 1];
-    if (document.visibilityState === 'hidden') {
-      if (!open || open.to !== null) hiddenSpans.push({ from: now, to: null });
-    } else if (open && open.to === null) open.to = now;
-  };
-  track();
-  document.addEventListener('visibilitychange', track);
-}
-
-/** Whether the tab was hidden at `localMs` (this clock, not the server's). */
-export function wasHiddenAt(localMs: number): boolean {
-  return hiddenSpans.some((span) => localMs >= span.from && (span.to === null || localMs <= span.to));
-}
-
-/** Whether `Not now` on the notification card still holds. */
-export function promptSnoozed(nowMs: number): boolean {
-  try {
-    const until = Number(localStorage.getItem(PROMPT_KEY));
-    return Number.isFinite(until) && until > nowMs;
-  } catch {
-    return false;
-  }
-}
-
-/** `Not now`: hides the notification card for NOTIFY_PROMPT_SNOOZE_MS. */
-export function snoozePrompt(nowMs: number): void {
-  try {
-    localStorage.setItem(PROMPT_KEY, String(nowMs + NOTIFY_PROMPT_SNOOZE_MS));
-  } catch {
-    // Hidden for this page only.
-  }
-}

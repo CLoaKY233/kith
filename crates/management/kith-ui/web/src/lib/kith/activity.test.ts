@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { copy, copyScreens } from '../copy';
+import { clock, weekdayClock } from '../format';
 import { JOURNAL_CAP } from '../live/timing';
 import type { Entry, Fixture } from '../types.gen';
 import {
   buildFeed,
   describe as say,
+  gapText,
   logLine,
   rangeFor,
   redact,
@@ -122,7 +124,7 @@ describe('activity feed (spec §6.5)', () => {
     const b = log(yesterday, 'error');
     seq += 5;
     const c = log(NOW - MIN, 'error');
-    const gap = { from: (b.seq ?? 0) + 1, to: c.seq - 1, at_ms: NOW };
+    const gap = { from: b.seq + 1, to: c.seq - 1, fromMs: b.at_ms, toMs: c.at_ms, position: 2 };
     const rows = buildFeed([a, b, c], [a, b, c], all, ctx, [gap], NOW);
     expect(rows.map((r) => (r.type === 'day' ? r.label : r.type))).toEqual([
       copy.time.today,
@@ -133,6 +135,20 @@ describe('activity feed (spec §6.5)', () => {
       expect.stringMatching(/31/),
       'entry',
     ]);
+  });
+
+  it('says only the end of a gap it knows', () => {
+    const first = log(NOW - MIN, 'error');
+    const gap = { from: 1, to: first.seq - 1, fromMs: NOW, toMs: first.at_ms, position: 0 };
+    expect(gapText(gap, [first])).toBe(copyScreens.activity.gapBefore(clock(first.at_ms)));
+    const late = new Date(2026, 10, 1, 23, 50).getTime();
+    const before = log(late, 'error');
+    seq += 3;
+    const after = log(NOW, 'error');
+    const across = { from: before.seq + 1, to: after.seq - 1, fromMs: late, toMs: NOW, position: 1 };
+    expect(gapText(across, [before, after])).toBe(
+      copy.activity.gap(weekdayClock(late), weekdayClock(NOW)),
+    );
   });
 
   it('ends a full feed with the cap row', () => {

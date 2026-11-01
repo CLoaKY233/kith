@@ -961,10 +961,24 @@ export const copyScreens = {
     glyphs: { blocked: 'blocked', warning: 'warning', signed: 'signed' },
     noMatch: (q: string): string => `Nothing matches ${quoted(q)}.`,
     noneOfKind: 'Nothing of this kind has happened here yet.',
+    unknownDevice: (device: string, network: string): string =>
+      `No device called ${device} in ${network}.`,
+    /** Gap dividers with one end unknown (§6.5 shows the two-ended one). */
+    gapBefore: (to: string): string => `Some events before ${to} aren't available.`,
+    gapSince: (from: string): string => `Some events since ${from} aren't available.`,
+    gapUnknown: "Some events aren't available.",
+    /** The ⋯ menu on a feed row (§11.4). */
+    rowMore: 'More',
+    openDevice: 'Open device',
+    copyLine: 'Copy line',
+    lineCopied: 'Copied',
+    copyFailed: "Couldn't copy. Select the line and copy it instead.",
+    noDevice: 'No devices match.',
     /** The `12 new ↑` pill's accessible name. */
     newerLabel: (n: number): string => `${n} new ${plural(n, 'event', 'events')}. Show them.`,
     notifyBlocked:
       'This browser blocks notifications from this page. Allow them in its site settings.',
+    notifyTurnedOn: 'Notifications are on in this browser.',
   },
 
   /** §12.3 templates that `copy.entry` does not cover. */
