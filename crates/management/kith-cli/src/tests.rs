@@ -751,3 +751,29 @@ fn up_writes_a_missing_service_once_and_points_it_at_this_binary() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn names_from_other_devices_cannot_drive_the_terminal() {
+    use kith_ipc::{Entry, EntryKind};
+
+    let names = [(NET, "home".to_owned())].into();
+    let entry = Entry {
+        seq: 0,
+        at_ms: 0,
+        kind: EntryKind::JoinRequested {
+            network: NET,
+            node: NODE,
+            name: "evil\x1b[2J\u{202e}".into(),
+        },
+    };
+    let line = crate::watch::line(&entry, &names, 0);
+    assert!(
+        !line.contains('\x1b') && !line.contains('\u{202e}'),
+        "{line:?}"
+    );
+    assert!(line.contains("kith approve home evil"), "{line}");
+
+    let mut out = Vec::new();
+    crate::render::write_row(&mut out, "", &["a\rb", "c\nd"], &[3, 3]).unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "a\u{fffd}b  c\u{fffd}d\n");
+}

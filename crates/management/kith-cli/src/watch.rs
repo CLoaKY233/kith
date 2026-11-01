@@ -158,12 +158,13 @@ pub(crate) fn traffic_table(
     Ok(())
 }
 
-/// One entry as a line: local time, then what happened.
+/// One entry as a line: local time, then what happened. Names and log messages can come
+/// from other devices, so the line is made safe for a terminal.
 pub(crate) fn line(entry: &Entry, names: &NetworkNames, utc_offset_secs: i64) -> String {
     format!(
         "{}  {}",
         clock(entry.at_ms, utc_offset_secs),
-        describe(&entry.kind, names)
+        render::printable(&describe(&entry.kind, names))
     )
 }
 
@@ -228,10 +229,12 @@ pub(crate) fn describe(kind: &EntryKind, names: &NetworkNames) -> String {
             target,
             message,
         } => format!("{level:<5} {target}: {message}"),
-        EntryKind::JoinRequested { network, name, .. } => format!(
-            "{} asks to join; kith approve or kith deny",
-            who(network, name)
-        ),
+        EntryKind::JoinRequested { network, name, .. } => {
+            let network = network_name(names, *network);
+            format!(
+                "{network}/{name} asks to join; kith approve {network} {name}, or kith deny {network} {name}"
+            )
+        }
         _ => "something the daemon knows and this kith does not; update kith".to_owned(),
     }
 }
