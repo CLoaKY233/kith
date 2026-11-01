@@ -5,6 +5,11 @@ updates:
     schedule: { interval: weekly }
     groups:
       cargo: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /crates/management/kith-ui/web
+    schedule: { interval: weekly }
+    groups:
+      npm: { patterns: ["*"] }
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
