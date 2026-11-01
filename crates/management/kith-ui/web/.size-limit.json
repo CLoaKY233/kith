@@ -1,0 +1,8 @@
+[
+  {
+    "name": "first load (JS, CSS, fonts)",
+    "path": ["dist/index.html", "dist/assets/*.js", "dist/assets/*.css", "dist/assets/*.woff2"],
+    "brotli": true,
+    "limit": "150 kB"
+  }
+]

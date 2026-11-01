@@ -1,0 +1,268 @@
+/*
+ * Design tokens, exact from docs/plans/kith-ui-design.md §3. The only place a colour,
+ * size, radius, shadow or CSS duration is written. Durations mirror lib/live/timing.ts;
+ * a test keeps the two equal.
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+  src: url('../fonts/inter-latin-wght.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: block;
+  src: url('../fonts/jetbrains-mono-latin-wght.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+:root {
+  color-scheme: light;
+
+  /* §3.1 Colour, light */
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --sunken: #f3f4f6;
+  --line: #e4e6ea;
+  --line-strong: #8a8f98;
+  --ink-1: #17191c;
+  --ink-2: #5b6069;
+  --ink-3: #6f747c;
+  --ink-4: #b4b8be;
+  --accent: #2f62d0;
+  --accent-fg: #ffffff;
+  --attn: #c87a12;
+  --attn-text: #9a5a00;
+  --attn-wash: #fdf5e8;
+  --danger: #c8322b;
+  --danger-wash: #fdf0ef;
+  --changed: rgb(47 98 208 / 0.08);
+  --scrim: rgb(17 19 22 / 0.45);
+  /* The QR plate is white in both themes (§5 QrPanel). */
+  --qr-plate: #ffffff;
+  --qr-ink: #000000;
+  /* Chart strokes; CanvasText under forced colours. */
+  --chart-ink: var(--ink-1);
+
+  /* §3.3 Type */
+  --ff-body: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --ff-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  --ff-features: 'cv05', 'cv08', 'ss03';
+
+  --t-display: 600 28px / 34px var(--ff-body);
+  --t-display-tracking: -0.02em;
+  --t-title: 600 20px / 28px var(--ff-body);
+  --t-title-tracking: -0.014em;
+  --t-heading: 600 15px / 22px var(--ff-body);
+  --t-heading-tracking: -0.006em;
+  --t-body: 400 14px / 20px var(--ff-body);
+  --t-body-tracking: 0;
+  --t-small: 450 12.5px / 18px var(--ff-body);
+  --t-small-tracking: 0;
+  --t-micro: 550 11px / 14px var(--ff-body);
+  --t-micro-tracking: 0.02em;
+  --t-mono: 400 13px / 20px var(--ff-mono);
+  --t-mono-tracking: 0;
+  /* Inputs are always 16 px so iOS does not zoom on focus. */
+  --t-input: 400 16px / 24px var(--ff-body);
+  /* CheckCode: mono 20/600, .08em. */
+  --t-code: 600 20px / 28px var(--ff-mono);
+  --t-code-tracking: 0.08em;
+  /* Logs in Activity: mono 12 px, one line. */
+  --t-log: 400 12px / 18px var(--ff-mono);
+  /* Map labels: 12 px. */
+  --t-map: 450 12px / 16px var(--ff-body);
+  --measure: 68ch;
+
+  /* §3.4 Space */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* §3.4 Shape */
+  --r-1: 4px;
+  --r-2: 6px;
+  --r-3: 10px;
+  --r-full: 9999px;
+  --hairline: 1px;
+  --focus-ring: 2px;
+  --focus-offset: 2px;
+  --lead-bar: 2px;
+
+  /* §3.4 Shadows */
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.1);
+  --shadow-modal: 0 24px 64px rgb(0 0 0 / 0.18);
+
+  /* §3.4 Sizes */
+  --row: 44px;
+  --row-compact: 36px;
+  --row-mobile: 64px;
+  --control: 32px;
+  --control-coarse: 40px;
+  --icon: 16px;
+  --icon-stroke: 1.5;
+  --target-touch: 44px;
+  --dot: 8px;
+  --dot-ring: 1.5px;
+  --chip: 20px;
+  --spinner: 12px;
+  --sidebar: 232px;
+  --rail: 64px;
+  --header: 56px;
+  --topbar: 52px;
+  --tabbar: 56px;
+  --content-max: 1120px;
+  --content-pad: 32px;
+  --gutter-mobile: 16px;
+  --detail: 440px;
+  --sheet: 480px;
+  --dialog: 440px;
+  --welcome-max: 640px;
+  --gate-max: 520px;
+  --recent-column: 360px;
+  --qr: 240px;
+  --qr-quiet: 24px;
+  --spark-w: 120px;
+  --spark-h: 24px;
+  --series-h: 200px;
+  --series-h-mobile: 160px;
+  --map-node: 10px;
+  --map-self: 14px;
+  --map-relay: 8px;
+  --map-satellite: 28px;
+  --scroll-pad-top: 72px;
+  --scroll-pad-bottom: 80px;
+  --journal-pause: 48px;
+
+  /* §3.4 Layers */
+  --z-content: 0;
+  --z-header: 10;
+  --z-drawer: 20;
+  --z-popover: 30;
+  --z-dialog: 40;
+  --z-toast: 50;
+
+  /* §3.5 Motion */
+  --d-hover: 80ms;
+  --d-pop-in: 140ms;
+  --d-pop-out: 100ms;
+  --d-sheet: 240ms;
+  --d-dialog: 180ms;
+  --d-row: 160ms;
+  --d-tint: 4000ms;
+  --d-banner: 200ms;
+  --d-map: 400ms;
+  --d-spin: 800ms;
+  --e-linear: linear;
+  --e-pop: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --e-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+  --dialog-scale-from: 0.97;
+
+  /* §4.2 breakpoints, as written in rem: 40rem, 64rem, 80rem; 100rem for the wide column. */
+}
+
+/* §3.2 Colour, dark */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #111316;
+    --surface: #181a1e;
+    --sunken: #0d0f11;
+    --line: #2a2d32;
+    --line-strong: #6b7079;
+    --ink-1: #edeef0;
+    --ink-2: #aeb2b9;
+    --ink-3: #8e929a;
+    --ink-4: #4a4e55;
+    --accent: #6a95ec;
+    --accent-fg: #0d0f11;
+    --attn: #e2a84a;
+    --attn-text: #e2a84a;
+    --attn-wash: #2a2112;
+    --danger: #ec6b5f;
+    --danger-wash: #2c1715;
+    --changed: rgb(106 149 236 / 0.1);
+    --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.08);
+    --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.08);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #111316;
+  --surface: #181a1e;
+  --sunken: #0d0f11;
+  --line: #2a2d32;
+  --line-strong: #6b7079;
+  --ink-1: #edeef0;
+  --ink-2: #aeb2b9;
+  --ink-3: #8e929a;
+  --ink-4: #4a4e55;
+  --accent: #6a95ec;
+  --accent-fg: #0d0f11;
+  --attn: #e2a84a;
+  --attn-text: #e2a84a;
+  --attn-wash: #2a2112;
+  --danger: #ec6b5f;
+  --danger-wash: #2c1715;
+  --changed: rgb(106 149 236 / 0.1);
+  --shadow-pop: inset 0 1px 0 rgb(255 255 255 / 0.08);
+  --shadow-modal: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+/* Touch: body text 16/24, controls 40 px. */
+@media (pointer: coarse) {
+  :root {
+    --t-body: 400 16px / 24px var(--ff-body);
+    --control: var(--control-coarse);
+  }
+}
+
+/* Compact rows: Settings → Display, fine pointer only. */
+@media (pointer: fine) {
+  :root[data-density='compact'] {
+    --row: var(--row-compact);
+  }
+}
+
+@media (min-resolution: 2dppx) {
+  :root {
+    --hairline: 0.5px;
+  }
+}
+
+/* Everything that moves becomes instant. The change tint still fades: opacity is not motion. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --d-hover: 0ms;
+    --d-pop-in: 0ms;
+    --d-pop-out: 0ms;
+    --d-sheet: 0ms;
+    --d-dialog: 0ms;
+    --d-row: 0ms;
+    --d-banner: 0ms;
+    --d-map: 0ms;
+    --d-spin: 0ms;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --chart-ink: CanvasText;
+  }
+}

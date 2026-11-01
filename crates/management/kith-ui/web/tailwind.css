@@ -1,0 +1,194 @@
+/*
+ * Tailwind maps only to the semantic tokens of src/lib/tokens.css. Every default palette,
+ * spacing step, radius and size is cleared, so `bg-blue-500`, `p-5.5` or `rounded-xl`
+ * produce nothing; ESLint also rejects them in source.
+ */
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import './src/lib/tokens.css';
+
+@source './src';
+
+@theme inline {
+  --*: initial;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink-1: var(--ink-1);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-attn: var(--attn);
+  --color-attn-text: var(--attn-text);
+  --color-attn-wash: var(--attn-wash);
+  --color-danger: var(--danger);
+  --color-danger-wash: var(--danger-wash);
+  --color-changed: var(--changed);
+  --color-scrim: var(--scrim);
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --spacing-0: 0px;
+  --spacing-1: var(--s-1);
+  --spacing-2: var(--s-2);
+  --spacing-3: var(--s-3);
+  --spacing-4: var(--s-4);
+  --spacing-5: var(--s-5);
+  --spacing-6: var(--s-6);
+  --spacing-7: var(--s-7);
+  --spacing-8: var(--s-8);
+  --spacing-px: var(--hairline);
+
+  --radius-1: var(--r-1);
+  --radius-2: var(--r-2);
+  --radius-3: var(--r-3);
+  --radius-full: var(--r-full);
+
+  --font-body: var(--ff-body);
+  --font-mono: var(--ff-mono);
+
+  --ease-linear: var(--e-linear);
+  --ease-pop: var(--e-pop);
+  --ease-sheet: var(--e-sheet);
+
+  --breakpoint-sm: 40rem;
+  --breakpoint-md: 64rem;
+  --breakpoint-lg: 80rem;
+  --breakpoint-xl: 100rem;
+}
+
+/* The type scale as single utilities: font, tracking and the tabular figures together. */
+@utility t-display {
+  font: var(--t-display);
+  letter-spacing: var(--t-display-tracking);
+}
+@utility t-title {
+  font: var(--t-title);
+  letter-spacing: var(--t-title-tracking);
+}
+@utility t-heading {
+  font: var(--t-heading);
+  letter-spacing: var(--t-heading-tracking);
+}
+@utility t-body {
+  font: var(--t-body);
+  letter-spacing: var(--t-body-tracking);
+}
+@utility t-small {
+  font: var(--t-small);
+  letter-spacing: var(--t-small-tracking);
+}
+@utility t-micro {
+  font: var(--t-micro);
+  letter-spacing: var(--t-micro-tracking);
+  font-variant-caps: all-small-caps;
+}
+@utility t-mono {
+  font: var(--t-mono);
+  letter-spacing: var(--t-mono-tracking);
+}
+@utility t-input {
+  font: var(--t-input);
+}
+@utility t-code {
+  font: var(--t-code);
+  letter-spacing: var(--t-code-tracking);
+}
+@utility t-log {
+  font: var(--t-log);
+}
+@utility shadow-pop {
+  box-shadow: var(--shadow-pop);
+}
+@utility shadow-modal {
+  box-shadow: var(--shadow-modal);
+}
+@utility hairline {
+  border: var(--hairline) solid var(--line);
+}
+@utility hairline-b {
+  border-bottom: var(--hairline) solid var(--line);
+}
+@utility hairline-t {
+  border-top: var(--hairline) solid var(--line);
+}
+@utility hairline-r {
+  border-right: var(--hairline) solid var(--line);
+}
+@utility focus-ring {
+  outline: var(--focus-ring) solid var(--accent);
+  outline-offset: var(--focus-offset);
+}
+@utility measure {
+  max-width: var(--measure);
+}
+@utility row {
+  min-height: var(--row);
+}
+@utility control {
+  height: var(--control);
+}
+@utility z-header {
+  z-index: var(--z-header);
+}
+@utility z-drawer {
+  z-index: var(--z-drawer);
+}
+@utility z-popover {
+  z-index: var(--z-popover);
+}
+@utility z-dialog {
+  z-index: var(--z-dialog);
+}
+@utility z-toast {
+  z-index: var(--z-toast);
+}
+@utility sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--ink-1);
+    font: var(--t-body);
+    font-feature-settings: var(--ff-features);
+    font-variant-numeric: tabular-nums slashed-zero;
+    -webkit-font-smoothing: antialiased;
+    scroll-padding-top: var(--scroll-pad-top);
+    scroll-padding-bottom: var(--scroll-pad-bottom);
+  }
+  body {
+    background: var(--bg);
+    min-height: 100dvh;
+  }
+  :focus-visible {
+    outline: var(--focus-ring) solid var(--accent);
+    outline-offset: var(--focus-offset);
+  }
+  code,
+  kbd,
+  samp,
+  pre {
+    font: var(--t-mono);
+  }
+  input,
+  textarea,
+  select {
+    font: var(--t-input);
+  }
+}
