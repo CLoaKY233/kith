@@ -12,7 +12,11 @@ Props:
 -->
 <script lang="ts">
   import { deviceName, exitName, isAdmin, networkName, peers, summary } from '../../frame/net';
+  import { needs } from '../../frame/needs.svelte';
   import { go, href, openOverlay } from '../../router';
+  import { copy, THIN } from '../copy';
+  import type { Parts } from '../format';
+  import CopyField from '../ui/CopyField.svelte';
   import { live } from '../live/store.svelte';
   import { TRAFFIC_WINDOW_MS } from '../live/timing';
   import type { PeerInfo } from '../types.gen';
@@ -58,7 +62,7 @@ Props:
       pausedUntilMs: live.status?.paused_until ?? null,
       problems: summary(net)?.problems ?? [],
       exit: exit && state ? { name: exit, state } : null,
-      joins: live.pending.joins.filter((j) => j.network === net).map((j) => j.claimed.name),
+      joins: needs.asking(net).map((n) => n.join.claimed.name),
       peers: list,
       expected: expected(list, exit),
       relayOf,
@@ -70,9 +74,12 @@ Props:
   function act(action: HeadlineAction): void {
     if (action.kind === 'add_device') openOverlay('add', 'device');
     else if (action.kind === 'why') go(href({ name: 'device', net, dev: action.node }));
-    else openOverlay('need', action.need);
+    else if (action.target.kind === 'device') go(href({ name: 'device', net, dev: action.target.node }));
+    else if (action.target.kind === 'this') go(href({ name: 'this' }));
   }
 </script>
+
+{#snippet amount(parts: Parts)}{parts.value}{#if parts.unit}{THIN}<span class="unit">{parts.unit}</span>{/if}{/snippet}
 
 <div class="headline">
   <p class="sentence" class:danger={view.tone === 'danger'}>
@@ -84,9 +91,19 @@ Props:
   </p>
   {#if view.action?.kind === 'fix'}
     {@const action = view.action}
-    <button type="button" class="fix" onclick={() => act(action)}>{action.label}</button>
+    {#if action.target.kind === 'command'}
+      <p class="sub">{action.label}</p>
+      <CopyField label={copy.gate.commandLabel} value={action.target.command} />
+    {:else}
+      <button type="button" class="fix" onclick={() => act(action)}>{action.label}</button>
+    {/if}
   {/if}
-  {#if view.sub}<p class="sub">{view.sub}</p>{/if}
+  {#if view.subParts}
+    {@const sub = view.subParts}
+    <p class="sub">
+      {sub.counts}{copy.overview.sep}↓ {@render amount(sub.down)} ↑ {@render amount(sub.up)}
+    </p>
+  {/if}
 </div>
 
 <style>
@@ -130,5 +147,8 @@ Props:
   }
   .sub {
     color: var(--ink-2);
+  }
+  .unit {
+    color: var(--ink-3);
   }
 </style>

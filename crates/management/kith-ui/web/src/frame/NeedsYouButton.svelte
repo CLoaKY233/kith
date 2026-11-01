@@ -31,7 +31,7 @@ Props:
     <div class="list">
       <h2 class="heading">{copy.header.needsYouTitle}</h2>
       {#each list as need (need.id)}
-        <NeedsYouCard {need} primary={list.length === 1} />
+        <NeedsYouCard {need} layered primary={need.id === list.find((n) => n.kind === 'join')?.id} />
       {/each}
     </div>
   </Popover>

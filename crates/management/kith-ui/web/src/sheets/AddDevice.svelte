@@ -190,7 +190,11 @@ Props:
         {/each}
         {#each visible as s (s.request.id)}
           {#if s.state === 'asking'}
-            <NeedsYouCard need={{ id: s.request.id, kind: 'join', network: s.request.network }} />
+            <NeedsYouCard
+              need={{ id: s.request.id, kind: 'join', network: s.request.network }}
+              primary={s.request.id === visible.find((v) => v.state === 'asking')?.request.id}
+              twinBand={false}
+            />
           {:else if s.state === 'saved'}
             <p class="outcome">{copy.action.savedHere}</p>
           {:else if s.state === 'online'}
@@ -326,7 +330,7 @@ Props:
     font: var(--t-small);
     color: var(--ink-3);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .kinds {
       grid-template-columns: 1fr;
     }

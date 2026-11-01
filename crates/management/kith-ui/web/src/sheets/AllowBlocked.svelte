@@ -113,7 +113,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
     onOpenChange?: (open: boolean) => void;
   } = $props();
 
-  const narrow = new MediaQuery('(max-width: 40rem)');
+  const narrow = new MediaQuery('(width < 40rem)');
   const asPopover = $derived(trigger !== undefined && !narrow.current);
 
   const current = $derived(live.pending.blocked.find((g) => g.id === id) ?? null);
@@ -214,6 +214,11 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
     signing = actions.allowBlocked(id);
   }
 
+  /** The layer's name: what is being decided, not the button that opened it. */
+  const title = $derived(
+    !group ? copy.blocked.allowThis : admin ? copy.blocked.allowTitle(group.from_name, group.to_name) : copy.askAdmin.title,
+  );
+
   function close(): void {
     open = false;
   }
@@ -235,7 +240,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
           {copy.blocked.card(
             group.from_name,
             group.to_name,
-            group.port === null ? '' : copy.blocked.port(group.port, null),
+            group.port === null ? '' : copy.blocked.port(group.port, copy.services[group.port] ?? null),
             group.count,
           )}
         </p>
@@ -273,7 +278,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
 {/snippet}
 
 {#if asPopover && trigger}
-  <Popover bind:open {trigger} width="card" label={copy.blocked.allowThis}>
+  <Popover bind:open {trigger} width="card" label={title}>
     <div class="pop">
       {@render body()}
       <div class="pop-buttons">{@render buttons()}</div>
@@ -285,7 +290,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   {/if}
   <Sheet
     bind:open
-    title={admin || !group ? copy.blocked.allowThis : copy.askAdmin.title}
+    {title}
     closeLabel={copy.action.close}
   >
     {@render body()}

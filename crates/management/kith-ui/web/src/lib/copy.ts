@@ -515,7 +515,11 @@ export const copy = {
     groupMac: 'sudo dseditgroup -o edit -a $USER -t user kith',
     groupThen: 'Then log out and back in.',
     skew: (ui: string, daemon: string): string =>
-      `kith-ui ${ui} can't talk to kith ${daemon}. Update kith on this device.`,
+      ui && daemon
+        ? `kith-ui ${ui} can't talk to kith ${daemon}. Update kith on this device.`
+        : "kith-ui can't talk to the kith running on this device. Update kith on this device.",
+    commandLabel: 'Command',
+    groupBody: 'Add this user to the kith group:',
     authTitle: 'This page needs a fresh link.',
     authBody:
       'For safety, kith only opens for the person at this computer. Run this in a terminal:',
@@ -681,6 +685,7 @@ export const copy = {
       ` :${port}${service ? ` (${service})` : ''}`,
     ignore: 'Ignore',
     allowThis: 'Allow this…',
+    allowTitle: (from: string, to: string): string => `Allow ${from} to reach ${to}?`,
     rule: (from: string, to: string, proto: string, port: number): string =>
       `Add rule: ${from} may reach ${to} on ${proto} ${port}.`,
     nothingElse: 'Nothing else changes.',

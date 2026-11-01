@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { THIN } from '../copy';
 import type { PeerInfo } from '../types.gen';
-import { headline, type HeadlineInput } from './headline';
+import { headline, problemTarget, type HeadlineInput } from './headline';
 
 function peer(name: string, online: boolean, path: PeerInfo['path'] = 'direct'): PeerInfo {
   return {
@@ -77,5 +77,18 @@ describe('Overview headline (spec §6.2)', () => {
     expect(headline({ ...quiet, admin: false, joins: ['pixel-8'] }).text).toMatch(/^Everything/);
     expect(headline({ ...quiet, peers: [] }).action).toMatchObject({ kind: 'add_device' });
     expect(headline({ ...quiet, peers: [], admin: false }).action).toBeNull();
+  });
+
+  it("points a problem's fix at the device it names, else its command, else This device", () => {
+    const peers = [peer('nas', true), peer('tv', false)];
+    expect(problemTarget({ what: 'nas and tv share a key.', fix: 'Remove the older one.' }, peers)).toEqual({
+      kind: 'device',
+      node: 'id-nas',
+    });
+    expect(problemTarget({ what: 'The ledger is stale.', fix: 'Run `kith sync` here.' }, peers)).toEqual({
+      kind: 'command',
+      command: 'kith sync',
+    });
+    expect(problemTarget({ what: 'Clock is off.', fix: 'Set the clock.' }, peers)).toEqual({ kind: 'this' });
   });
 });

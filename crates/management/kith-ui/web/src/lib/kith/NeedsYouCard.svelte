@@ -10,26 +10,37 @@ the AddDevice sheet and `?need=`. `--surface`, hairline, a 2 px `--attn` leading
     Expired requests say so. `A` / `D` approve or deny while focus is inside the card.
   - blocked: `phone → nas :22 (ssh) · blocked 4× in the last 10 min` with [Ignore] and
     [Allow this…] (admin) or [Ask an admin] (member).
-  - health: a network problem and its fix, or a daemon warning with Dismiss.
+  - health: a network problem and its fix, with `Show device`, the command to copy or a
+    link to This device; or a daemon warning with Dismiss.
 While the connection is stale, actions are aria-disabled with the reason inline.
+When an action removes the focused control, focus moves to what replaces it, else to the
+next card, else to the list's `[data-needs-heading]`, else to the main region.
 Props:
   - need: Need. The card finds the request, group or problem itself (frame/needs).
   - primary?: boolean (default true). Approve is the primary button; pass false where
-    another card or action already holds the view's one primary.
+    another card or action already holds the view's one primary (lists make their first
+    join card primary).
+  - layered?: boolean. The card sits in a popover: `Allow this…` opens `?need=` instead
+    of a popover of its own (no layer opens from another, §5). Inside a Sheet this is
+    detected by itself.
+  - twinBand?: boolean (default true). Shows the `Two devices asked…` band; AddDevice
+    shows one band for all its cards instead.
   - onDone?: () => void. Called when the card has nothing left to show (approved device
     online and the person moved on, deny sent, outcome dismissed); `?need=` closes on it.
 -->
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { connection } from '../../frame/conn.svelte';
-  import { deviceName, isAdmin, networkName } from '../../frame/net';
+  import { layers } from '../../frame/layers.svelte';
+  import { deviceName, isAdmin, networkName, peers } from '../../frame/net';
   import { needs, type NeedDetail } from '../../frame/needs.svelte';
   import { prefs } from '../../frame/prefs.svelte';
-  import { go, href } from '../../router';
-  import AllowBlocked from '../../sheets/AllowBlocked.svelte';
-  import { copy } from '../copy';
+  import { follow, go, href, openOverlay } from '../../router';
+  import AllowBlocked, { allowRequest } from '../../sheets/AllowBlocked.svelte';
+  import { copy, DOT } from '../copy';
   import { relative, rtt } from '../format';
   import Icon from '../icons/Icon.svelte';
+  import { tintKey } from '../live/keys';
   import { actions, live } from '../live/store.svelte';
   import {
     RELATIVE_TIME_REFRESH_MS,
@@ -39,20 +50,32 @@ Props:
   import type { ActionHandle, Need } from '../types';
   import type { NameCheck, Outcome } from '../types.gen';
   import Button from '../ui/Button.svelte';
+  import CopyField from '../ui/CopyField.svelte';
   import Field from '../ui/Field.svelte';
   import Input from '../ui/Input.svelte';
+  import { insideModal, narrow } from '../ui/layers.svelte';
   import { toast } from '../ui/Toast.svelte';
   import AskAdminSheet from './AskAdminSheet.svelte';
   import CheckCode from './CheckCode.svelte';
   import { explain, nameProblem } from './errors';
+  import { problemTarget } from './headline';
 
   let {
     need,
     primary = true,
+    layered = false,
+    twinBand = true,
     onDone,
-  }: { need: Need; primary?: boolean; onDone?: () => void } = $props();
+  }: {
+    need: Need;
+    primary?: boolean;
+    layered?: boolean;
+    twinBand?: boolean;
+    onDone?: () => void;
+  } = $props();
 
   const titleId = $props.id();
+  const inLayer = insideModal();
 
   // The last thing known about this need, so an outcome stays readable after the
   // request leaves `live.pending`.
@@ -72,6 +95,50 @@ Props:
   const frozen = $derived(connection.frozen);
   const admin = $derived(detail ? isAdmin(detail.network) : false);
   const network = $derived(detail ? networkName(detail.network) : '');
+
+  /** A new item carries the 4 s change tint (§8.4). */
+  const stamp = $derived(live.changed.get(tintKey.need(need.id)));
+
+  // Focus ----------------------------------------------------------------------------
+
+  let card = $state<HTMLElement | null>(null);
+
+  /** Focuses what `target` returns once the DOM has caught up, if focus was in this card. */
+  async function refocus(target: () => HTMLElement | null | undefined): Promise<void> {
+    const had = card?.contains(document.activeElement) ?? false;
+    await tick();
+    if (had) target()?.focus();
+  }
+
+  /**
+   * The card is about to leave: focus moves on to the next card, else the list's heading,
+   * else the main region, so a keyboard user keeps their place (§10).
+   */
+  function handOff(): void {
+    const self = card;
+    if (!self?.contains(document.activeElement)) return;
+    const siblings = [...(self.parentElement?.children ?? [])].filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== self && el.matches('.card'),
+    );
+    const after = siblings.find(
+      (el) => (self.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    );
+    const next = after ?? siblings.at(-1);
+    const control = next?.querySelector<HTMLElement>(
+      'button:not([aria-disabled]), input, a[href]',
+    );
+    if (control) {
+      control.focus();
+      return;
+    }
+    const heading = self
+      .closest('[data-needs]')
+      ?.querySelector<HTMLElement>('[data-needs-heading]');
+    void tick().then(() => {
+      if (heading?.isConnected) heading.focus();
+      else document.querySelector<HTMLElement>('main')?.focus();
+    });
+  }
 
   // Join ---------------------------------------------------------------------------
 
@@ -105,6 +172,13 @@ Props:
           : nameProblem(result.problem);
   }
 
+  /** §7.1: names are lower case, with dashes for spaces. */
+  function typed(event: Event & { currentTarget: HTMLInputElement }): void {
+    name = event.currentTarget.value.toLowerCase().replace(/ /g, '-');
+    event.currentTarget.value = name;
+    if (nameError !== null) void validate();
+  }
+
   function useSuggestion(): void {
     if (suggestion === null) return;
     name = suggestion;
@@ -125,14 +199,33 @@ Props:
   let denial = $state.raw<ActionHandle<Outcome> | null>(null);
   /** Deny waits out its Undo window before anything is sent. */
   let denyTimer: ReturnType<typeof setTimeout> | null = null;
+  let deniedAt = 0;
   let denying = $state(false);
   let failure = $state<string | null>(null);
+  let checking = $state(false);
 
   const settled = $derived(approval ?? denial);
   const conflict = $derived(settled?.state === 'conflict' ? settled.conflict : null);
+  /** While signing, the form stays and Approve shows pending (§5, §3.5). */
+  const signing = $derived(
+    approval !== null && (approval.state === 'pending' || approval.state === 'awaiting_os_auth'),
+  );
 
-  function approve(): void {
-    if (!join || frozen || approval || denying || expired) return;
+  let undoButton = $state<HTMLButtonElement | null>(null);
+  let denyButton = $state<HTMLButtonElement | null>(null);
+  let outcomeLine = $state<HTMLElement | null>(null);
+  let showButton = $state<HTMLButtonElement | null>(null);
+
+  async function approve(): Promise<void> {
+    if (!join || frozen || approval || denying || expired || checking) return;
+    if (name.trim() === '') {
+      nameError = copy.error.nameEmpty;
+      return;
+    }
+    checking = true;
+    await validate();
+    checking = false;
+    if (nameError !== null || !join || approval || denying) return;
     if (detail) needs.hold(detail);
     failure = null;
     const handle = actions.approveJoin(join.network, join.node, name);
@@ -168,7 +261,9 @@ Props:
     if (detail) needs.hold(detail);
     failure = null;
     denying = true;
+    deniedAt = Date.now();
     denyTimer = setTimeout(sendDeny, UNDO_MS);
+    void refocus(() => undoButton);
   }
 
   function undoDeny(): void {
@@ -176,14 +271,30 @@ Props:
     denyTimer = null;
     denying = false;
     needs.release(need.id);
+    void refocus(() => denyButton);
   }
 
   onDestroy(() => {
-    // Leaving the page does not cancel a deny: it is sent now instead of after Undo.
-    if (denyTimer !== null) {
-      clearTimeout(denyTimer);
-      sendDeny();
-    }
+    // Closing the sheet or leaving the page keeps the deny and its Undo: a toast holds the
+    // rest of the window, and the deny is sent when it lapses (§7.3 step 6).
+    if (denyTimer === null || !join) return;
+    clearTimeout(denyTimer);
+    const { network: net, node, id } = join;
+    const left = Math.max(0, deniedAt + UNDO_MS - Date.now());
+    prefs.ignore(id, live.now());
+    needs.release(id);
+    const timer = setTimeout(() => {
+      void actions.denyJoin(net, node).done.then((h) => {
+        if (h.state === 'failed') prefs.unignore(id);
+      });
+    }, left);
+    toast.done(copy.join.denied(join.claimed.name), {
+      undoMs: left,
+      undo: () => {
+        clearTimeout(timer);
+        prefs.unignore(id);
+      },
+    });
   });
 
   const joined = $derived(
@@ -194,6 +305,21 @@ Props:
   const joinedOnline = $derived(approval !== null && joined?.online === true);
   const joinedNumbers = $derived(join ? live.numbers[`${join.network}/${join.node}`] : undefined);
 
+  // After the person's own Approve, focus follows the outcome, then `Show device`. §11.2's
+  // "live data never moves focus" is about data, not their action.
+  let outcomeShown = false;
+  $effect(() => {
+    if (!approval || signing || outcomeShown) return;
+    outcomeShown = true;
+    void refocus(() => outcomeLine);
+  });
+  let showFocused = false;
+  $effect(() => {
+    if (!joinedOnline || showFocused || !showButton) return;
+    showFocused = true;
+    if (card?.contains(document.activeElement)) showButton.focus();
+  });
+
   function pathText(): string {
     const path = joinedNumbers?.path ?? joined?.path ?? null;
     const relay = joinedNumbers?.relay ? deviceName(join?.network ?? '', joinedNumbers.relay) : '';
@@ -203,15 +329,17 @@ Props:
   }
 
   function progress(handle: ActionHandle<Outcome>): string {
-    if (handle.state === 'pending') return copy.action.signing;
-    if (handle.state === 'awaiting_os_auth') return copy.action.awaitingOsAuth;
     if (handle.seen) return copy.action.spreading(handle.seen.by, handle.seen.of);
     if (handle.slow) return copy.action.savedWaiting;
     return copy.action.savedHere;
   }
 
+  /** §7.3 step 7: `Approved by laptop · just now`. */
+  function when(atMs: number): string {
+    return now - atMs < 60_000 ? copy.join.justNow : relative(atMs, now);
+  }
+
   // Close after the device is online, unless the person is in the card (§7.3 step 5).
-  let card = $state<HTMLElement | null>(null);
   let inside = $state(false);
   $effect(() => {
     if (!joinedOnline || inside) return;
@@ -229,6 +357,7 @@ Props:
    * `live.pending` still lists it (until the next refresh drops it).
    */
   function finish(): void {
+    handOff();
     prefs.ignore(need.id, live.now());
     needs.release(need.id);
     onDone?.();
@@ -247,7 +376,7 @@ Props:
     const key = event.key.toLowerCase();
     if (key === 'a') {
       event.preventDefault();
-      approve();
+      void approve();
     } else if (key === 'd') {
       event.preventDefault();
       deny();
@@ -279,10 +408,20 @@ Props:
   const blocked = $derived(detail?.kind === 'blocked' ? detail.blocked : null);
   let allowOpen = $state(false);
   let asking = $state(false);
+  /** Desktop, outside any layer: the rule opens in a popover anchored here (§7.5 step 2). */
+  const popover = $derived(!narrow.current && !layered && !inLayer);
+
+  /** Mobile, or inside a layer: the Allow sheet is `?need=<id>`, so Back closes it. */
+  function openAllow(): void {
+    if (!blocked || frozen) return;
+    layers.needs = false;
+    openOverlay('need', blocked.id);
+  }
 
   function ignore(): void {
     if (!blocked) return;
     const id = blocked.id;
+    handOff();
     prefs.ignore(id, live.now());
     toast.done(copy.blocked.ignored, { undo: () => prefs.unignore(id) });
     onDone?.();
@@ -291,11 +430,26 @@ Props:
   // Health -------------------------------------------------------------------------
 
   const health = $derived(detail?.kind === 'health' ? detail : null);
+  const target = $derived(
+    health?.fix ? problemTarget({ what: health.what, fix: health.fix }, peers(health.network)) : null,
+  );
+  const deviceHref = $derived(
+    health && target?.kind === 'device'
+      ? href({ name: 'device', net: health.network, dev: target.node })
+      : null,
+  );
+  const thisHref = href({ name: 'this' });
 
   function dismissWarning(): void {
     if (!health) return;
+    handOff();
     prefs.ignore(health.id, live.now());
     onDone?.();
+  }
+
+  function leaveTo(event: MouseEvent, to: string): void {
+    onDone?.();
+    follow(event, to);
   }
 </script>
 
@@ -303,12 +457,15 @@ Props:
   <article
     bind:this={card}
     class="card"
+    class:compact={!join}
+    class:changed={stamp !== undefined}
     aria-labelledby={titleId}
+    tabindex="-1"
     {@attach listen}
   >
     {#if join}
       <h3 id={titleId} class="title">{copy.join.wants(join.claimed.name, network)}</h3>
-      {#if twin && !settled}
+      {#if twinBand && twin && !settled}
         <p class="band">{copy.join.twoSameName(join.claimed.name)}</p>
       {/if}
       <dl class="facts">
@@ -328,17 +485,21 @@ Props:
       </dl>
 
       {#if conflict}
-        <p class="outcome" role="status">
-          {conflict.resolution === 'denied'
-            ? copy.join.deniedBy(deviceName(join.network, conflict.resolved_by), relative(conflict.at_ms, now))
-            : copy.join.lostRace(deviceName(join.network, conflict.resolved_by), relative(conflict.at_ms, now))}
-        </p>
-        <div class="actions"><Button variant="ghost" onclick={finish}>{copy.action.dismiss}</Button></div>
+        <div class="row">
+          <p class="status" role="status">
+            {conflict.resolution === 'denied'
+              ? copy.join.deniedBy(deviceName(join.network, conflict.resolved_by), when(conflict.at_ms))
+              : copy.join.lostRace(deviceName(join.network, conflict.resolved_by), when(conflict.at_ms))}
+          </p>
+          <Button variant="ghost" onclick={finish}>{copy.action.dismiss}</Button>
+        </div>
       {:else if expired && !approval}
-        <p class="outcome" role="status">{copy.join.expired(join.claimed.name)}</p>
-        <div class="actions"><Button variant="ghost" onclick={finish}>{copy.action.dismiss}</Button></div>
-      {:else if approval}
-        <p class="outcome" role="status">
+        <div class="row">
+          <p class="status" role="status">{copy.join.expired(join.claimed.name)}</p>
+          <Button variant="ghost" onclick={finish}>{copy.action.dismiss}</Button>
+        </div>
+      {:else if approval && !signing}
+        <p class="outcome" role="status" tabindex="-1" bind:this={outcomeLine}>
           {#if joinedOnline && joined}
             {copy.join.online(joined.name, pathText(), rtt(joinedNumbers?.rttMs ?? null))}
           {:else}
@@ -346,36 +507,47 @@ Props:
           {/if}
         </p>
         {#if joinedOnline}
-          <div class="actions"><Button onclick={showDevice}>{copy.join.showDevice}</Button></div>
+          <div class="actions">
+            <Button bind:ref={showButton} onclick={showDevice}>{copy.join.showDevice}</Button>
+          </div>
         {/if}
       {:else if denying}
         <p class="outcome" role="status">
           <span>{copy.join.denied(join.claimed.name)}</span>
           {#if !denial}
-            <Button variant="ghost" onclick={undoDeny}>{copy.action.undo}</Button>
+            <span class="dot" aria-hidden="true">{DOT.trim()}</span>
+            <Button variant="ghost" bind:ref={undoButton} onclick={undoDeny}>{copy.action.undo}</Button>
           {/if}
         </p>
       {:else}
         <p class="hint">{copy.join.approveOnlyIf}</p>
-        <Field label={copy.join.name} error={nameError}>
-          {#snippet children(control)}
-            <Input
-              {...control}
-              kind="name"
-              bind:value={name}
-              onblur={() => void validate()}
-              oninput={() => nameError !== null && void validate()}
-              onkeydown={(e) => e.key === 'Enter' && approve()}
-            />
-          {/snippet}
-        </Field>
+        <div class="name">
+          <Field label={copy.join.name} error={nameError}>
+            {#snippet children(control)}
+              <Input
+                {...control}
+                kind="name"
+                value={name}
+                oninput={typed}
+                onblur={() => void validate()}
+                onkeydown={(e) => e.key === 'Enter' && void approve()}
+              />
+            {/snippet}
+          </Field>
+        </div>
         {#if suggestion}
           <div><Button variant="ghost" onclick={useSuggestion}>{copy.rename.use(suggestion)}</Button></div>
         {/if}
         {#if failure}<p class="error" role="alert">{failure}</p>{/if}
         <div class="actions">
-          <Button disabled={frozen} onclick={deny}>{copy.join.deny}</Button>
-          <Button variant={primary ? 'primary' : 'secondary'} disabled={frozen} onclick={approve}>
+          <Button bind:ref={denyButton} disabled={frozen || signing} onclick={deny}>{copy.join.deny}</Button>
+          <Button
+            variant={primary ? 'primary' : 'secondary'}
+            disabled={frozen}
+            pending={signing || checking}
+            pendingLabel={approval?.state === 'awaiting_os_auth' ? copy.action.awaitingOsAuth : undefined}
+            onclick={() => void approve()}
+          >
             {copy.join.approve}
           </Button>
         </div>
@@ -395,37 +567,52 @@ Props:
       </p>
       <div class="actions">
         <Button variant="ghost" onclick={ignore}>{copy.blocked.ignore}</Button>
-        {#if admin}
-          <Button disabled={frozen} onclick={() => (allowOpen = true)}>{copy.blocked.allowThis}</Button>
+        {#if !admin}
+          <Button aria-expanded={asking} onclick={() => (asking = !asking)}>{copy.exits.askAdmin}</Button>
+        {:else if popover}
+          <AllowBlocked bind:open={allowOpen} id={blocked.id}>
+            {#snippet trigger(props)}
+              <Button {...props} disabled={frozen}>{copy.blocked.allowThis}</Button>
+            {/snippet}
+          </AllowBlocked>
         {:else}
-          <Button onclick={() => (asking = true)}>{copy.exits.askAdmin}</Button>
+          <Button aria-haspopup="dialog" disabled={frozen} onclick={openAllow}>
+            {copy.blocked.allowThis}
+          </Button>
         {/if}
       </div>
-      {#if frozen && admin}<p class="reason">{copy.conn.staleActions}</p>{/if}
-      {#if admin}
-        <AllowBlocked bind:open={allowOpen} id={blocked.id} />
-      {:else if asking}
-        <AskAdminSheet
-          net={blocked.network}
-          request={copy.askAdmin.allowCommand(
-            network,
-            blocked.from_name,
-            blocked.to_name,
-            blocked.protocol,
-            blocked.port,
-          )}
-        />
+      {#if frozen && admin}<p class="reason wide">{copy.conn.staleActions}</p>{/if}
+      {#if asking && !admin}
+        <div class="wide">
+          <AskAdminSheet bare net={blocked.network} request={allowRequest(blocked, network)} />
+        </div>
       {/if}
     {:else if health}
-      <p id={titleId} class="line">
-        <Icon name={health.fix === null ? 'triangle-alert' : 'circle-x'} />
-        <span>{health.what}</span>
-      </p>
-      {#if health.fix}<p class="hint">{health.fix}</p>{/if}
-      {#if health.atMs !== null}
-        <div class="actions between">
+      <div class="text">
+        <p id={titleId} class="line">
+          <Icon name={health.fix === null ? 'triangle-alert' : 'circle-x'} />
+          <span>{health.what}</span>
+        </p>
+        {#if health.fix}<p class="hint">{health.fix}</p>{/if}
+        {#if health.atMs !== null}
           <time class="meta" datetime={new Date(health.atMs).toISOString()}>{relative(health.atMs, now)}</time>
+        {/if}
+      </div>
+      {#if health.atMs !== null}
+        <div class="actions">
           <Button variant="ghost" onclick={dismissWarning}>{copy.action.dismiss}</Button>
+        </div>
+      {:else if deviceHref}
+        <div class="actions">
+          <a class="link" href={deviceHref} onclick={(e) => leaveTo(e, deviceHref)}>{copy.join.showDevice}</a>
+        </div>
+      {:else if target?.kind === 'this'}
+        <div class="actions">
+          <a class="link" href={thisHref} onclick={(e) => leaveTo(e, thisHref)}>{copy.nav.thisDevice}</a>
+        </div>
+      {:else if target?.kind === 'command'}
+        <div class="wide">
+          <CopyField label={copy.gate.commandLabel} value={target.command} />
         </div>
       {/if}
     {/if}
@@ -441,6 +628,26 @@ Props:
     border-radius: var(--r-3);
     background: var(--surface);
     box-shadow: inset var(--lead-bar) 0 0 var(--attn);
+    outline-offset: var(--s-1);
+  }
+  .card.changed {
+    animation: need-tint var(--d-tint) var(--e-linear);
+  }
+  @keyframes need-tint {
+    from {
+      background: var(--changed);
+    }
+  }
+  /* Blocked and warning cards: sentence on the left, actions on the right (≥40rem). */
+  @media (width >= 40rem) {
+    .card.compact {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      column-gap: var(--s-4);
+    }
+    .card.compact .wide {
+      grid-column: 1 / -1;
+    }
   }
   .title {
     font: var(--t-heading);
@@ -469,9 +676,17 @@ Props:
     gap: var(--s-3);
     margin-top: var(--s-2);
   }
+  .text {
+    display: grid;
+    gap: var(--s-1);
+    min-width: 0;
+  }
   .hint {
     color: var(--ink-2);
     max-width: var(--measure);
+  }
+  .name {
+    max-width: 360px;
   }
   .line {
     display: flex;
@@ -484,19 +699,42 @@ Props:
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
     align-items: center;
     gap: var(--s-3);
   }
-  .actions.between {
+  .row {
+    display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
+    align-items: center;
+    gap: var(--s-3);
+  }
+  .status {
+    color: var(--ink-2);
   }
   .outcome {
     display: flex;
     align-items: center;
-    gap: var(--s-3);
+    gap: var(--s-2);
     min-height: var(--control);
     color: var(--ink-2);
+    outline-offset: var(--s-1);
+  }
+  .dot {
+    color: var(--ink-3);
+  }
+  .link {
+    color: var(--ink-2);
+    text-decoration: underline;
+    text-decoration-thickness: var(--hairline);
+    text-underline-offset: var(--s-1);
+    border-radius: var(--r-1);
+    transition: color var(--d-hover) var(--e-linear);
+  }
+  .link:hover {
+    color: var(--ink-1);
   }
   .error {
     color: var(--danger);
