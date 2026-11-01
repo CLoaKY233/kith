@@ -612,6 +612,11 @@ export const copy = {
       `${from} can reach ${to}:${port} now.`,
     undoExplain: 'Undo signs a change that removes this rule.',
     ignored: 'Hidden for a day. Still blocked.',
+    /** The server's preview of the rule, such as `phone may reach nas on TCP 22`. */
+    ruleSentence: (sentence: string): string => `Add rule: ${sentence}.`,
+    /** `done` for a connection without a port, such as ICMP. */
+    doneAny: (from: string, to: string): string => `${from} can reach ${to} now.`,
+    gone: 'This blocked connection is no longer waiting.',
   },
 
   /** §7.6 Add a phone. */
@@ -645,6 +650,7 @@ export const copy = {
     showAgain: 'Show QR code again',
     remove: 'Remove',
     neverConnected: (phone: string): string => `${phone} never connected. Remove it?`,
+    fileName: (phone: string): string => `${phone}.conf`,
   },
 
   /** §7.9 Remove a device. */
@@ -668,6 +674,19 @@ export const copy = {
     raced: (device: string, by: string): string =>
       `${device} was removed by ${by} while you were confirming. Nothing was signed.`,
     and: ' and ',
+    /** `laptop and tv`, `laptop, tv and nas`. */
+    andList: (names: readonly string[]): string =>
+      names.length <= 1
+        ? (names[0] ?? '')
+        : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1] ?? ''}`,
+    /** `raced` when the removal's author is unknown. */
+    racedPlain: (device: string): string =>
+      `${device} was removed while you were confirming. Nothing was signed.`,
+    /** Tier 3: removing this device, which is leaving. */
+    leaveTitle: (network: string): string => `Leave ${network}?`,
+    leaveLoses: (network: string): string =>
+      `This device loses access to every device in ${network} within seconds.`,
+    leaveSubmit: (network: string): string => `Leave ${network}`,
   },
 
   /** §7.10 Ask an admin. */
@@ -679,6 +698,23 @@ export const copy = {
       `${name} (${online ? 'online' : 'offline'})`,
     sendThis: 'Send them this:',
     renameAsk: (verb: string): string => `Ask an admin to ${verb}…`,
+    /** What to send, exactly as an admin runs it (the CLI's arguments). */
+    request: {
+      allow: (
+        network: string,
+        from: string,
+        to: string,
+        protocol: string,
+        port: number | null,
+      ): string =>
+        `kith allow ${network} ${from} ${to} ${protocol}${port === null ? '' : ` ${port}`}`,
+      remove: (network: string, device: string): string => `kith remove ${network} ${device}`,
+      exitAllow: (network: string, device: string): string =>
+        `kith exit allow ${network} ${device}`,
+      /** No command renames a device yet, so the request is the name to set. */
+      rename: (network: string, device: string, name: string): string =>
+        `Rename ${device} to ${name} in ${network}`,
+    },
   },
 
   /** §7.11 Rename. */
@@ -692,6 +728,8 @@ export const copy = {
       `${who} changed this a second ago: ${quoted(from)} → ${quoted(to)}.`,
     useTheirs: 'Use theirs',
     keepMine: 'Keep mine',
+    preview: (name: string, network: string): string => `Will be ${name}.${network}.kith.internal`,
+    done: (from: string, to: string): string => `Renamed ${from} to ${to}`,
   },
 
   /** §7.12 Browser notifications. */
