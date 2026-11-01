@@ -58,6 +58,24 @@ struct NetworkAdmissions {
     denied: BTreeMap<NodeId, Timestamp>,
 }
 
+impl NetworkAdmissions {
+    /// Records a denial, dropping the oldest one so a gossip message can always carry them.
+    fn remember_denial(&mut self, device: NodeId, at: Timestamp) {
+        self.denied.insert(device, at);
+        while self.denied.len() > MAX_ADMISSIONS {
+            let oldest = self
+                .denied
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(device, _)| *device);
+            match oldest {
+                Some(device) => self.denied.remove(&device),
+                None => break,
+            };
+        }
+    }
+}
+
 /// Pending and denied join requests of every network.
 #[derive(Debug, Default)]
 pub(crate) struct Admissions {
@@ -118,9 +136,7 @@ impl Admissions {
         self.prune(now);
         let admissions = self.networks.get_mut(&network)?;
         let pending = admissions.pending.remove(&device)?;
-        admissions
-            .denied
-            .insert(device, pending.request.requested_at);
+        admissions.remember_denial(device, pending.request.requested_at);
         Some(pending.request)
     }
 
@@ -137,11 +153,7 @@ impl Admissions {
             if !is_live(at, now) || admissions.denied.get(&device).is_some_and(|d| *d >= at) {
                 continue;
             }
-            if admissions.denied.len() >= MAX_ADMISSIONS && !admissions.denied.contains_key(&device)
-            {
-                continue;
-            }
-            admissions.denied.insert(device, at);
+            admissions.remember_denial(device, at);
             if admissions
                 .pending
                 .get(&device)
@@ -299,5 +311,15 @@ mod tests {
 
         let again = start.saturating_add(core::time::Duration::from_secs(1));
         assert_eq!(admissions.offer(request(1, again), None, again), Ok(true));
+
+        for seed in 2..=200 {
+            admissions.offer(request(seed, again), None, again).ok();
+            admissions.deny(NETWORK, request(seed, again).device, again);
+        }
+        let (_, denied) = admissions.snapshot(NETWORK, again);
+        assert!(
+            denied.len() <= super::MAX_ADMISSIONS,
+            "denials must fit in one gossip message"
+        );
     }
 }

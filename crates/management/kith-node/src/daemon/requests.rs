@@ -103,15 +103,11 @@ impl Daemon {
     ) -> Result<Response, NodeError> {
         self.require_admin(network)?;
         let at = now();
-        let held = {
-            let mut admissions = lock_admissions(self.channel.admissions());
-            admissions
-                .pending(network, at)
-                .into_iter()
-                .find(|held| held.request.device == node)
-                .and_then(|_| admissions.take(network, node))
-                .ok_or_else(|| NodeError::NotFound(format!("no pending request from {node}")))?
-        };
+        let held = lock_admissions(self.channel.admissions())
+            .pending(network, at)
+            .into_iter()
+            .find(|held| held.request.device == node)
+            .ok_or_else(|| NodeError::NotFound(format!("no pending request from {node}")))?;
         let identity = Arc::clone(&self.identity);
         let author = identity.node_id();
         let body = OpBody::AddDevice {
@@ -125,6 +121,7 @@ impl Daemon {
                 .sign(identity.signing_key())?;
             ledger.insert(op).map(|_| ())
         })??;
+        lock_admissions(self.channel.admissions()).take(network, node);
         self.commit(network).await?;
         self.gossip_admissions(network)?;
         let device = self
