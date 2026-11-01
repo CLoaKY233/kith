@@ -61,29 +61,44 @@ sha256() {
     fi
 }
 
+# Fetches $1 into $2. Over https, redirects may not fall back to plain http.
+fetch() {
+    case "$1" in
+        https://*) curl -fsSL --proto-redir '=https' -o "$2" "$1" ;;
+        *) curl -fsSL -o "$2" "$1" ;;
+    esac
+}
+
 need curl
 need tar
 need uname
+need install
+command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
+    fail "needs sha256sum or shasum to verify the download"
 target="$(target)"
 version="${KITH_VERSION:-$(latest_version)}"
 version="${version#v}"
+case "$version" in
+    "" | *[!0-9A-Za-z.+-]*) fail "not a release version: $version" ;;
+esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-curl -fsSL -o "$tmp/SHA256SUMS" "$downloads/v$version/SHA256SUMS" ||
+fetch "$downloads/v$version/SHA256SUMS" "$tmp/SHA256SUMS" ||
     fail "could not download the checksums"
 
 # Downloads, verifies and installs the release binary $1 into $bin_dir.
 install_bin() {
     name="$1-$version-$target"
     say "downloading $1 $version for $target"
-    curl -fsSL -o "$tmp/$name.tar.gz" "$downloads/v$version/$name.tar.gz" ||
+    fetch "$downloads/v$version/$name.tar.gz" "$tmp/$name.tar.gz" ||
         fail "download failed: $downloads/v$version/$name.tar.gz"
-    expected="$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
+    expected="$(awk -v file="$name.tar.gz" '$2 == file || $2 == "*" file { print $1; exit }' "$tmp/SHA256SUMS")"
     [ -n "$expected" ] || fail "SHA256SUMS has no entry for $name.tar.gz"
     [ "$(sha256 "$tmp/$name.tar.gz")" = "$expected" ] ||
         fail "checksum mismatch for $name.tar.gz; not installing"
-    tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
+    tar -xzf "$tmp/$name.tar.gz" -C "$tmp" "$name/$1" ||
+        fail "$name.tar.gz has no $name/$1"
     if mkdir -p "$bin_dir" 2>/dev/null && [ -w "$bin_dir" ]; then
         install -m 0755 "$tmp/$name/$1" "$bin_dir/$1"
     else
@@ -119,7 +134,7 @@ if [ "$ui" = 1 ]; then
 fi
 
 if [ "$(uname -s)" = Linux ] && command -v groupadd >/dev/null 2>&1; then
-    if ! getent group kith >/dev/null 2>&1; then
+    if ! grep -q '^kith:' /etc/group 2>/dev/null && ! getent group kith >/dev/null 2>&1; then
         as_root groupadd --system kith
     fi
     user="${SUDO_USER:-${USER:-}}"
