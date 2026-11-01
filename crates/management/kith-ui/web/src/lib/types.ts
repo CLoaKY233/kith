@@ -60,9 +60,14 @@ export interface ActionHandle<T = void> {
   readonly seen: Spread | null;
   /** True once SEEN_TIMEOUT_MS passed with no seen: show `savedWaiting`. */
   readonly slow: boolean;
+  /** It signs a ledger op, so the page shows `Signing…` and `Saved on this device`. */
+  readonly ledger: boolean;
   /** The 2xx body, once accepted. */
   readonly result: T | null;
-  /** Resolves when the action settles (accepted, conflict or failed). */
+  /**
+   * Resolves when the request settles (accepted, awaiting_os_auth, conflict, failed, or
+   * idle when a newer call replaced it); `seen` can follow later.
+   */
   readonly done: Promise<ActionHandle<T>>;
 }
 
