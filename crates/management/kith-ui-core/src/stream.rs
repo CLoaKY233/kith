@@ -3,9 +3,9 @@
 //!
 //! - `event: entry`, `id: <boot>:<seq>`: a journal entry, flattened.
 //! - `event: tick`, every 2 s, no id, never replayed: traffic counters and links. It is
-//!   also the heartbeat, so there is no keep-alive comment.
+//!   also the heartbeat; a keep-alive comment fills in only while ticks stop.
 //! - `event: reset`: the page's boot id is not the current one; refetch everything.
-//! - `event: gap`: entries the page asked for are no longer kept.
+//! - `event: gap`: entries the page asked for are no longer kept, or never arrived.
 //! - `event: daemon_down` and `event: daemon_up`.
 //!
 //! The page resumes with `Last-Event-ID`, or `?last=<boot>:<seq>` on its first connect.
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
-use axum::response::sse::{Event, Sse};
+use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
 use futures_core::Stream;
 use kith_ipc::{Entry, TrafficSeries};
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,10 @@ const LIVE_BUFFER: usize = 256;
 const BUFFER: usize = 64;
 /// How long a snapshot or a new stream waits for the first word from the daemon.
 const SETTLE: Duration = Duration::from_secs(2);
+/// How long a page may leave its queue full before its stream is dropped.
+const STALL: Duration = Duration::from_secs(30);
+/// Quiet time before a keep-alive comment; ticks stop while the daemon is down.
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
 /// One server-sent event, serialized once however many pages receive it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +103,10 @@ enum Message {
     Signal(Frame),
 }
 
-/// Where a page is in the journal: the boot id and the last seq it applied.
+/// Where a page is in the journal: the boot id and the first seq it has not seen.
+///
+/// The next seq rather than the last one applied, so that "nothing yet" and "entry 0"
+/// are told apart.
 type Cursor = (String, u64);
 
 /// What the server knows of the daemon's current run.
@@ -115,6 +122,9 @@ struct Run {
     next: u64,
     /// Whether any run was synced; until then, the first sync keeps the initial boot id.
     synced: bool,
+    /// Whether a snapshot or a stream saw the boot id before the first sync. The first
+    /// sync then changes it too, because its history never went out on any stream.
+    exposed: bool,
     /// Whether the daemon is unreachable.
     down: bool,
     /// The latest tick, for the boot snapshot.
@@ -161,6 +171,7 @@ impl Live {
                 ring: VecDeque::new(),
                 next: 0,
                 synced: false,
+                exposed: false,
                 down: false,
                 last_tick: None,
                 traffic: History::default(),
@@ -230,7 +241,7 @@ impl Live {
             .ring
             .back()
             .map_or(next, |entry| next.max(entry.seq.saturating_add(1)));
-        if run.synced {
+        if run.synced || run.exposed {
             run.boot = Arc::from(fresh_boot());
             if let Some(reset) = Frame::new(
                 "reset",
@@ -255,6 +266,11 @@ impl Live {
         for entry in entries {
             if entry.seq < run.next {
                 continue;
+            }
+            if entry.seq > run.next
+                && let Some(gap) = gap(run.next, entry.seq)
+            {
+                self.send(Message::Signal(gap));
             }
             run.next = entry.seq.saturating_add(1);
             if let Some(frame) = Frame::entry(&run.boot, &entry) {
@@ -302,7 +318,8 @@ impl Live {
     /// no entry falls between the two.
     pub(crate) async fn position(&self) -> (String, u64) {
         self.settled().await;
-        let run = self.lock();
+        let mut run = self.lock();
+        run.exposed |= !run.synced;
         (run.boot.to_string(), run.next.saturating_sub(1))
     }
 
@@ -317,15 +334,16 @@ impl Live {
     }
 
     /// The frames a stream opens with, given where the page left off, and the live
-    /// messages after them.
-    fn open(&self, resume: Option<Cursor>) -> Opening {
-        let run = self.lock();
+    /// messages after them. `told_down` is whether the page was last told the daemon is
+    /// down, so a stream that reopens after falling behind still reports the change.
+    fn open(&self, resume: Option<Cursor>, told_down: bool) -> Opening {
+        let mut run = self.lock();
+        run.exposed |= !run.synced;
         let messages = self.messages.subscribe();
-        let latest = run.next.saturating_sub(1);
         let mut frames = Vec::new();
         match resume {
             None => {}
-            Some((boot, seq)) if *boot != *run.boot || seq > latest => {
+            Some((boot, from)) if *boot != *run.boot || from > run.next => {
                 frames.extend(Frame::new(
                     "reset",
                     &Reset {
@@ -334,46 +352,56 @@ impl Live {
                     },
                 ));
             }
-            Some((_, seq)) => {
-                let from = seq.saturating_add(1);
-                let oldest = run.ring.front().map_or(run.next, |entry| entry.seq);
-                if from < oldest {
-                    frames.extend(Frame::new(
-                        "gap",
-                        &Gap {
-                            missed_from: from,
-                            missed_to: oldest.saturating_sub(1),
-                        },
-                    ));
+            Some((_, from)) => {
+                let mut expected = from;
+                for entry in run.ring.iter().filter(|entry| entry.seq >= from) {
+                    frames.extend(gap(expected, entry.seq));
+                    frames.extend(Frame::entry(&run.boot, entry));
+                    expected = entry.seq.saturating_add(1);
                 }
-                frames.extend(
-                    run.ring
-                        .iter()
-                        .filter(|entry| entry.seq >= from)
-                        .filter_map(|entry| Frame::entry(&run.boot, entry)),
-                );
+                frames.extend(gap(expected, run.next));
             }
         }
-        if run.down {
-            frames.push(Frame::signal("daemon_down"));
+        if run.down != told_down {
+            frames.push(Frame::signal(if run.down {
+                "daemon_down"
+            } else {
+                "daemon_up"
+            }));
         }
         Opening {
             frames,
-            cursor: (run.boot.to_string(), latest),
+            cursor: (run.boot.to_string(), run.next),
             messages,
         }
     }
 }
 
+/// A `gap` frame for the seqs from `from` up to before `to`; none when that is empty.
+fn gap(from: u64, to: u64) -> Option<Frame> {
+    if from >= to {
+        return None;
+    }
+    Frame::new(
+        "gap",
+        &Gap {
+            missed_from: from,
+            missed_to: to.saturating_sub(1),
+        },
+    )
+}
+
 /// The stream's events, fed by [`relay`].
 #[derive(Debug)]
-pub(crate) struct Events(mpsc::Receiver<Event>);
+pub(crate) struct Events(mpsc::Receiver<Frame>);
 
 impl Stream for Events {
     type Item = Result<Event, Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.0.poll_recv(cx).map(|event| event.map(Ok))
+        self.0
+            .poll_recv(cx)
+            .map(|frame| frame.map(|frame| Ok(frame.event())))
     }
 }
 
@@ -383,7 +411,7 @@ pub(crate) struct Resume {
     last: Option<String>,
 }
 
-/// `<boot>:<seq>` split, from `Last-Event-ID` or else `?last=`.
+/// `<boot>:<seq>` from `Last-Event-ID` or else `?last=`, as the cursor after that seq.
 fn resume_point(headers: &HeaderMap, query: &Resume) -> Option<Cursor> {
     let text = headers
         .get("last-event-id")
@@ -393,7 +421,8 @@ fn resume_point(headers: &HeaderMap, query: &Resume) -> Option<Cursor> {
     if boot.is_empty() {
         return None;
     }
-    Some((boot.to_owned(), seq.parse().ok()?))
+    let seq: u64 = seq.parse().ok()?;
+    Some((boot.to_owned(), seq.saturating_add(1)))
 }
 
 /// `GET /api/events`.
@@ -401,21 +430,47 @@ pub(crate) async fn events(
     State(shared): State<Arc<Shared>>,
     headers: HeaderMap,
     Query(query): Query<Resume>,
-) -> Sse<Events> {
+) -> Sse<KeepAliveStream<Events>> {
     let resume = resume_point(&headers, &query);
     shared.live.settled().await;
     let (sender, receiver) = mpsc::channel(BUFFER);
-    tokio::spawn(relay(Arc::clone(&shared.live), resume, sender));
-    Sse::new(Events(receiver))
+    tokio::spawn(relay(Arc::clone(&shared.live), resume, sender, STALL));
+    Sse::new(Events(receiver)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
+}
+
+/// Queues one frame for the page; false when the page went away or left its queue full
+/// for `stall`, so the stream ends and the page reconnects from its last entry.
+async fn deliver(sender: &mpsc::Sender<Frame>, frame: Frame, stall: Duration) -> bool {
+    matches!(
+        tokio::time::timeout(stall, sender.send(frame)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Whether `frame` says the daemon is down, for `daemon_down` and `daemon_up`.
+fn daemon_state(frame: &Frame) -> Option<bool> {
+    match frame.name {
+        "daemon_down" => Some(true),
+        "daemon_up" => Some(false),
+        _ => None,
+    }
 }
 
 /// Feeds one page: its opening frames, then everything live. A page too slow for the
-/// live messages catches up from the kept entries; it stops when the page goes away.
-async fn relay(live: Arc<Live>, resume: Option<Cursor>, sender: mpsc::Sender<Event>) {
-    let mut opening = live.open(resume);
+/// live messages catches up from the kept entries; it stops when the page goes away or
+/// reads nothing for `stall`.
+async fn relay(
+    live: Arc<Live>,
+    resume: Option<Cursor>,
+    sender: mpsc::Sender<Frame>,
+    stall: Duration,
+) {
+    let mut opening = live.open(resume, false);
+    let mut told_down = false;
     loop {
         for frame in opening.frames.drain(..) {
-            if sender.send(frame.event()).await.is_err() {
+            told_down = daemon_state(&frame).unwrap_or(told_down);
+            if !deliver(&sender, frame, stall).await {
                 return;
             }
         }
@@ -426,18 +481,19 @@ async fn relay(live: Arc<Live>, resume: Option<Cursor>, sender: mpsc::Sender<Eve
             };
             let frame = match message {
                 Ok(Message::Entry { boot, seq, frame }) => {
-                    opening.cursor = (boot.to_string(), seq);
+                    opening.cursor = (boot.to_string(), seq.saturating_add(1));
                     frame
                 }
                 Ok(Message::Signal(frame)) => frame,
                 Err(RecvError::Lagged(_)) => break opening.cursor,
                 Err(RecvError::Closed) => return,
             };
-            if sender.send(frame.event()).await.is_err() {
+            told_down = daemon_state(&frame).unwrap_or(told_down);
+            if !deliver(&sender, frame, stall).await {
                 return;
             }
         };
-        opening = live.open(Some(lagged));
+        opening = live.open(Some(lagged), told_down);
     }
 }
 
@@ -489,10 +545,10 @@ mod tests {
         let query = Resume {
             last: Some("b0:7".to_owned()),
         };
-        assert_eq!(resume_point(&headers, &query), Some(("b1".to_owned(), 41)));
+        assert_eq!(resume_point(&headers, &query), Some(("b1".to_owned(), 42)));
         assert_eq!(
             resume_point(&HeaderMap::new(), &query),
-            Some(("b0".to_owned(), 7))
+            Some(("b0".to_owned(), 8))
         );
         for bad in ["", "b0", ":4", "b0:x", "b0:-1"] {
             let query = Resume {
@@ -506,26 +562,35 @@ mod tests {
     fn a_page_resumes_after_its_last_entry() {
         let live = Live::new("b0");
         live.restart((0..5).map(entry).collect(), 5);
-        let opening = live.open(Some(("b0".to_owned(), 2)));
+        let opening = live.open(Some(("b0".to_owned(), 3)), false);
         assert_eq!(shape(&opening), ["entry b0:3", "entry b0:4"]);
-        assert_eq!(opening.cursor, ("b0".to_owned(), 4));
-        assert_eq!(shape(&live.open(Some(("b0".to_owned(), 4)))), [""; 0]);
-        assert_eq!(shape(&live.open(None)), [""; 0]);
+        assert_eq!(opening.cursor, ("b0".to_owned(), 5));
+        assert_eq!(
+            shape(&live.open(Some(("b0".to_owned(), 5)), false)),
+            [""; 0]
+        );
+        assert_eq!(shape(&live.open(None, false)), [""; 0]);
     }
 
     #[test]
     fn a_page_from_another_run_or_ahead_of_this_one_is_reset() {
         let live = Live::new("b0");
         live.restart((0..5).map(entry).collect(), 5);
-        assert_eq!(shape(&live.open(Some(("old".to_owned(), 2)))), ["reset"]);
-        assert_eq!(shape(&live.open(Some(("b0".to_owned(), 9)))), ["reset"]);
+        assert_eq!(
+            shape(&live.open(Some(("old".to_owned(), 3)), false)),
+            ["reset"]
+        );
+        assert_eq!(
+            shape(&live.open(Some(("b0".to_owned(), 6)), false)),
+            ["reset"]
+        );
     }
 
     #[test]
     fn entries_that_left_the_ring_are_reported_as_a_gap() {
         let live = Live::new("b0");
         live.restart((100..103).map(entry).collect(), 103);
-        let opening = live.open(Some(("b0".to_owned(), 50)));
+        let opening = live.open(Some(("b0".to_owned(), 51)), false);
         assert_eq!(
             shape(&opening),
             ["gap", "entry b0:100", "entry b0:101", "entry b0:102"]
@@ -537,24 +602,60 @@ mod tests {
     }
 
     #[test]
+    fn entries_the_daemon_skipped_are_reported_as_a_gap() {
+        let live = Live::new("b0");
+        live.restart((0..3).map(entry).collect(), 3);
+        let mut messages = live.open(None, false).messages;
+        live.extend([entry(5), entry(6)]);
+        assert_eq!(sent(&mut messages), ["gap", "entry 5", "entry 6"]);
+        let opening = live.open(Some(("b0".to_owned(), 1)), false);
+        assert_eq!(
+            shape(&opening),
+            [
+                "entry b0:1",
+                "entry b0:2",
+                "gap",
+                "entry b0:5",
+                "entry b0:6"
+            ]
+        );
+        assert_eq!(
+            opening.frames.get(2).map(|frame| &*frame.data),
+            Some(r#"{"missed_from":3,"missed_to":4}"#)
+        );
+    }
+
+    #[test]
     fn a_restart_after_the_first_run_changes_the_boot_and_resets_open_streams() {
         let live = Live::new("b0");
         live.restart((0..3).map(entry).collect(), 3);
-        let mut messages = live.open(None).messages;
+        let mut messages = live.open(None, false).messages;
         live.down();
         live.down();
         live.restart(vec![entry(0)], 1);
         assert_eq!(sent(&mut messages), ["daemon_down", "daemon_up", "reset"]);
-        let opening = live.open(Some(("b0".to_owned(), 2)));
+        let opening = live.open(Some(("b0".to_owned(), 3)), false);
         assert_eq!(shape(&opening), ["reset"]);
         assert_ne!(opening.cursor.0, "b0");
+    }
+
+    #[test]
+    fn a_first_sync_after_a_page_saw_the_empty_run_resets_it() {
+        let live = Live::new("b0");
+        let mut messages = live.open(None, false).messages;
+        live.restart((0..3).map(entry).collect(), 3);
+        assert_eq!(sent(&mut messages), ["reset"]);
+        assert_eq!(
+            shape(&live.open(Some(("b0".to_owned(), 0)), false)),
+            ["reset"]
+        );
     }
 
     #[test]
     fn kept_entries_are_not_sent_twice() {
         let live = Live::new("b0");
         live.restart((0..3).map(entry).collect(), 3);
-        let mut messages = live.open(None).messages;
+        let mut messages = live.open(None, false).messages;
         live.extend((1..5).map(entry));
         assert_eq!(sent(&mut messages), ["entry 3", "entry 4"]);
         assert_eq!(live.last_entry(), Some((4, 1_004)));
@@ -564,6 +665,67 @@ mod tests {
     fn a_stream_opened_while_the_daemon_is_down_says_so() {
         let live = Live::new("b0");
         live.down();
-        assert_eq!(shape(&live.open(None)), ["daemon_down"]);
+        assert_eq!(shape(&live.open(None, false)), ["daemon_down"]);
+        assert_eq!(shape(&live.open(None, true)), [""; 0]);
+    }
+
+    /// The next `count` frames the relay queues, as `name` or `name id`.
+    async fn take(receiver: &mut mpsc::Receiver<Frame>, count: usize) -> Vec<String> {
+        let mut names = Vec::new();
+        while names.len() < count {
+            let next = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+            let Ok(Some(frame)) = next else { break };
+            names.push(match &frame.id {
+                Some(id) => format!("{} {id}", frame.name),
+                None => frame.name.to_owned(),
+            });
+        }
+        names
+    }
+
+    #[tokio::test]
+    async fn a_page_that_falls_behind_catches_up_and_hears_the_daemon_is_back() {
+        let live = Arc::new(Live::new("b0"));
+        live.restart(vec![entry(0)], 1);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let resume = Some(("b0".to_owned(), 1));
+        let relay = tokio::spawn(relay(
+            Arc::clone(&live),
+            resume,
+            sender,
+            Duration::from_secs(60),
+        ));
+        tokio::task::yield_now().await;
+        live.down();
+        tokio::task::yield_now().await;
+        let last = u64::try_from(LIVE_BUFFER).unwrap_or(u64::MAX) + 10;
+        live.extend((1..=last).map(entry));
+        let count = usize::try_from(last).unwrap_or(usize::MAX) + 2;
+        let frames = take(&mut receiver, count).await;
+        relay.abort();
+        let entries: Vec<String> = (1..=last).map(|seq| format!("entry b0:{seq}")).collect();
+        assert_eq!(frames.first().map(String::as_str), Some("daemon_down"));
+        assert_eq!(
+            frames.get(1..frames.len().saturating_sub(1)),
+            Some(&entries[..])
+        );
+        assert_eq!(frames.last().map(String::as_str), Some("daemon_up"));
+    }
+
+    #[tokio::test]
+    async fn a_page_that_stops_reading_is_dropped() {
+        let live = Arc::new(Live::new("b0"));
+        live.restart(vec![entry(0)], 1);
+        let (sender, _receiver) = mpsc::channel(1);
+        let relay = tokio::spawn(relay(
+            Arc::clone(&live),
+            None,
+            sender,
+            Duration::from_millis(10),
+        ));
+        tokio::task::yield_now().await;
+        live.extend((1..3).map(entry));
+        let ended = tokio::time::timeout(Duration::from_secs(5), relay).await;
+        assert!(matches!(ended, Ok(Ok(()))));
     }
 }
