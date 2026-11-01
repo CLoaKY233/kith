@@ -19,9 +19,16 @@ async function signIn(): Promise<void> {
 }
 
 async function boot(): Promise<void> {
-  await signIn();
   const target = document.getElementById('app');
   if (!target) return;
+  // The component kit (spec §16 B), only under `npm run dev`; production builds drop it.
+  if (import.meta.env.DEV && location.pathname === '/__kit') {
+    const { default: Kit } = await import('./kit/Kit.svelte');
+    target.replaceChildren();
+    mount(Kit, { target });
+    return;
+  }
+  await signIn();
   target.replaceChildren();
   mount(App, { target });
   await start();

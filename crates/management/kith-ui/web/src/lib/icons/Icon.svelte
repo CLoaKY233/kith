@@ -22,10 +22,16 @@ Props:
 </svg>
 
 <style>
+  /* A <use> inherits from this element, not from the sprite's root, so the stroke style
+     the sprite declares has to be set here too. */
   .icon {
     flex: none;
     width: var(--icon);
     height: var(--icon);
+    fill: none;
+    stroke: currentColor;
     stroke-width: var(--icon-stroke);
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 </style>
