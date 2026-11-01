@@ -8,6 +8,8 @@
 //! anything older than 30 s, and more than 3 in 30 s become one.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kith_ui_core::wire::{ExitState, Role, Tick};
 
@@ -16,6 +18,55 @@ use crate::model::{Snapshot, encode, network_path};
 use crate::timing::{
     NOTIFY_COALESCE_COUNT, NOTIFY_COALESCE_WINDOW_MS, NOTIFY_REPLAY_CUTOFF_MS, RECENTLY_USED_MS,
 };
+
+/// The longest name a notification shows, in characters.
+const MAX_NAME: usize = 64;
+/// The most notifications waiting at once for the person to review or dismiss them.
+/// Each waits on a thread of its own and one left in the notification centre waits
+/// indefinitely, so past this they show without `Review`.
+pub(crate) const MAX_WAITING: usize = 4;
+
+/// `name` as a notification shows it. Device names come from the devices themselves, so
+/// control and bidirectional formatting characters, which could forge a line or reorder
+/// the text, are dropped, and a long name is cut.
+pub(crate) fn shown_name(name: &str) -> String {
+    let forged = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    };
+    let mut kept = name.chars().filter(|&c| !forged(c));
+    let mut shown: String = kept.by_ref().take(MAX_NAME).collect();
+    if kept.next().is_some() {
+        shown.push('…');
+    }
+    shown
+}
+
+/// Counts the notifications waiting for the person, up to [`MAX_WAITING`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Waiting(Arc<AtomicUsize>);
+
+/// A claimed place among the waiting notifications, given back when dropped.
+#[derive(Debug)]
+pub(crate) struct Place(Arc<AtomicUsize>);
+
+impl Waiting {
+    /// A place to wait in, or `None` when [`MAX_WAITING`] already wait.
+    pub(crate) fn claim(&self) -> Option<Place> {
+        self.0
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_WAITING).then(|| count.saturating_add(1))
+            })
+            .ok()
+            .map(|_| Place(Arc::clone(&self.0)))
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let _was = self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// One notification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,7 +147,7 @@ pub(crate) fn notices(
         {
             found.push(Notice {
                 tag: format!("join:{}", join.id),
-                title: copy::notify_join(&join.claimed.name, &net.name),
+                title: copy::notify_join(&shown_name(&join.claimed.name), &shown_name(&net.name)),
                 body: Some(copy::NOTIFY_JOIN_BODY.to_owned()),
                 target: network_path(networks, net, &format!("?need={}", encode(&join.id))),
             });
@@ -125,7 +176,7 @@ pub(crate) fn notices(
                 );
             found.push(Notice {
                 tag: format!("exit:{net_name}/{exit}"),
-                title: copy::notify_exit_offline(exit),
+                title: copy::notify_exit_offline(&shown_name(exit)),
                 body: Some(body.to_owned()),
                 target,
             });
@@ -141,7 +192,7 @@ pub(crate) fn notices(
                 if was_online && used.recent(id, &peer.node, now) {
                     found.push(Notice {
                         tag: format!("offline:{id}:{}", peer.node),
-                        title: copy::notify_device_offline(&peer.name),
+                        title: copy::notify_device_offline(&shown_name(&peer.name)),
                         body: None,
                         target: network_path(
                             networks,
@@ -270,6 +321,32 @@ pub(crate) fn show_and_wait(_identifier: &str, _notice: &Notice) -> bool {
     false
 }
 
+/// Shows `notice` without `Review` and without waiting for the person.
+#[cfg(target_os = "macos")]
+pub(crate) fn show_only(identifier: &str, notice: &Notice) {
+    use mac_notification_sys::Notification;
+    let _already_set = mac_notification_sys::set_application(identifier);
+    let _not_shown = Notification::new()
+        .title(&notice.title)
+        .message(notice.body.as_deref().unwrap_or_default())
+        .asynchronous(true)
+        .send();
+}
+
+/// Shows `notice` without `Review` and without waiting for the person.
+#[cfg(target_os = "linux")]
+pub(crate) fn show_only(_identifier: &str, notice: &Notice) {
+    let _not_shown = notify_rust::Notification::new()
+        .appname(copy::APP)
+        .summary(&notice.title)
+        .body(notice.body.as_deref().unwrap_or_default())
+        .show();
+}
+
+/// Native notifications are not built for this platform yet.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(crate) fn show_only(_identifier: &str, _notice: &Notice) {}
+
 #[cfg(test)]
 mod tests {
     use kith_ui_core::wire::TrafficTick;
@@ -395,5 +472,28 @@ mod tests {
             .expect("then one for both");
         assert_eq!(merged.title, "2 things need you in kith");
         assert_eq!(gate.flush(NOTIFY_COALESCE_WINDOW_MS + 2, false), None);
+    }
+
+    #[test]
+    fn names_cannot_forge_or_flood_a_notification() {
+        assert_eq!(shown_name("pixel-8"), "pixel-8");
+        assert_eq!(
+            shown_name("tv\napproved\u{202e}gpj.exe\u{2066}"),
+            "tvapprovedgpj.exe"
+        );
+        let long = shown_name(&"é".repeat(MAX_NAME * 4));
+        assert_eq!(long.chars().count(), MAX_NAME + 1);
+        assert!(long.ends_with('…'));
+        assert_eq!(shown_name(&"a".repeat(MAX_NAME)), "a".repeat(MAX_NAME));
+    }
+
+    #[test]
+    fn only_a_few_notifications_wait_at_once() {
+        let waiting = Waiting::default();
+        let places: Vec<Place> = (0..MAX_WAITING).filter_map(|_| waiting.claim()).collect();
+        assert_eq!(places.len(), MAX_WAITING);
+        assert!(waiting.claim().is_none(), "the rest show without waiting");
+        drop(places);
+        assert!(waiting.claim().is_some(), "places come back when dismissed");
     }
 }

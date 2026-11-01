@@ -131,6 +131,30 @@ mod tests {
         }
     }
 
+    /// The web view loads a page served over loopback, so it must never be handed the
+    /// Tauri IPC: no capabilities, none read from a `capabilities` folder, no global
+    /// `__TAURI__`, and only the `kith` scheme registered for links.
+    #[test]
+    fn the_web_view_gets_no_native_access() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("the config reads");
+        let app = &config["app"];
+        assert_eq!(app["withGlobalTauri"], serde_json::json!(false));
+        assert_eq!(app["security"]["capabilities"], serde_json::json!([]));
+        assert!(
+            app["security"]
+                .get("dangerousDisableAssetCspModification")
+                .is_none()
+        );
+        assert!(!manifest.join("capabilities").exists());
+        assert_eq!(
+            config["plugins"]["deep-link"]["desktop"]["schemes"],
+            serde_json::json!(["kith"])
+        );
+        assert!(config["plugins"]["deep-link"].get("mobile").is_none());
+    }
+
     #[test]
     fn the_shell_ships_with_the_workspace_version() {
         let root = include_str!("../../../Cargo.toml");

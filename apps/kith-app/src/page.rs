@@ -94,12 +94,16 @@ pub(crate) fn address(port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{path}")
 }
 
-/// Whether the web view may load `url` itself: only this page server. Everything else
-/// opens in the person's browser or not at all.
+/// Whether the web view may load `url` itself: only this page server, by the address it
+/// listens on. `localhost` is refused: it may resolve to `::1`, where another program can
+/// listen on the same port, or be renamed in the hosts file. Everything else opens in the
+/// person's browser or not at all.
 pub(crate) fn stays_inside(url: &tauri::Url, port: u16) -> bool {
     url.scheme() == "http"
-        && matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+        && url.host_str() == Some("127.0.0.1")
         && url.port() == Some(port)
+        && url.username().is_empty()
+        && url.password().is_none()
 }
 
 #[cfg(test)]
@@ -151,7 +155,10 @@ mod tests {
     fn the_web_view_stays_on_its_own_server() {
         let url = |text: &str| tauri::Url::parse(text).expect("a URL");
         assert!(stays_inside(&url("http://127.0.0.1:5000/n/home"), 5000));
-        assert!(stays_inside(&url("http://localhost:5000/"), 5000));
+        assert!(!stays_inside(&url("http://localhost:5000/"), 5000));
+        assert!(!stays_inside(&url("http://[::1]:5000/"), 5000));
+        assert!(!stays_inside(&url("http://user:pw@127.0.0.1:5000/"), 5000));
+        assert!(!stays_inside(&url("https://127.0.0.1:5000/"), 5000));
         assert!(!stays_inside(&url("http://127.0.0.1:5001/"), 5000));
         assert!(!stays_inside(
             &url("https://apps.apple.com/app/wireguard"),
