@@ -14,6 +14,9 @@ use core::time::Duration;
 /// How long the person has to answer the OS prompt.
 const ANSWER_TIME: Duration = Duration::from_secs(120);
 
+/// The most characters of the reason the prompt shows; the rest is cut.
+const REASON_CHARS: usize = 200;
+
 /// Why the OS did not confirm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsAuthError {
@@ -36,7 +39,7 @@ impl core::error::Error for OsAuthError {}
 
 /// Asks the person at this computer to confirm `reason`, such as "remove phone from home".
 pub async fn confirm(reason: &str) -> Result<(), OsAuthError> {
-    let Some(mut command) = prompt(reason) else {
+    let Some(mut command) = prompt(&shown(reason)) else {
         return Err(OsAuthError::Unavailable);
     };
     command
@@ -49,6 +52,21 @@ pub async fn confirm(reason: &str) -> Result<(), OsAuthError> {
         .map_err(|_| OsAuthError::Denied)?
         .map_err(|_| OsAuthError::Unavailable)?;
     verdict(output.status.code(), &output.stdout)
+}
+
+/// `reason` as the prompt may show it: one line, no control characters, at most
+/// [`REASON_CHARS`] long, so a name taken from the network cannot lay out a prompt of its
+/// own beneath the real one.
+fn shown(reason: &str) -> String {
+    let line = reason
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(REASON_CHARS)
+        .collect::<String>();
+    match line.trim() {
+        "" => "confirm a change to kith".to_owned(),
+        trimmed => trimmed.to_owned(),
+    }
 }
 
 /// The script `osascript` runs: it answers `confirmed`, `denied` or `unavailable`.
@@ -73,7 +91,9 @@ function run(argv) {
 #[expect(clippy::unnecessary_wraps, reason = "some platforms have no prompt")]
 fn prompt(reason: &str) -> Option<tokio::process::Command> {
     let mut command = tokio::process::Command::new("/usr/bin/osascript");
-    command.args(["-l", "JavaScript", "-e", MACOS_SCRIPT, reason]);
+    // `--` ends osascript's options, so a reason starting with `-e` stays an argument
+    // instead of becoming more script.
+    command.args(["-l", "JavaScript", "-e", MACOS_SCRIPT, "--", reason]);
     Some(command)
 }
 
@@ -82,18 +102,56 @@ fn prompt(reason: &str) -> Option<tokio::process::Command> {
 #[cfg(target_os = "linux")]
 const POLKIT_ACTION: &str = "org.freedesktop.policykit.exec";
 
+/// Where polkit installs `pkcheck`; it is never looked up on `PATH`, which whoever
+/// started this process controls.
 #[cfg(target_os = "linux")]
-#[expect(clippy::unnecessary_wraps, reason = "some platforms have no prompt")]
+const PKCHECK: [&str; 3] = [
+    "/usr/bin/pkcheck",
+    "/bin/pkcheck",
+    "/run/current-system/sw/bin/pkcheck",
+];
+
+#[cfg(target_os = "linux")]
 fn prompt(_reason: &str) -> Option<tokio::process::Command> {
-    let mut command = tokio::process::Command::new("pkcheck");
+    let program = PKCHECK
+        .iter()
+        .find(|path| std::path::Path::new(path).is_file())?;
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let subject = subject(std::process::id(), &stat, &status)?;
+    let mut command = tokio::process::Command::new(program);
     command.args([
         "--action-id",
         POLKIT_ACTION,
         "--process",
-        &std::process::id().to_string(),
+        &subject,
         "--allow-user-interaction",
     ]);
     Some(command)
+}
+
+/// The `--process` subject for `pkcheck`: `pid,start-time,uid`, so polkit checks this very
+/// process and not whichever one later reuses its pid. `None` when the files cannot be
+/// read, or when this process runs as root, which polkit allows without asking anyone.
+#[cfg(any(target_os = "linux", test))]
+fn subject(pid: u32, stat: &str, status: &str) -> Option<String> {
+    let start_time = stat
+        .rsplit_once(')')?
+        .1
+        .split_ascii_whitespace()
+        .nth(19)
+        .filter(|field| field.bytes().all(|b| b.is_ascii_digit()))?;
+    let mut uids = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_ascii_whitespace()
+        .map(str::parse::<u32>);
+    let real = uids.next()?.ok()?;
+    let effective = uids.next()?.ok()?;
+    if real == 0 || effective == 0 {
+        return None;
+    }
+    Some(format!("{pid},{start_time},{real}"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -161,5 +219,40 @@ mod tests {
             assert_eq!(verdict(Some(127), b""), Err(OsAuthError::Unavailable));
         }
         assert_eq!(verdict(None, b"confirmed"), Err(OsAuthError::Unavailable));
+    }
+
+    #[test]
+    fn the_reason_is_one_short_line() {
+        assert_eq!(
+            shown("leave home\n\nTouch ID to update iCloud\t"),
+            "leave home  Touch ID to update iCloud"
+        );
+        assert_eq!(shown(&"x".repeat(1000)).chars().count(), REASON_CHARS);
+        assert_eq!(shown(" \u{7}\r\n"), "confirm a change to kith");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_reason_cannot_become_script() {
+        let Some(command) = prompt("-e x") else {
+            panic!("macOS always has a prompt");
+        };
+        let args: Vec<_> = command.as_std().get_args().collect();
+        assert_eq!(args[args.len() - 2..], ["--", "-e x"]);
+    }
+
+    #[test]
+    fn polkit_checks_this_process_and_never_root() {
+        let stat = "4242 (kith ui) (x) S 1 4242 4242 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 \
+                    987654 1000 100 18446744073709551615";
+        let user = "Name:\tkith\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\n";
+        assert_eq!(
+            subject(4242, stat, user).as_deref(),
+            Some("4242,987654,1000")
+        );
+        let root = "Uid:\t1000\t0\t0\t0\n";
+        assert_eq!(subject(4242, stat, root), None);
+        assert_eq!(subject(4242, "4242 (kith) S 1", user), None);
+        assert_eq!(subject(4242, stat, "Gid:\t1000\n"), None);
     }
 }
