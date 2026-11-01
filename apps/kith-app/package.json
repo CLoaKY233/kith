@@ -1,0 +1,14 @@
+{
+  "name": "kith-app",
+  "private": true,
+  "version": "0.1.1",
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "tauri": "tauri",
+    "build": "tauri build",
+    "icons": "tauri icon icons/app-icon.svg --output icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.3"
+  }
+}

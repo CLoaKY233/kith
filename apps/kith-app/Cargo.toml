@@ -1,0 +1,111 @@
+[package]
+name = "kith-app"
+description = "The kith desktop shell: a menu bar icon, notifications and a window onto the kith page"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.99"
+license = "AGPL-3.0-only"
+repository = "https://github.com/CLoaKY233/kith"
+authors = ["CLoaKY233 <laysheth.dev@gmail.com>"]
+publish = false
+default-run = "kith-app"
+
+# Its own workspace: Tauri and the web view are a large, platform-specific dependency tree
+# that the daemon, the CLI and their CI never build. `version` must equal the root
+# workspace's; a test checks it.
+[workspace]
+
+[[bin]]
+name = "kith-app"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+bpaf = { version = "0.9.28", default-features = false, features = ["derive"] }
+http-body-util = { version = "0.1.5", default-features = false }
+kith-config = { path = "../../crates/management/kith-config" }
+kith-ui-core = { path = "../../crates/management/kith-ui-core" }
+opener = { version = "0.9.0", default-features = false }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std"] }
+tauri = { version = "=2.12.4", features = ["tray-icon"] }
+tauri-plugin-autostart = "=2.7.0"
+tauri-plugin-deep-link = "=2.6.2"
+tauri-plugin-dialog = "=2.8.3"
+tauri-plugin-single-instance = { version = "=2.5.4", features = ["deep-link"] }
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt", "sync", "time"] }
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "=0.6.15"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "=4.18.1"
+
+[build-dependencies]
+brotli = { version = "9.1.1", default-features = false, features = ["std"] }
+tauri-build = { version = "=2.7.3", features = [] }
+
+# The root workspace's lints, copied: this crate is outside that workspace.
+[lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+unused_import_braces = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+let_underscore_drop = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "warn"
+expect_used = "warn"
+panic_in_result_fn = "warn"
+indexing_slicing = "warn"
+unwrap_in_result = "warn"
+as_conversions = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+alloc_instead_of_core = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "deny"
+exit = "warn"
+mem_forget = "deny"
+mod_module_files = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+rc_buffer = "warn"
+redundant_clone = "warn"
+semicolon_inside_block = "warn"
+str_to_string = "warn"
+string_add = "warn"
+tests_outside_test_module = "warn"
+try_err = "warn"
+use_self = "warn"
+verbose_file_reads = "warn"
+wildcard_enum_match_arm = "warn"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
