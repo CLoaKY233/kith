@@ -35,6 +35,9 @@ export const copy = {
     /** §4.4: the mobile Overview tab's accessible name. */
     overviewNeedsYou: (n: number): string => `Overview, ${n} need${n === 1 ? 's' : ''} you`,
     back: 'Back',
+    /** The rail's identity circle: its accessible name. */
+    identity: (device: string): string => `This device, ${device}`,
+    otherNetwork: 'Start or join another network',
   },
 
   header: {
@@ -98,6 +101,20 @@ export const copy = {
   },
 
   rateBand: { idle: 'idle', light: 'light', busy: 'busy' },
+
+  /** Well-known services, for `nas :22 (ssh)`. */
+  services: {
+    22: 'ssh',
+    53: 'dns',
+    80: 'http',
+    443: 'https',
+    445: 'smb',
+    548: 'afp',
+    3389: 'rdp',
+    5432: 'postgres',
+    5900: 'vnc',
+    8080: 'http',
+  } as Readonly<Record<number, string>>,
 
   /** §5 RelativeTime. Clock and weekday forms come from format.ts. */
   time: {
@@ -195,6 +212,9 @@ export const copy = {
     joinSub: 'You have an invite link, or someone will approve you.',
     thisDevice: (name: string, os: string): string => `This device: ${name}${DOT}${os}`,
     rename: 'Rename',
+    nameLabel: "This device's name",
+    nameHelper: (name: string): string => `Other devices will see it as ${name}.`,
+    save: 'Save name',
   },
 
   /** §6.2 Overview, headline in priority order. */
@@ -216,8 +236,11 @@ export const copy = {
     addDevice: 'Add a device',
     allGood: (online: number, total: number): string =>
       `Everything is working. ${online} of ${total} devices online.`,
-    subline: (direct: number, relayed: number, relay: string, down: string, up: string): string =>
-      `${direct} direct${DOT}${relayed} via ${relay}${DOT}↓ ${down} ↑ ${up}`,
+    /** The default sub-line, `9 direct · 2 via vps · ↓ 3.4 MB/s ↑ 220 kB/s`, in parts. */
+    direct: (n: number): string => `${n} direct`,
+    via: (n: number, relay: string): string => `${n} via ${relay}`,
+    rates: (down: string, up: string): string => `↓ ${down} ↑ ${up}`,
+    sep: DOT,
     needsYou: 'Needs you',
     viewAll: (n: number): string => `View all (${n})`,
     devices: 'Devices',
@@ -491,6 +514,7 @@ export const copy = {
     nameEmpty: 'Give it a name.',
     nameTooLong: 'Names can be up to 63 characters.',
     nameHyphenEdge: "Names can't start or end with a hyphen.",
+    nameTaken: 'Another device in this network has this name.',
     internal: (message: string): string =>
       `kith couldn't do this: ${message}. Details are in Logs.`,
     osAuthDenied: 'This computer did not confirm it. Nothing was signed.',
@@ -672,6 +696,14 @@ export const copy = {
 
   /** §7.10 Ask an admin. */
   askAdmin: {
+    /** The exact CLI request for an admin to allow a blocked connection. */
+    allowCommand: (
+      network: string,
+      from: string,
+      to: string,
+      protocol: string,
+      port: number | null,
+    ): string => `kith allow ${network} ${from} ${to} ${protocol}${port === null ? '' : ` ${port}`}`,
     title: 'Ask an admin',
     onlyAdmins: (network: string, admins: string): string =>
       `Only admins can change this. Admins in ${network}: ${admins}.`,
@@ -718,6 +750,7 @@ export const copy = {
     rename: (device: string): string => `Rename ${device}`,
     copyAddress: (device: string): string => `Copy ${device} address`,
     askRename: (device: string): string => `Ask an admin to rename ${device}…`,
+    copied: (device: string): string => `Copied ${device}'s address`,
   },
 
   shortcuts: {
@@ -730,6 +763,17 @@ export const copy = {
     goActivity: 'Go to Activity',
     close: 'Close the topmost layer',
     approveDeny: 'Approve or deny the focused join request',
+    keys: {
+      palette: '⌘K',
+      paletteOther: 'Ctrl K',
+      filter: '/',
+      help: '?',
+      goOverview: 'g o',
+      goDevices: 'g d',
+      goActivity: 'g a',
+      close: 'Esc',
+      approveDeny: 'A / D',
+    },
   },
 
   /** §13 friction tier 3. */
