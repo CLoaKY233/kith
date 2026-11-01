@@ -6,6 +6,7 @@ Props:
   - value: number | null, bytes per second.
   - band?: RateBand | null, shown instead of a number when set.
   - stale?: boolean.
+Decision (§5): rates use bytes so every number on the page shares one unit family.
 -->
 <script lang="ts">
   import { copy } from '../copy';
@@ -30,6 +31,7 @@ Props:
     display: inline-block;
     min-width: 7ch;
     text-align: right;
+    white-space: nowrap;
   }
   .quiet {
     color: var(--ink-3);

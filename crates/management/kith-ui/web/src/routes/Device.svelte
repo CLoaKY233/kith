@@ -1,34 +1,16 @@
 <!--
 @component
-Device (spec §6.4). Placeholder; workstream D owns it.
+Device (spec §6.4): `/n/:net/devices/:dev`. The detail always opens beside, over or instead
+of the Devices list (§4.3, §4.4), so this route is the Devices screen with a device open.
 Props:
-  - net: string
-  - dev: string
-  - query: URLSearchParams
+  - net: string, the network as the URL names it.
+  - dev: string, the device as the URL names it.
+  - query: URLSearchParams (`?range=1m|15m|1h &at=<ms>` plus the list's own).
 -->
 <script lang="ts">
-  import { copy } from '../lib/copy';
+  import Devices from './Devices.svelte';
 
   let { net, dev, query }: { net: string; dev: string; query: URLSearchParams } = $props();
 </script>
 
-<section class="screen" data-net={undefined}>
-  <h1 class="t-title">{copy.nav.devices}</h1>
-  <p hidden>{query.toString()}</p>
-  <p hidden>{net} {dev}</p>
-</section>
-
-<style>
-  .screen {
-    display: grid;
-    gap: var(--s-5);
-    max-width: var(--content-max);
-    margin: 0 auto;
-    padding: var(--s-6) var(--content-pad);
-  }
-  @media (max-width: 40rem) {
-    .screen {
-      padding: var(--s-4) var(--gutter-mobile);
-    }
-  }
-</style>
+<Devices {net} {query} {dev} />
