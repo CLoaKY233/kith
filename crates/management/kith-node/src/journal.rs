@@ -1,7 +1,7 @@
 //! The daemon's journal: a numbered, bounded record of what happened, read by `kith log`,
 //! `kith watch` and the UI, and the traffic history behind `kith top`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use kith_ipc::{Entry, EntryKind, PathKind, PeerInfo, TrafficSample, TrafficSeries};
@@ -14,6 +14,9 @@ const KEEP: usize = 4096;
 const LIVE_BUFFER: usize = 1024;
 /// Traffic samples kept per peer: an hour at one every two seconds.
 const TRAFFIC_SAMPLES: usize = 1800;
+/// Bytes of free text, such as a log message, an entry keeps; the rest is cut off so a
+/// huge log line cannot make every kept and buffered copy of it huge too.
+const MAX_TEXT: usize = 2048;
 
 /// A shared handle to the journal; clones write to and read from the same one.
 #[derive(Debug, Clone)]
@@ -53,7 +56,8 @@ impl Journal {
     }
 
     /// Records `kind` as happening now.
-    pub fn push(&self, kind: EntryKind) {
+    pub fn push(&self, mut kind: EntryKind) {
+        clip_text(&mut kind);
         let mut state = self.lock();
         let entry = Entry {
             seq: state.next,
@@ -160,7 +164,9 @@ impl Activity {
         }
         for (reason, count) in drops {
             let new = count.saturating_sub(self.drops.get(reason).copied().unwrap_or(0));
-            if new > 0 && !self.drops.is_empty() {
+            // The first look only sets the baseline; after it, a reason seen for the first
+            // time counts from zero.
+            if new > 0 && self.peers.is_some() {
                 journal.push(EntryKind::Dropped {
                     reason: reason.clone(),
                     count: new,
@@ -171,11 +177,11 @@ impl Activity {
         self.peers = Some(now);
 
         let at_ms = unix_ms();
-        let mut seen = Vec::new();
+        let mut seen = BTreeSet::new();
         for (network, infos) in peers {
             for info in infos {
                 let key = (*network, info.node);
-                seen.push(key);
+                seen.insert(key);
                 let (name, samples) = self
                     .traffic
                     .entry(key)
@@ -290,6 +296,33 @@ pub(crate) fn changes(
     kinds
 }
 
+/// Cuts the free text of `kind` down to [`MAX_TEXT`] bytes.
+fn clip_text(kind: &mut EntryKind) {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "only these entries carry text of any length"
+    )]
+    match kind {
+        EntryKind::Log {
+            target, message, ..
+        } => {
+            clip(target);
+            clip(message);
+        }
+        EntryKind::Warning { message } => clip(message),
+        _ => {}
+    }
+}
+
+/// Cuts `text` to at most [`MAX_TEXT`] bytes on a character boundary, marking the cut.
+fn clip(text: &mut String) {
+    if text.len() > MAX_TEXT {
+        let end = text.floor_char_boundary(MAX_TEXT.saturating_sub('…'.len_utf8()));
+        text.truncate(end);
+        text.push('…');
+    }
+}
+
 /// Milliseconds since the Unix epoch.
 pub(crate) fn unix_ms() -> u64 {
     crate::channel::now().as_millis()
@@ -343,6 +376,42 @@ mod tests {
             "old entries are dropped, not kept forever"
         );
         assert_eq!(backlog.first().map(|e| e.seq), Some(3));
+    }
+
+    #[test]
+    fn long_text_is_cut_on_a_character_boundary() {
+        let journal = Journal::new();
+        journal.push(EntryKind::Log {
+            level: "info".into(),
+            target: "kith".into(),
+            message: "é".repeat(MAX_TEXT),
+        });
+        let entries = journal.entries();
+        let Some(EntryKind::Log { message, .. }) = entries.first().map(|e| &e.kind) else {
+            panic!("the log entry was not kept");
+        };
+        assert!(message.len() <= MAX_TEXT, "{} bytes kept", message.len());
+        assert!(message.ends_with('…'));
+    }
+
+    #[test]
+    fn drops_count_after_the_first_look_even_for_a_new_reason() {
+        let journal = Journal::new();
+        let mut activity = Activity::default();
+        let peers = [(NET, Vec::new())];
+        activity.observe(&peers, &[("ttl".to_owned(), 9)].into(), &journal);
+        assert!(journal.entries().is_empty(), "the first look is the baseline");
+
+        activity.observe(&peers, &BTreeMap::new(), &journal);
+        activity.observe(&peers, &[("policy".to_owned(), 3)].into(), &journal);
+        let kinds: Vec<_> = journal.entries().into_iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [EntryKind::Dropped {
+                reason: "policy".into(),
+                count: 3
+            }]
+        );
     }
 
     #[test]
