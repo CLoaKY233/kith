@@ -19,17 +19,24 @@ use crate::{Shared, now_ms};
 
 /// Hex digits in an invite's id.
 const ID_LEN: usize = 8;
+/// The longest an invite may last: a year.
+const MAX_LIFETIME_SECS: u64 = 365 * 24 * 60 * 60;
+/// The most open invites listed per network; past it the oldest leaves the list, though
+/// it stays valid until it lapses.
+const MAX_LISTED: usize = 256;
 
 /// `GET /api/networks/:net/invites`: open invites, newest first.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     let invites = match &shared.source {
         Source::Fixture(fixture) => fixture.invites.get(&net).cloned().unwrap_or_default(),
         Source::Daemon(_) => {
+            let key = network_id(&net)?.to_string();
             let now = now_ms();
             let mut made = lock(&shared.api.invites);
-            let open = made.entry(net).or_default();
-            open.retain(|invite| invite.expires_at_ms > now);
-            open.iter().rev().cloned().collect()
+            made.get_mut(&key).map_or_else(Vec::new, |open| {
+                open.retain(|invite| invite.expires_at_ms > now);
+                open.iter().rev().cloned().collect()
+            })
         }
     };
     Ok(Json(json!(invites)))
@@ -43,6 +50,20 @@ pub(crate) async fn create(
 ) -> Answer {
     let Json(input) = input?;
     let network = network_id(&net)?;
+    if !(1..=MAX_LIFETIME_SECS).contains(&input.expires_secs) {
+        return Err(ApiError::bad(format!(
+            "an invite lasts 1 to {MAX_LIFETIME_SECS} seconds"
+        )));
+    }
+    if input
+        .uses
+        .is_some_and(|uses| uses == 0 || uses > u32::from(u16::MAX))
+    {
+        return Err(ApiError::bad(format!(
+            "an invite is used 1 to {} times",
+            u16::MAX
+        )));
+    }
     let request = Request::CreateInvite {
         network,
         expires_in_secs: input.expires_secs,
@@ -66,10 +87,14 @@ pub(crate) async fn create(
         uses: input.uses,
         used_by: Vec::new(),
     };
-    lock(&shared.api.invites)
-        .entry(net)
-        .or_default()
-        .push(invite.clone());
+    let now = now_ms();
+    let mut made = lock(&shared.api.invites);
+    let open = made.entry(network.to_string()).or_default();
+    open.retain(|invite| invite.expires_at_ms > now);
+    open.push(invite.clone());
+    let excess = open.len().saturating_sub(MAX_LISTED);
+    open.drain(..excess);
+    drop(made);
     Ok(Json(json!(invite)))
 }
 

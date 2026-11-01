@@ -204,6 +204,8 @@ pub(crate) struct HeldPhone {
     pub(crate) mesh: String,
     /// The config that sends everything through this device's exit, when it has one.
     pub(crate) everything: Option<String>,
+    /// When it was made, so the oldest goes first once too many are held.
+    pub(crate) made_ms: u64,
 }
 
 /// What the API keeps between requests.
@@ -215,9 +217,11 @@ pub(crate) struct State {
     prompt: tokio::sync::Mutex<()>,
     /// The computer, read once.
     pub(crate) host: Host,
-    /// Invites made through this page, per network id, as the daemon cannot list them.
+    /// Invites made through this page, per network id as it prints, as the daemon cannot
+    /// list them.
     pub(crate) invites: Mutex<BTreeMap<String, Vec<Invite>>>,
-    /// Phone configs made through this page, per network id and device id.
+    /// Phone configs made through this page, per network id and device id, each as the
+    /// ids print.
     pub(crate) phones: Mutex<BTreeMap<(String, String), HeldPhone>>,
 }
 
@@ -237,6 +241,14 @@ impl State {
         let _one_at_a_time = self.prompt.lock().await;
         Ok(self.gate.confirm(reason).await?)
     }
+}
+
+/// Forgets what this server holds for a network this device left: its invites and the
+/// private configs of its phones.
+pub(crate) fn forget(state: &State, network: NetworkId) {
+    let key = network.to_string();
+    lock(&state.invites).remove(&key);
+    lock(&state.phones).retain(|(net, _), _| *net != key);
 }
 
 /// Locks `mutex`; a panic elsewhere while holding it leaves data that is still usable.
