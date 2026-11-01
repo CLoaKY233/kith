@@ -254,6 +254,7 @@ fn fake_status() -> Status {
                 what: "tablet has no address".into(),
                 fix: "remove it and add it again".into(),
             }],
+            admin: true,
         }],
         exit: false,
         relay: true,
@@ -607,6 +608,16 @@ fn up_and_down_take_no_arguments() {
     assert_eq!(parse(&["up"]), Ok(Cmd::Up));
     assert_eq!(parse(&["down"]), Ok(Cmd::Down));
     assert!(parse(&["up", "home"]).is_err());
+}
+
+#[test]
+fn ui_passes_its_flags_through_to_kith_ui() {
+    assert_eq!(
+        parse(&["ui", "--no-open", "--port", "8080"]),
+        Ok(Cmd::Ui {
+            args: vec!["--no-open".into(), "--port".into(), "8080".into()]
+        })
+    );
 }
 
 #[test]

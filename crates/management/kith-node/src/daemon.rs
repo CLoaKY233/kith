@@ -1275,6 +1275,7 @@ impl Daemon {
                 ),
                 relays: count(map.relays().iter()),
                 problems: self.problems(*id, map),
+                admin: self.is_admin(*id).unwrap_or(false),
             })
             .collect();
         let now = Instant::now();
