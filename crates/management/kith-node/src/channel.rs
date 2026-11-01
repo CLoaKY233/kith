@@ -105,6 +105,14 @@ impl ChannelHandler for NodeHandler {
         });
     }
 
+    fn on_links(&self, network: NetworkId, from: NodeId, links: Vec<kith_channel::Link>) {
+        self.report(ChannelEvent::Links {
+            network,
+            from,
+            links,
+        });
+    }
+
     fn on_ledger_changed(&self, network: NetworkId) {
         self.report(ChannelEvent::LedgerChanged { network });
     }
@@ -214,6 +222,15 @@ impl ChannelLayer {
         entries: Vec<(NodeId, Presence)>,
     ) -> Result<(), NodeError> {
         Ok(self.channel.send_presence(network, entries)?)
+    }
+
+    /// Gossips the peers this device reaches in `network`.
+    pub(crate) fn announce_links(
+        &self,
+        network: NetworkId,
+        links: Vec<kith_channel::Link>,
+    ) -> Result<(), NodeError> {
+        Ok(self.channel.send_links(network, links)?)
     }
 
     /// Gossips endpoints for `network` to every connected member.

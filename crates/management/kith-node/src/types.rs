@@ -150,6 +150,11 @@ pub(crate) enum Action {
     },
     /// Traffic history of every peer.
     Traffic,
+    /// Every member's latest link report.
+    Topology {
+        /// The network.
+        network: NetworkId,
+    },
     /// List a network's DNS names.
     Records {
         /// The network.
@@ -269,6 +274,15 @@ pub(crate) enum ChannelEvent {
         from: NodeId,
         /// Its members and whether each is online.
         entries: Vec<(NodeId, Presence)>,
+    },
+    /// A member reported the peers it reaches.
+    Links {
+        /// The network.
+        network: NetworkId,
+        /// The reporting member.
+        from: NodeId,
+        /// Its links.
+        links: Vec<kith_channel::Link>,
     },
 }
 

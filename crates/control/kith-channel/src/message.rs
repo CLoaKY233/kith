@@ -33,6 +33,32 @@ pub struct Presence {
     pub last_seen: u64,
 }
 
+/// How a reporting device reaches one peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LinkPath {
+    /// Peer-to-peer UDP.
+    Direct,
+    /// Through a relay.
+    Relay,
+    /// Through an obfuscated transport.
+    Stealth,
+}
+
+/// One link in a device's report: a peer it reaches, how, and how fast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Link {
+    /// The peer reached.
+    pub peer: NodeId,
+    /// The path in use.
+    pub path: LinkPath,
+    /// The relay carrying the traffic, when relayed.
+    pub relay: Option<NodeId>,
+    /// The measured round-trip time in milliseconds, once known.
+    pub rtt_ms: Option<u32>,
+    /// Bytes per second both ways over the last sample.
+    pub bytes_per_sec: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Message {
     Hello {
@@ -59,6 +85,10 @@ pub(crate) enum Message {
     Presence {
         network: NetworkId,
         entries: Vec<(NodeId, Presence)>,
+    },
+    Links {
+        network: NetworkId,
+        links: Vec<Link>,
     },
 }
 
@@ -109,6 +139,7 @@ impl Message {
                     .try_for_each(|(_, addrs)| within(addrs.len(), MAX_ENDPOINT_ADDRS))
             }
             Self::Presence { entries, .. } => within(entries.len(), MAX_ENDPOINT_NODES),
+            Self::Links { links, .. } => within(links.len(), MAX_ENDPOINT_NODES),
         }
     }
 }

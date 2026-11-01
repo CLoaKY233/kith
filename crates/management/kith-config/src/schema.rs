@@ -172,6 +172,9 @@ pub struct NetworkConfig {
     pub mtu: u16,
     /// Which transports to try, and in what order.
     pub transports: TransportsConfig,
+    /// Whether to tell the other members which peers this device reaches, how, and how
+    /// fast, for the network map. Off, this device sends no link reports.
+    pub share_links: bool,
 }
 
 impl NetworkConfig {
@@ -190,6 +193,7 @@ impl Default for NetworkConfig {
             tun_name: None,
             mtu: Self::MIN_MTU,
             transports: TransportsConfig::default(),
+            share_links: true,
         }
     }
 }

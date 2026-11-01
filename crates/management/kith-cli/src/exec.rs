@@ -133,6 +133,7 @@ impl Names {
 }
 
 /// Builds the request for a command that is a single request/response exchange.
+#[expect(clippy::too_many_lines, reason = "one arm per command")]
 pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> {
     Ok(match cmd {
         Cmd::Status { .. } => Request::Status,
@@ -157,6 +158,9 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             network: names.network(network)?,
         },
         Cmd::Peers { network, .. } => Request::Peers {
+            network: names.network_or_only(network.as_deref())?,
+        },
+        Cmd::Map { network } => Request::Topology {
             network: names.network_or_only(network.as_deref())?,
         },
         Cmd::Dns(DnsCmd::List { network, .. }) => Request::Records {
@@ -345,6 +349,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
         | Cmd::Peers { .. }
+        | Cmd::Map { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
         | Cmd::Relay(_)
@@ -367,6 +372,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
         | Cmd::Peers { .. }
+        | Cmd::Map { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
         | Cmd::Relay(_)

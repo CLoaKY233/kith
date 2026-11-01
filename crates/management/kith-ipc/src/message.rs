@@ -153,6 +153,11 @@ pub enum Request {
     },
     /// Traffic per peer over the last hour.
     Traffic,
+    /// Every device's latest report of the peers it reaches in a network.
+    Topology {
+        /// Network to map.
+        network: NetworkId,
+    },
 }
 
 /// A typed DNS record.
@@ -274,6 +279,39 @@ pub enum Response {
     },
     /// Answers [`Request::Traffic`].
     Traffic(Vec<TrafficSeries>),
+    /// Answers [`Request::Topology`].
+    Topology(Vec<LinkReport>),
+}
+
+/// One device's report of the peers it reaches, from [`Response::Topology`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkReport {
+    /// The reporting device.
+    pub node: NodeId,
+    /// Its name in the network.
+    pub name: String,
+    /// Seconds since the report was received; 0 for this device's own.
+    pub age_secs: u64,
+    /// The peers it reaches.
+    pub links: Vec<LinkInfo>,
+}
+
+/// One peer in a [`LinkReport`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkInfo {
+    /// The peer reached.
+    pub peer: NodeId,
+    /// Its name in the network, or its short id if the reporter knows a peer this device
+    /// does not.
+    pub peer_name: String,
+    /// The path in use.
+    pub path: PathKind,
+    /// The relay carrying the traffic, when relayed.
+    pub relay: Option<NodeId>,
+    /// The measured round-trip time in milliseconds, once known.
+    pub rtt_ms: Option<u32>,
+    /// Bytes per second both ways over the last sample.
+    pub bytes_per_sec: u64,
 }
 
 /// Why the daemon refused a request.

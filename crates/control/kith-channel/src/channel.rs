@@ -19,7 +19,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector, TlsStream};
 use tracing::{debug, warn};
 
 use crate::connection::{self, Command, Peer, shared_networks};
-use crate::message::{FrameReader, Message, Presence, write_message};
+use crate::message::{FrameReader, Link, Message, Presence, write_message};
 use crate::{ChannelError, ChannelHandler};
 
 pub(crate) const ALPN: &[u8] = b"kith-control/1";
@@ -42,6 +42,7 @@ type GossipFrames = BTreeMap<(NetworkId, Topic), Arc<[u8]>>;
 enum Topic {
     Endpoints,
     Presence,
+    Links,
 }
 
 pub(crate) struct Hub<H> {
@@ -199,6 +200,13 @@ impl<H: ChannelHandler> Channel<H> {
         )
     }
 
+    /// Gossips the peers this node reaches in `network`, now and as members connect,
+    /// until replaced.
+    pub fn send_links(&self, network: NetworkId, links: Vec<Link>) -> Result<(), ChannelError> {
+        self.hub
+            .gossip(network, Topic::Links, &Message::Links { network, links })
+    }
+
     /// Connected members and the address of each connection.
     pub fn peers(&self) -> Vec<(NodeId, SocketAddr)> {
         lock(&self.hub.connections)
@@ -343,7 +351,8 @@ impl ChannelClient {
             | Message::JoinRequest { .. }
             | Message::Sync { .. }
             | Message::Endpoints { .. }
-            | Message::Presence { .. } => return Err(ChannelError::UnexpectedMessage),
+            | Message::Presence { .. }
+            | Message::Links { .. } => return Err(ChannelError::UnexpectedMessage),
         };
         let mut ledger = Ledger::new(SignedOp::from_bytes(&genesis)?)?;
         if ledger.network_id() != network {
@@ -361,7 +370,10 @@ impl ChannelClient {
                         write_message(&mut stream, &Message::Sync { network, bytes }).await?;
                     }
                 }
-                Message::Hello { .. } | Message::Endpoints { .. } | Message::Presence { .. } => {}
+                Message::Hello { .. }
+                | Message::Endpoints { .. }
+                | Message::Presence { .. }
+                | Message::Links { .. } => {}
                 Message::Sync { .. }
                 | Message::JoinRequest { .. }
                 | Message::JoinAccepted { .. }

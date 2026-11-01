@@ -16,6 +16,7 @@ mod os;
 mod server;
 mod state;
 mod stealth;
+mod topology;
 mod types;
 
 pub use daemon::{Node, NodeHandle, NodeOptions, TunMode, run};

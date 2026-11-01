@@ -945,6 +945,57 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn every_node_maps_the_links_between_the_other_two() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let c = start().await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "beta").await?;
+        join(&a, &c, network, "gamma").await?;
+        let nodes = [("alpha", &a), ("beta", &b), ("gamma", &c)];
+        for (from_name, from) in nodes {
+            for (to_name, to) in nodes {
+                if from_name != to_name {
+                    let source = peer(to, network, from_name).await?;
+                    let destination = peer(from, network, to_name).await?;
+                    deliver(from, to, &udp_packet(source, destination, b"map")?).await?;
+                }
+            }
+        }
+
+        for (viewer, node) in nodes {
+            let others: Vec<&str> = nodes
+                .iter()
+                .map(|(name, _)| *name)
+                .filter(|name| *name != viewer)
+                .collect();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let Response::Topology(reports) = node.request(Request::Topology { network }).await
+                else {
+                    return Err("no topology".into());
+                };
+                let reaches = |from: &str, to: &str| {
+                    reports.iter().any(|report| {
+                        report.name == from
+                            && report.links.iter().any(|link| {
+                                link.peer_name == to && link.path == kith_ipc::PathKind::Direct
+                            })
+                    })
+                };
+                if reaches(others[0], others[1]) && reaches(others[1], others[0]) {
+                    break;
+                }
+                if tokio::time::Instant::now() > deadline {
+                    return Err(format!("{viewer} never mapped {others:?}: {reports:?}").into());
+                }
+                sleep(Duration::from_millis(250)).await;
+            }
+        }
+        shutdown([a, b, c]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn exit_traffic_goes_out_and_back_and_the_choice_survives_a_restart() -> TestResult {
         let s = start_server(true, false, None).await?;
         let disk = Disk::new("exit")?;

@@ -100,6 +100,13 @@ pub(crate) enum Cmd {
         #[bpaf(positional("NETWORK"))]
         network: Option<String>,
     },
+    /// Show how every device reaches the others: path, round-trip time, rate
+    #[bpaf(command)]
+    Map {
+        /// The network (default: the only one)
+        #[bpaf(positional("NETWORK"))]
+        network: Option<String>,
+    },
     /// Manage DNS records
     #[bpaf(command)]
     Dns(#[bpaf(external(dns_cmd))] DnsCmd),

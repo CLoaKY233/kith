@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
         | Cmd::Peers { .. }
+        | Cmd::Map { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
         | Cmd::Relay(_)

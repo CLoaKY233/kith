@@ -194,6 +194,26 @@ impl Activity {
         self.traffic.retain(|key, _| seen.contains(key));
     }
 
+    /// Bytes per second both ways to `node` in `network` between the last two samples.
+    pub(crate) fn rate(&self, network: NetworkId, node: NodeId) -> u64 {
+        let Some((_, samples)) = self.traffic.get(&(network, node)) else {
+            return 0;
+        };
+        let mut last = samples.iter().rev();
+        let (Some(now), Some(before)) = (last.next(), last.next()) else {
+            return 0;
+        };
+        let bytes = now
+            .rx_bytes
+            .saturating_add(now.tx_bytes)
+            .saturating_sub(before.rx_bytes.saturating_add(before.tx_bytes));
+        let millis = now.at_ms.saturating_sub(before.at_ms);
+        if millis == 0 {
+            return 0;
+        }
+        u64::try_from(u128::from(bytes) * 1000 / u128::from(millis)).unwrap_or(u64::MAX)
+    }
+
     /// The traffic history of every peer.
     pub(crate) fn traffic(&self) -> Vec<TrafficSeries> {
         self.traffic
