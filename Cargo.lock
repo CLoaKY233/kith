@@ -176,26 +176,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bpaf"
-version = "0.9.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "597e81e56404b7a3e26ef7b449f82a4b7a661ae76c3cac692b42d6bad06a0fbe"
-dependencies = [
- "bpaf_derive",
-]
-
-[[package]]
-name = "bpaf_derive"
-version = "0.5.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f7e98cee839b19076cb3ce1afdb62bb182e04ff5f71f70188827002fae91094"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,7 +518,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -834,21 +814,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kith-cli"
-version = "0.1.1"
-dependencies = [
- "bpaf",
- "kith-config",
- "kith-ipc",
- "kith-node",
- "kith-sys",
- "kith-types",
- "qrcode",
- "tokio",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "kith-config"
 version = "0.1.1"
 dependencies = [
@@ -1112,19 +1077,6 @@ dependencies = [
  "kith-types",
  "proptest",
  "thiserror",
-]
-
-[[package]]
-name = "kith-sim"
-version = "0.1.1"
-dependencies = [
- "kith-crypto",
- "kith-disco",
- "kith-ledger",
- "kith-relay-proto",
- "kith-sync",
- "kith-types",
- "proptest",
 ]
 
 [[package]]
@@ -1578,12 +1530,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "qrcode"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
-
-[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1636,7 +1582,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1648,7 +1594,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "socket2",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2138,9 +2084,9 @@ dependencies = [
 
 [[package]]
 name = "tun-rs"
-version = "2.8.13"
+version = "2.8.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ca7a4b107aa44745461df7eff53541fb1773e3670271087feb7bca5cc11ac47"
+checksum = "280a6cc03289f9254d9268eadd5712c476dbd7a47ef51aae86e8b9d0b45dcd43"
 dependencies = [
  "ahash",
  "blocking",
