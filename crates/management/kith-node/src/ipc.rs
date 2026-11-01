@@ -91,8 +91,8 @@ async fn serve_connection(
     Ok(())
 }
 
-/// Sends `backlog`, then every entry from `live`; a client too slow to keep up is told
-/// how many it missed and carries on from there.
+/// Sends `backlog`, then every entry from `live`; a client too slow to keep up skips the
+/// entries it missed and sees the gap in their sequence numbers.
 async fn follow(
     mut connection: Connection,
     backlog: Vec<Entry>,
@@ -106,10 +106,9 @@ async fn follow(
     loop {
         let entry = match live.recv().await {
             Ok(entry) => entry,
-            Err(RecvError::Lagged(missed)) => {
-                warn!(missed, "an IPC client fell behind the journal");
-                continue;
-            }
+            // Not logged: the log is copied into this journal, so a slow reader would add
+            // an entry for every time it fell behind and fall further behind.
+            Err(RecvError::Lagged(_)) => continue,
             Err(RecvError::Closed) => return Ok(()),
         };
         if last.is_some_and(|seq| entry.seq <= seq) {

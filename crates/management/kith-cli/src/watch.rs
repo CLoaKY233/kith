@@ -38,9 +38,14 @@ pub(crate) async fn watch(socket: &Path, out: &mut impl Write) -> Result<(), Cli
     drop(client);
     writeln!(out, "\nwatching for changes; ctrl-c to stop")?;
     out.flush()?;
+    let mut expected = Some(next);
     while let Some(entry) = entries.recv().await {
         let entry = entry?;
-        if entry.seq < next || matches!(entry.kind, EntryKind::Log { .. }) {
+        if entry.seq < next {
+            continue;
+        }
+        note_missed(out, &mut expected, entry.seq)?;
+        if matches!(entry.kind, EntryKind::Log { .. }) {
             continue;
         }
         writeln!(out, "{}", line(&entry, &names, offset(entry.at_ms)))?;
@@ -68,8 +73,10 @@ pub(crate) async fn log(
         writeln!(out, "nothing has happened yet")?;
         return Ok(());
     }
+    let mut expected = None;
     while let Some(entry) = entries.recv().await {
         let entry = entry?;
+        note_missed(out, &mut expected, entry.seq)?;
         if !(events_only && matches!(entry.kind, EntryKind::Log { .. })) {
             writeln!(out, "{}", line(&entry, &names, offset(entry.at_ms)))?;
             out.flush()?;
@@ -105,6 +112,20 @@ pub(crate) async fn top(socket: &Path, live: bool, out: &mut impl Write) -> Resu
         writeln!(out, "\nctrl-c to stop")?;
         out.flush()?;
     }
+}
+
+/// Says how many entries the daemon skipped before `seq` because this reader fell
+/// behind, then expects the one after `seq`.
+fn note_missed(
+    out: &mut impl Write,
+    expected: &mut Option<u64>,
+    seq: u64,
+) -> std::io::Result<()> {
+    if let Some(missed) = expected.and_then(|want| seq.checked_sub(want)).filter(|n| *n > 0) {
+        writeln!(out, "({missed} entries missed: this reader fell behind)")?;
+    }
+    *expected = Some(seq.saturating_add(1));
+    Ok(())
 }
 
 async fn network_names(socket: &Path) -> Result<NetworkNames, CliError> {
@@ -146,7 +167,11 @@ pub(crate) fn traffic_table(
             Some((
                 down.saturating_add(up),
                 [
-                    format!("{}/{}", network_name(names, peer.network), peer.name),
+                    printable(&format!(
+                        "{}/{}",
+                        network_name(names, peer.network),
+                        peer.name
+                    )),
                     format!("{}/s", render::byte_size(down)),
                     format!("{}/s", render::byte_size(up)),
                     render::byte_size(last.rx_bytes),
@@ -282,4 +307,37 @@ pub(crate) fn clock(at_ms: u64, utc_offset_secs: i64) -> String {
         .saturating_add(utc_offset_secs)
         .rem_euclid(86_400);
     format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_from_peers_cannot_drive_the_terminal() {
+        let entry = Entry {
+            seq: 0,
+            at_ms: 0,
+            kind: EntryKind::Warning {
+                message: "\x1b]0;owned\x07two\nlines".into(),
+            },
+        };
+        assert_eq!(
+            line(&entry, &NetworkNames::new(), 0),
+            "00:00:00  warning: \\u{1b}]0;owned\\u{7}two\\nlines"
+        );
+    }
+
+    #[test]
+    fn a_gap_in_sequence_numbers_is_reported_once() {
+        let mut out = Vec::new();
+        let mut expected = None;
+        for seq in [5, 6, 9, 10] {
+            note_missed(&mut out, &mut expected, seq).ok();
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "(2 entries missed: this reader fell behind)\n"
+        );
+    }
 }
