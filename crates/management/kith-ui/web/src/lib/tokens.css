@@ -148,6 +148,11 @@
   --scroll-pad-top: 72px;
   --scroll-pad-bottom: 80px;
   --journal-pause: 48px;
+  /* Overlays (§5, §10): popover cards, menus and the palette. */
+  --pop-card: 360px;
+  --menu-min: 192px;
+  --palette: 560px;
+  --palette-list: 400px;
 
   /* §3.4 Layers */
   --z-content: 0;

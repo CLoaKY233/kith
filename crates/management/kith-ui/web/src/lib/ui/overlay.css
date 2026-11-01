@@ -1,0 +1,152 @@
+/*
+ * Shared look of the overlay layers (spec §3.4, §3.5, §5). Every overlay component imports
+ * this file, so each works on its own. Bits portals the content to <body>, which is why the
+ * selectors are plain classes. Motion runs only without prefers-reduced-motion: an absent
+ * animation also lets Bits unmount at once instead of waiting for an animation end.
+ */
+
+/* Scrim: plain, no backdrop-filter (WebKitGTK is slow with it). */
+.kith-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  background: var(--scrim);
+}
+
+/* Dialog, AlertDialog and the palette: centred without transforms, so only scale animates. */
+.kith-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  width: min(var(--dialog), calc(100vw - 2 * var(--gutter-mobile)));
+  height: fit-content;
+  max-height: calc(100dvh - 2 * var(--gutter-mobile));
+  margin: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s-5);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  color: var(--ink-1);
+  box-shadow: var(--shadow-modal);
+  outline: none;
+}
+
+.kith-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.kith-dialog-titles {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.kith-dialog-title {
+  font: var(--t-heading);
+  letter-spacing: var(--t-heading-tracking);
+  overflow-wrap: anywhere;
+}
+
+.kith-dialog-desc {
+  color: var(--ink-2);
+  max-width: var(--measure);
+}
+
+.kith-dialog-body {
+  display: grid;
+  gap: var(--s-3);
+  margin-top: var(--s-4);
+}
+
+.kith-dialog-status {
+  margin-top: var(--s-4);
+  color: var(--ink-3);
+}
+
+.kith-dialog-status.danger {
+  color: var(--danger);
+}
+
+.kith-dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  margin-top: var(--s-5);
+}
+
+/* Popover, menu and tooltip surfaces. */
+.kith-float {
+  z-index: var(--z-popover);
+  border-radius: var(--r-3);
+  border: var(--hairline) solid var(--line);
+  background: var(--surface);
+  color: var(--ink-1);
+  box-shadow: var(--shadow-pop);
+  outline: none;
+}
+
+/* A floating layer opened inside a modal sits just above it, still below toasts. */
+.kith-float.in-modal {
+  z-index: calc(var(--z-dialog) + 1);
+}
+
+@media (forced-colors: active) {
+  .kith-dialog,
+  .kith-float {
+    border: var(--hairline) solid CanvasText;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .kith-scrim[data-state='open'] {
+    animation: kith-fade-in var(--d-dialog) var(--e-pop);
+  }
+  .kith-scrim[data-state='closed'] {
+    animation: kith-fade-out var(--d-dialog) var(--e-pop);
+  }
+  .kith-dialog[data-state='open'] {
+    animation: kith-dialog-in var(--d-dialog) var(--e-pop);
+  }
+  .kith-dialog[data-state='closed'] {
+    animation: kith-dialog-out var(--d-dialog) var(--e-pop);
+  }
+  .kith-float[data-state='open'],
+  .kith-float[data-state='delayed-open'],
+  .kith-float[data-state='instant-open'] {
+    animation: kith-fade-in var(--d-pop-in) var(--e-pop);
+  }
+  .kith-float[data-state='closed'] {
+    animation: kith-fade-out var(--d-pop-out) var(--e-pop);
+  }
+}
+
+@keyframes kith-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes kith-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes kith-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(var(--dialog-scale-from));
+  }
+}
+
+@keyframes kith-dialog-out {
+  to {
+    opacity: 0;
+    transform: scale(var(--dialog-scale-from));
+  }
+}
