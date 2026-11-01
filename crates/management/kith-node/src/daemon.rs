@@ -18,7 +18,7 @@ use kith_ipc::{
     EntryKind, Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning,
 };
 use kith_ledger::JoinProof;
-use kith_policy::Addresses;
+use kith_policy::{Addresses, Policy, Rule, Selector};
 use kith_router::MeshRanges;
 use kith_sys::{Dns, Interface, OsSystem, Platform, System};
 use kith_transport_udp::UdpLink;
@@ -27,6 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::blocked::BlockedLog;
 use crate::channel::{ChannelLayer, now, pick_targets};
 use crate::connectivity::{Connectivity, Output};
 use crate::dns::DnsService;
@@ -345,6 +346,7 @@ pub(crate) struct Daemon {
     ipc_task: Option<JoinHandle<()>>,
     journal: Journal,
     activity: Activity,
+    blocked: BlockedLog,
 }
 
 impl Drop for Daemon {
@@ -594,6 +596,7 @@ impl Daemon {
             ipc_task,
             journal: options.journal.clone(),
             activity: Activity::default(),
+            blocked: BlockedLog::default(),
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -711,6 +714,8 @@ impl Daemon {
             Action::Leave { network } => self.leave(network).await,
             Action::Peers { network } => self.peers(network).await,
             Action::Traffic => Ok(Response::Traffic(self.activity.traffic())),
+            Action::Blocked { network } => self.blocked_list(network).await,
+            Action::AllowBlocked { network, rule } => self.allow_blocked(network, &rule).await,
             Action::Records { network } => Ok(Response::Records(crate::dns::record_list(
                 self.member_map(network)?,
             ))),
@@ -2123,6 +2128,50 @@ impl Daemon {
             .collect();
         self.activity
             .observe(&peers, &drop_reasons(&stats.drops), &self.journal);
+        self.observe_blocked(&stats);
+    }
+
+    /// The connections `network`'s policy refused, as of now.
+    async fn blocked_list(&mut self, network: NetworkId) -> Result<Response, NodeError> {
+        self.member_map(network)?;
+        if let Ok(stats) = self.dataplane.stats().await {
+            self.observe_blocked(&stats);
+        }
+        Ok(Response::Blocked(self.blocked.list(network)))
+    }
+
+    /// Adds `rule` to `network`'s policy, unless it is there already.
+    async fn allow_blocked(
+        &mut self,
+        network: NetworkId,
+        rule: &Rule,
+    ) -> Result<Response, NodeError> {
+        let identity = Arc::clone(&self.identity);
+        let runtime = self.runtime_mut(network)?;
+        let mut rules = runtime.policy()?.rules().to_vec();
+        if !rules.contains(rule) {
+            rules.push(rule.clone());
+        }
+        let policy =
+            Policy::new(rules).map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+        runtime.set_policy(&identity, &policy, now())?;
+        self.commit(network).await?;
+        if let ([Selector::Device(from)], [target]) = (rule.sources(), rule.destinations())
+            && let Selector::Device(to) = target.selector()
+        {
+            self.blocked.forget(network, *from, *to);
+        }
+        Ok(Response::BlockedAllowed)
+    }
+
+    /// Takes in the connections the dataplane saw refused.
+    fn observe_blocked(&mut self, stats: &Stats) {
+        self.blocked.observe(
+            &stats.blocked,
+            self.networks.maps(),
+            (self.identity.node_id(), &self.journal),
+            (Instant::now(), crate::journal::unix_ms()),
+        );
     }
 
     /// Tells the network which of this device's plain WireGuard members are online,

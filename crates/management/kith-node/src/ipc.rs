@@ -14,6 +14,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, warn};
 
+use crate::blocked::allow_rule;
 use crate::journal::Journal;
 use crate::types::{Action, Command, NodeError};
 
@@ -186,6 +187,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
         Request::Peers { network } => Action::Peers { network },
         Request::Records { network } => Action::Records { network },
         Request::Traffic => Action::Traffic,
+        request @ (Request::Blocked { .. } | Request::AllowBlocked { .. }) => blocked(request)?,
         Request::SetRecord {
             network,
             name,
@@ -253,6 +255,29 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
         }
     };
     Ok(action)
+}
+
+fn blocked(request: Request) -> Result<Action, NodeError> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "translate passes only the two blocked requests"
+    )]
+    match request {
+        Request::Blocked { network } => Ok(Action::Blocked { network }),
+        Request::AllowBlocked {
+            network,
+            from,
+            to,
+            protocol,
+            port,
+        } => Ok(Action::AllowBlocked {
+            network,
+            rule: Box::new(allow_rule(from, to, &protocol, port)?),
+        }),
+        _ => Err(NodeError::InvalidArgument(
+            "not a blocked request".to_owned(),
+        )),
+    }
 }
 
 fn non_empty(what: &str, value: String) -> Result<String, NodeError> {
@@ -360,6 +385,7 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::Records { .. }
             | Request::Journal { .. }
             | Request::Traffic
+            | Request::Blocked { .. }
             | Request::Watch
     )
 }

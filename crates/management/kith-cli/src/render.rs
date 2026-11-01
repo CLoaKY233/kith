@@ -2,7 +2,9 @@
 
 use std::io::{self, Write};
 
-use kith_ipc::{DnsRecord, IpcError, PathKind, PeerInfo, RecordInfo, Response, Status};
+use kith_ipc::{
+    BlockedInfo, DnsRecord, IpcError, PathKind, PeerInfo, RecordInfo, Response, Status,
+};
 
 use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
@@ -584,10 +586,56 @@ pub(crate) fn response(
             };
             exported(out, *text, &added, &mesh, everything.as_deref())?;
         }
+        (Cmd::Blocked { .. }, Response::Blocked(blocked)) => blocked_list(out, &blocked)?,
+        (Cmd::Allow { from, to, .. }, Response::BlockedAllowed) => {
+            writeln!(out, "{from} may now reach {to} that way")?;
+        }
         (_, other) => {
             drop(other);
             return Err(IpcError::Unexpected.into());
         }
     }
     Ok(())
+}
+
+/// Each blocked connection, the rule that would allow it, and the command that adds it.
+pub(crate) fn blocked_list(out: &mut impl Write, blocked: &[BlockedInfo]) -> io::Result<()> {
+    if blocked.is_empty() {
+        return writeln!(out, "the policy has blocked nothing recently");
+    }
+    for (i, info) in blocked.iter().enumerate() {
+        if i > 0 {
+            writeln!(out)?;
+        }
+        let what = info.port.map_or_else(
+            || info.protocol.clone(),
+            |port| format!("{} {port}", info.protocol),
+        );
+        let packets = if info.count == 1 { "packet" } else { "packets" };
+        writeln!(
+            out,
+            "{} -> {}  {what}  {} {packets}",
+            info.from_name, info.to_name, info.count
+        )?;
+        writeln!(out, "  rule:")?;
+        for line in info.rule.lines() {
+            writeln!(out, "    {line}")?;
+        }
+        writeln!(out, "  allow it: {}", allow_command(info))?;
+    }
+    Ok(())
+}
+
+/// The `kith allow` command that adds the rule allowing `info`.
+pub(crate) fn allow_command(info: &BlockedInfo) -> String {
+    let protocol = if info.protocol.parse::<u8>().is_ok() {
+        "any"
+    } else {
+        info.protocol.as_str()
+    };
+    let port = info.port.map(|port| format!(" {port}")).unwrap_or_default();
+    format!(
+        "kith allow {} {} {} {protocol}{port}",
+        info.network, info.from, info.to
+    )
 }

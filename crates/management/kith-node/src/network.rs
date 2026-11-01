@@ -228,6 +228,18 @@ impl NetworkRuntime {
         })?
     }
 
+    /// The policy in force: the default for a network that never set one.
+    pub(crate) fn policy(&self) -> Result<Policy, NodeError> {
+        self.with_ledger(
+            |ledger| match ledger.view().records().get(records::POLICY) {
+                None => Ok(Policy::default_allow_all()),
+                Some(bytes) => Policy::from_bytes(bytes).map_err(|error| {
+                    NodeError::InvalidArgument(format!("the network's policy is invalid: {error}"))
+                }),
+            },
+        )?
+    }
+
     /// Signs and inserts the policy op.
     pub(crate) fn set_policy(
         &mut self,

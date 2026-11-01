@@ -138,6 +138,31 @@ pub(crate) enum Cmd {
     /// Check what is wrong and say how to fix it
     #[bpaf(command)]
     Doctor,
+    /// List connections the policy blocked, each with the rule that would allow it
+    #[bpaf(command)]
+    Blocked {
+        /// The network (default: the only one)
+        #[bpaf(positional("NETWORK"))]
+        network: Option<String>,
+    },
+    /// Add a policy rule that allows one connection (admins only)
+    #[bpaf(command)]
+    Allow {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The device that connects: its name or id
+        #[bpaf(positional("FROM"))]
+        from: String,
+        /// The device it connects to: its name or id
+        #[bpaf(positional("TO"))]
+        to: String,
+        /// tcp, udp, icmp or any
+        #[bpaf(positional("PROTOCOL"))]
+        protocol: String,
+        /// The port, for tcp and udp
+        #[bpaf(positional("PORT"))]
+        port: Option<u16>,
+    },
     /// Check or show the configuration file
     #[bpaf(command)]
     Config(#[bpaf(external(config_cmd))] ConfigCmd),

@@ -221,6 +221,7 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             relay: *relay,
         },
         Cmd::Wg(wg) => wg_request(wg, names)?,
+        Cmd::Blocked { .. } | Cmd::Allow { .. } => blocked_request(cmd, names)?,
         Cmd::Up
         | Cmd::Down
         | Cmd::Watch
@@ -231,6 +232,32 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
         | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));
         }
+    })
+}
+
+fn blocked_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "to_request passes only the two blocked commands"
+    )]
+    Ok(match cmd {
+        Cmd::Allow {
+            network,
+            from,
+            to,
+            protocol,
+            port,
+        } => Request::AllowBlocked {
+            network: names.network(network)?,
+            from: names.node(from)?,
+            to: names.node(to)?,
+            protocol: protocol.clone(),
+            port: *port,
+        },
+        Cmd::Blocked { network } => Request::Blocked {
+            network: names.network_or_only(network.as_deref())?,
+        },
+        _ => return Err(CliError("not a blocked request".to_owned())),
     })
 }
 
@@ -348,6 +375,8 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Exit(_)
         | Cmd::Relay(_)
         | Cmd::Server { .. }
+        | Cmd::Blocked { .. }
+        | Cmd::Allow { .. }
         | Cmd::Wg(_) => {}
         Cmd::Watch => return crate::watch::watch(&socket_path(opts)?, out).await,
         Cmd::Log { follow, events } => {
@@ -371,6 +400,8 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Relay(_)
         | Cmd::Server { .. }
         | Cmd::Wg(_)
+        | Cmd::Blocked { .. }
+        | Cmd::Allow { .. }
         | Cmd::Config(_)
         | Cmd::Doctor
         | Cmd::Up
@@ -413,6 +444,7 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
         | ExitCmd::Deny { network, .. },
     )
     | Cmd::Remove { network, .. }
+    | Cmd::Allow { network, .. }
     | Cmd::Relay(RelayCmd::Advertise {
         network,
         node: Some(_),

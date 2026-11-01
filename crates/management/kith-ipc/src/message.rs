@@ -153,6 +153,24 @@ pub enum Request {
     },
     /// Traffic per peer over the last hour.
     Traffic,
+    /// Recent inbound connections a network's policy refused.
+    Blocked {
+        /// Network to list.
+        network: NetworkId,
+    },
+    /// Adds the one policy rule that allows a blocked connection; admins only.
+    AllowBlocked {
+        /// Network to change.
+        network: NetworkId,
+        /// The device that tried to connect.
+        from: NodeId,
+        /// The device it tried to reach.
+        to: NodeId,
+        /// `tcp`, `udp`, `icmp` or `any`.
+        protocol: String,
+        /// The destination port, for TCP and UDP.
+        port: Option<u16>,
+    },
 }
 
 /// A typed DNS record.
@@ -274,6 +292,35 @@ pub enum Response {
     },
     /// Answers [`Request::Traffic`].
     Traffic(Vec<TrafficSeries>),
+    /// Answers [`Request::Blocked`], most recent first.
+    Blocked(Vec<BlockedInfo>),
+    /// Answers [`Request::AllowBlocked`].
+    BlockedAllowed,
+}
+
+/// A connection a network's policy refused, from [`Request::Blocked`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockedInfo {
+    /// The network.
+    pub network: NetworkId,
+    /// The device that tried to connect.
+    pub from: NodeId,
+    /// Its name in the network.
+    pub from_name: String,
+    /// The device it tried to reach.
+    pub to: NodeId,
+    /// Its name in the network.
+    pub to_name: String,
+    /// `tcp`, `udp`, `icmp`, or the IP protocol number.
+    pub protocol: String,
+    /// The destination port, for TCP and UDP.
+    pub port: Option<u16>,
+    /// Packets refused; under a flood only a sample is counted.
+    pub count: u64,
+    /// When the latest was refused, in milliseconds since the Unix epoch.
+    pub last_ms: u64,
+    /// The policy rule, as TOML, that would allow just this connection.
+    pub rule: String,
 }
 
 /// Why the daemon refused a request.
@@ -547,6 +594,26 @@ pub enum EntryKind {
         target: String,
         /// The message and its fields.
         message: String,
+    },
+    /// The network's policy refused a connection; at most one entry per connection every
+    /// 30 seconds.
+    Blocked {
+        /// The network.
+        network: NetworkId,
+        /// The device that tried to connect.
+        from: NodeId,
+        /// Its name in the network.
+        from_name: String,
+        /// The device it tried to reach.
+        to: NodeId,
+        /// Its name in the network.
+        to_name: String,
+        /// `tcp`, `udp`, `icmp`, or the IP protocol number.
+        protocol: String,
+        /// The destination port, for TCP and UDP.
+        port: Option<u16>,
+        /// Packets refused since the last entry for this connection.
+        count: u64,
     },
 }
 

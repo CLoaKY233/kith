@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod blocked;
 mod channel;
 mod connectivity;
 mod daemon;

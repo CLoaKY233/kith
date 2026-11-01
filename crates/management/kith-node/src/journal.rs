@@ -271,7 +271,7 @@ pub(crate) fn changes(
 }
 
 /// Milliseconds since the Unix epoch.
-fn unix_ms() -> u64 {
+pub(crate) fn unix_ms() -> u64 {
     crate::channel::now().as_millis()
 }
 

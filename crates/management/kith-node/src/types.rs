@@ -242,6 +242,18 @@ pub(crate) enum Action {
         /// Its policy tags.
         tags: Vec<String>,
     },
+    /// Recent connections the network's policy refused.
+    Blocked {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Add a rule that allows one blocked connection; admins only.
+    AllowBlocked {
+        /// The network.
+        network: NetworkId,
+        /// The rule.
+        rule: Box<kith_policy::Rule>,
+    },
 }
 
 /// What the control channel's handler reported to the loop.
