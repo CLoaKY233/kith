@@ -2,13 +2,15 @@
 @component
 JoinNetwork (spec §7.2): this device joins a network.
   - With a link: one input, `Invite link`. A pasted `kith join …` command works too, and a
-    `home@studio-mac` or `kith://request/` code switches to asking.
+    `home@studio-mac` or `kith://request/` code switches to asking. A recognised link is
+    previewed: `Join home, invited by studio-mac. Link valid for 47 more minutes.` and the
+    button reads `Join home`. An expired or used invite says so.
   - Without one: `I don't have a link — ask to join` asks an admin, given the network and
     admin as the admin's Add device screen shows them. The sheet shows `Your request: kith
     join home@studio-mac`, the check code (`the admin will see the same code`) and `Waiting
     for an admin of home…`, asks again on every tick, and ends with `You're in. 6 devices
     online.` (then enters the network), `An admin denied this request.` or a lapse.
-  - While the first ask cannot reach the network: `Can't reach any device in home yet.
+  - While joining or the first ask cannot reach the network: `Can't reach any device in home yet.
     Trying… (12 s)`, and after 60 s `Still no answer. Is one of home's devices online?`
 Props:
   - open: boolean, bindable. The screen maps it to the URL query (Back closes it).
@@ -24,12 +26,14 @@ Props:
     RELATIVE_TIME_REFRESH_MS,
     SHEET_CLOSE_AFTER_ONLINE_MS,
   } from '../lib/live/timing';
-  import type { ActionHandle } from '../lib/types';
+  import { relative } from '../lib/format';
+  import type { ActionHandle, ApiFailure, InvitePreview } from '../lib/types';
   import type { JoinRequestState, Outcome } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
   import Field from '../lib/ui/Field.svelte';
   import Input from '../lib/ui/Input.svelte';
   import Sheet from '../lib/ui/Sheet.svelte';
+  import { host as thisHost } from '../frame/host.svelte';
   import { go, href } from '../router';
   import { failureText, isStale, recognise, type JoinTarget } from './flow';
 
@@ -49,12 +53,14 @@ Props:
   let request = $state<{ code: string; network: string | null; admin: string | null } | null>(null);
   let asking = $state<ActionHandle<JoinRequestState> | null>(null);
   let answer = $state<JoinRequestState | null>(null);
+  /** What the link in the field says, once the server decoded it. */
+  let preview = $state<{ link: string; value: InvitePreview } | null>(null);
   let askStartedAt = $state(0);
   let elapsedMs = $state(0);
   /** Set once the daemon let this device in: the network to enter, by id if known. */
   let entering = $state<{ id: string | null; before: readonly string[] } | null>(null);
 
-  const host = $derived(live.status?.host.name ?? '');
+  const host = $derived(thisHost.name);
   const stale = $derived(isStale());
   const joinPending = $derived(joining?.state === 'pending');
   const firstAskPending = $derived(answer === null && asking?.state === 'pending');
@@ -62,8 +68,29 @@ Props:
     // A failed re-ask while waiting is retried on the next tick, so only the first one shows.
     const askFailed = asking?.state === 'failed' && answer === null ? asking : null;
     const failed = joining?.state === 'failed' ? joining : askFailed;
-    return failed?.error ? failureText(failed.error) : null;
+    if (!failed?.error) return null;
+    return failed === joining ? joinFailureText(failed.error) : failureText(failed.error);
   });
+  /** The preview of the link now in the field, if it is the one previewed. */
+  const shownPreview = $derived.by(() => {
+    if (preview === null || mode !== 'link') return null;
+    const target = recognise(linkText);
+    return target?.kind === 'invite' && target.link === preview.link ? preview.value : null;
+  });
+  const parsed = $derived.by(() => {
+    if (shownPreview === null) return null;
+    const minutes = Math.ceil((shownPreview.expires_at_ms - live.now()) / 60_000);
+    if (minutes <= 0) return null;
+    return copy.joinNetwork.parsed(shownPreview.network_name, shownPreview.invited_by, minutes);
+  });
+  /** The network being reached, while the link join or the first ask waits for it. */
+  const reaching = $derived(
+    firstAskPending
+      ? (answer?.network_name ?? request?.network ?? null)
+      : joinPending
+        ? (preview?.value.network_name ?? null)
+        : null,
+  );
   const resolution = $derived(answer?.resolution ?? null);
 
   $effect(() => {
@@ -79,7 +106,6 @@ Props:
       ? copy.joinNetwork.requestCommand(request.network, request.admin)
       : null,
   );
-  const askingNetwork = $derived(answer?.network_name ?? request?.network ?? null);
   /** Whole seconds the first ask has been trying. */
   const trying = $derived(Math.floor(elapsedMs / 1000));
 
@@ -108,12 +134,13 @@ Props:
     answer = null;
     entering = null;
     enteredName = null;
+    preview = null;
     void tick().then(() => input?.focus());
   });
 
-  // The seconds count while the first ask is still trying to reach the network.
+  // The seconds count while the join or the first ask is still trying to reach the network.
   $effect(() => {
-    if (!firstAskPending) return;
+    if (!firstAskPending && !joinPending) return;
     const timer = setInterval(
       () => (elapsedMs = Date.now() - askStartedAt),
       RELATIVE_TIME_REFRESH_MS,
@@ -155,6 +182,27 @@ Props:
     node.focus();
   }
 
+  /** A failed join, in words: an expired or used invite says so (§7.2 step 3). */
+  function joinFailureText(error: ApiFailure): string {
+    const code: string = error.code;
+    const words = error.message.toLowerCase();
+    if (code === 'invite_used' || /\b(already )?used\b/.test(words)) return copy.joinNetwork.used;
+    if (code === 'invite_expired' || words.includes('expired')) {
+      const known = preview?.value;
+      return known
+        ? copy.joinNetwork.expired(relative(known.expires_at_ms, live.now()), known.invited_by)
+        : copy.joinNetwork.expiredPlain;
+    }
+    return failureText(error);
+  }
+
+  /** Asks the server what a recognised link says, for the line under the field. */
+  async function previewLink(link: string): Promise<void> {
+    if (preview?.link === link) return;
+    const settled = await actions.previewInvite(link).done;
+    if (settled.result !== null) preview = { link, value: settled.result };
+  }
+
   function networkIds(): string[] {
     return (live.status?.networks ?? []).map((n) => n.id);
   }
@@ -183,6 +231,8 @@ Props:
 
   async function join(link: string): Promise<void> {
     const before = networkIds();
+    askStartedAt = Date.now();
+    elapsedMs = 0;
     const handle = actions.join(link, host);
     joining = handle;
     const settled = await handle.done;
@@ -192,6 +242,8 @@ Props:
   function submit(event?: SubmitEvent): void {
     event?.preventDefault();
     if (stale || joinPending || asking?.state === 'pending') return;
+    joining = null;
+    asking = null;
     const text = mode === 'link' ? linkText : askText;
     const target = recognise(text);
     if (target === null) {
@@ -221,9 +273,9 @@ Props:
   }
 
   function revalidate(): void {
-    if (fieldError === null) return;
     const target = recognise(mode === 'link' ? linkText : askText);
-    if (target !== null) fieldError = null;
+    if (target?.kind === 'invite') void previewLink(target.link);
+    if (fieldError !== null && target !== null) fieldError = null;
   }
 
   /** The field stays until an answer arrives, and comes back to ask again. */
@@ -237,9 +289,16 @@ Props:
     type="submit"
     form="join-network"
     pending={joinPending || firstAskPending || entering !== null}
+    pendingLabel={mode === 'link' ? copy.joinNetwork.joining : copy.joinNetwork.asking}
     disabled={stale}
   >
-    {mode === 'link' ? copy.joinNetwork.title : copy.joinNetwork.ask}
+    {#if mode === 'ask'}
+      {copy.joinNetwork.ask}
+    {:else if shownPreview}
+      {copy.joinNetwork.submit(shownPreview.network_name)}
+    {:else}
+      {copy.joinNetwork.title}
+    {/if}
   </Button>
 {/snippet}
 
@@ -257,7 +316,11 @@ Props:
     {#if showForm}
       <form id="join-network" class="form" onsubmit={submit} novalidate>
         {#if mode === 'link'}
-          <Field label={copy.joinNetwork.label} error={fieldError}>
+          <Field
+            label={copy.joinNetwork.label}
+            helper={parsed ?? copy.joinNetwork.helper}
+            error={fieldError}
+          >
             {#snippet children(control)}
               <Input
                 {...control}
@@ -297,18 +360,20 @@ Props:
       </form>
     {/if}
 
-    {#if firstAskPending && askingNetwork && trying > 0}
+    {#if reaching && trying > 0}
       <div class="trying">
-        <p>{copy.joinNetwork.trying(askingNetwork, trying)}</p>
+        <p>{copy.joinNetwork.trying(reaching, trying)}</p>
         {#if elapsedMs >= JOIN_RETRY_HINT_MS}
-          <p class="quiet">{copy.joinNetwork.stillNothing(askingNetwork)}</p>
+          <p class="quiet">{copy.joinNetwork.stillNothing(reaching)}</p>
         {/if}
       </div>
     {/if}
 
     {#if answer && resolution !== 'expired'}
       <div class="request" bind:this={requestBlock} tabindex="-1">
-        {#if command}<p>{copy.joinNetwork.request(command)}</p>{/if}
+        {#if command}
+          <p>{copy.joinNetwork.requestLabel} <code class="t-mono">{command}</code></p>
+        {/if}
         <CheckCode code={answer.check_code} caption={copy.checkCode.flowLabel} />
         {#if resolution === null}
           <p class="quiet">{copy.joinNetwork.waiting(answer.network_name)}</p>
@@ -335,9 +400,13 @@ Props:
   .form {
     gap: var(--s-2);
   }
-  /* The text-styled alternative lines up with the field, not with its own padding. */
+  /* The quiet alternative lines up with the field, not with its own padding and border. */
   .alt {
-    margin-inline-start: calc(-1 * var(--s-3));
+    margin-inline-start: calc(-1 * (var(--s-3) + var(--hairline)));
+  }
+  .alt :global(.btn) {
+    color: var(--ink-2);
+    font-weight: 400;
   }
   .request:focus,
   .joined:focus {

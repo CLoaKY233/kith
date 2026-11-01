@@ -580,6 +580,8 @@ export const copy = {
     spaces: 'Spaces become hyphens.',
     taken: (network: string): string => `You already have a network called ${network}.`,
     submit: (network: string): string => `Create ${quoted(network)}`,
+    submitEmpty: 'Create network',
+    useSuggestion: (network: string): string => `Use ${network}`,
     pending: 'Creating…',
     ready: (network: string): string => `${network} is ready. You're its admin.`,
     next: 'Add your next device:',
@@ -595,6 +597,10 @@ export const copy = {
     parsed: (network: string, by: string, minutes: number): string =>
       `Join ${network}, invited by ${by}. Link valid for ${minutes} more ${plural(minutes, 'minute', 'minutes')}.`,
     submit: (network: string): string => `Join ${network}`,
+    helper: 'Paste the link from kith invite or from the person who invited you.',
+    joining: 'Joining…',
+    asking: 'Asking…',
+    expiredPlain: 'This invite has expired. Ask for a new one.',
     expired: (ago: string, by: string): string =>
       `This invite expired ${ago}. Ask ${by} for a new one.`,
     used: 'This invite has already been used. Ask for a new one.',
@@ -604,6 +610,7 @@ export const copy = {
       `Still no answer. Is one of ${network}'s devices online?`,
     noLink: "I don't have a link — ask to join",
     request: (command: string): string => `Your request: ${command}`,
+    requestLabel: 'Your request:',
     requestCommand: (network: string, admin: string): string => `kith join ${network}@${admin}`,
     waiting: (network: string): string => `Waiting for an admin of ${network}…`,
     joined: (online: number): string => `You're in. ${online} devices online.`,
@@ -666,9 +673,24 @@ export const copy = {
     useCounts: { one: '1', five: '5', unlimited: 'Unlimited' },
     create: 'Create invite',
     link: 'Invite link',
-    orRun: (link: string): string => `Or run: kith join ${link}`,
+    orRun: 'Or run:',
+    runCommand: (link: string): string => `kith join ${link}`,
     notUsed: (time: string): string => `Not used yet${DOT}expires ${time}`,
     usedBy: (device: string, path: string): string => `Used by ${device}${DOT}online${DOT}${path}`,
+    usedOffline: (device: string): string => `Used by ${device}${DOT}offline`,
+    /** A multi-use invite: who used it, the uses left, then whether the latest is online. */
+    usedByMany: (devices: readonly string[], left: number | null, latestOnline: string | null): string =>
+      [
+        `Used by ${devices.join(', ')}`,
+        left === null ? null : `${left} ${plural(left, 'use', 'uses')} left`,
+        latestOnline,
+      ]
+        .filter((part) => part !== null)
+        .join(DOT),
+    latestOnline: (device: string, path: string): string => `${device} online${DOT}${path}`,
+    expired: (time: string): string => `Expired at ${time}`,
+    created: 'Invite created',
+    show: 'Show',
     revoke: 'Revoke invite',
     revoked: 'Invite revoked',
   },

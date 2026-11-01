@@ -2,9 +2,11 @@
 @component
 The body of the invite flow (spec §7.4), shared by the Invite sheet and AddDevice. Before the
 invite exists: `Valid for` (1 hour · 1 day · 1 week) and `Uses` (1 · 5 · Unlimited). After:
-the link in a CopyField, the QR behind `Show QR code`, `Or run: kith join <link>`, the live
-status line and `Revoke invite`. The parent renders `Create invite` (calling `flow.create()`)
-in its footer, so the primary action stays pinned at the bottom.
+the link in a CopyField, the QR behind `Show QR code` (hidden again on each use), `Or run:
+kith join <link>` as a command, the live status line (a polite live region) and `Revoke
+invite` (instant, with Undo). Once expired it says `Expired at 04:27` and offers nothing
+dead. The parent renders `Create invite` (calling `flow.create()`) in its footer, so the
+primary action stays pinned at the bottom.
 Props:
   - flow: InviteFlow, the state this body shows and changes.
   - networkId: string, the network's id.
@@ -19,6 +21,7 @@ Props:
   import CopyField from '../lib/ui/CopyField.svelte';
   import Segmented from '../lib/ui/Segmented.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
+  import type { Invite } from '../lib/types.gen';
   import { deviceName, failureText, isStale, pathText } from './flow';
   import type { InviteFlow, UsesChoice, Validity } from './inviteFlow.svelte';
 
@@ -39,13 +42,9 @@ Props:
   const createFailed = $derived(
     flow.creating?.state === 'failed' && flow.creating.error ? failureText(flow.creating.error) : null,
   );
-  const revokeFailed = $derived(
-    flow.revoking?.state === 'failed' && flow.revoking.error ? failureText(flow.revoking.error) : null,
-  );
 
   $effect(() => {
-    const text = createFailed ?? revokeFailed;
-    if (text) announce(text);
+    if (createFailed) announce(createFailed);
   });
 
   /** The latest copy of this invite the server listed, for who has used it. */
@@ -60,19 +59,61 @@ Props:
     current !== null && current.uses !== null && current.used_by.length >= current.uses,
   );
 
+  /** Set once the invite's time is up; a timer flips it at the expiry instant. */
+  let expiredSeen = $state<string | null>(null);
+  const expired = $derived(current !== null && expiredSeen === current.link);
+  // The parent's footer offers a new invite once this one is dead.
+  $effect(() => {
+    flow.expired = expired;
+  });
+  $effect(() => {
+    const invite = current;
+    if (invite === null) return;
+    const left = invite.expires_at_ms - live.now();
+    if (left <= 0) {
+      expiredSeen = invite.link;
+      return;
+    }
+    const timer = setTimeout(() => (expiredSeen = invite.link), Math.min(left, 2 ** 31 - 1));
+    return () => clearTimeout(timer);
+  });
+
+  /** `online · direct` for a device that is online with a path, else null. */
+  function onlinePath(name: string): string | null {
+    const peer = Object.values(live.peers[networkId] ?? {}).find((p) => p.name === name);
+    if (!peer?.online) return null;
+    const numbers = live.numbers[`${networkId}/${peer.node}`];
+    return pathText(peer.path, deviceName(networkId, numbers?.relay ?? null));
+  }
+
+  function statusOf(invite: Invite): string {
+    const user = invite.used_by.at(-1);
+    if (user === undefined) return copy.invite.notUsed(clock(invite.expires_at_ms));
+    const path = onlinePath(user);
+    if (invite.uses === 1) {
+      return path !== null ? copy.invite.usedBy(user, path) : copy.invite.usedOffline(user);
+    }
+    const left = invite.uses === null ? null : Math.max(0, invite.uses - invite.used_by.length);
+    return copy.invite.usedByMany(
+      invite.used_by,
+      left,
+      path !== null ? copy.invite.latestOnline(user, path) : null,
+    );
+  }
+
   const status = $derived.by(() => {
     if (current === null) return null;
-    const user = current.used_by.at(-1);
-    const peer =
-      user === undefined
-        ? undefined
-        : Object.values(live.peers[networkId] ?? {}).find((p) => p.name === user);
-    if (peer?.online) {
-      const numbers = live.numbers[`${networkId}/${peer.node}`];
-      const path = pathText(peer.path, deviceName(networkId, numbers?.relay ?? null));
-      if (path !== null) return copy.invite.usedBy(peer.name, path);
-    }
-    return copy.invite.notUsed(clock(current.expires_at_ms));
+    if (expired) return copy.invite.expired(clock(current.expires_at_ms));
+    return statusOf(current);
+  });
+
+  // Each use hides the QR again; the reveal stays while uses remain.
+  let qrShown = $state(false);
+  let usesSeen = 0;
+  $effect(() => {
+    const count = current?.used_by.length ?? 0;
+    if (count > usesSeen) qrShown = false;
+    usesSeen = count;
   });
 
   // A device that joins after the invite was made may have used it: ask the server again.
@@ -92,9 +133,10 @@ Props:
     if (joined) actions.loadInvites(networkId);
   });
 
-  async function revoke(): Promise<void> {
+  function revoke(): void {
     if (stale) return;
-    if (await flow.revoke()) toast.done(copy.invite.revoked);
+    const undo = flow.revoke((error) => toast.failed(failureText(error)));
+    if (undo !== null) toast.done(copy.invite.revoked, { undo });
   }
 </script>
 
@@ -106,6 +148,7 @@ Props:
         label={copy.invite.validFor}
         options={validityOptions}
         value={flow.validity}
+        disabled={flow.pending || stale}
         onValueChange={(v) => (flow.validity = v as Validity)}
       />
     </div>
@@ -115,6 +158,7 @@ Props:
         label={copy.invite.uses}
         options={usesOptions}
         value={flow.uses}
+        disabled={flow.pending || stale}
         onValueChange={(v) => (flow.uses = v as UsesChoice)}
       />
     </div>
@@ -122,25 +166,25 @@ Props:
   </div>
 {:else}
   <div class="result">
-    <CopyField value={flow.invite.link} label={copy.invite.link} />
-    <QrPanel svg={flow.invite.qr_svg} collapse={spent} />
-    <p class="run">{copy.invite.orRun(flow.invite.link)}</p>
-    {#if status}<p class="status">{status}</p>{/if}
-    <div class="revoke">
-      <Button
-        variant="danger-quiet"
-        pending={flow.revoking?.state === 'pending'}
-        disabled={stale}
-        onclick={revoke}
-      >
-        {copy.invite.revoke}
-      </Button>
-      {#if stale}
-        <p class="reason">{copy.conn.staleActions}</p>
-      {:else if revokeFailed}
-        <p class="failed">{revokeFailed}</p>
-      {/if}
-    </div>
+    {#if !expired}
+      <CopyField value={flow.invite.link} label={copy.invite.link} />
+    {/if}
+    <QrPanel svg={flow.invite.qr_svg} collapse={spent || expired} bind:shown={qrShown} />
+    {#if !expired}
+      <div class="run">
+        <p class="label">{copy.invite.orRun}</p>
+        <CopyField value={copy.invite.runCommand(flow.invite.link)} label={copy.invite.orRun} />
+      </div>
+    {/if}
+    <p class="status" class:over={expired} role="status">{status ?? ''}</p>
+    {#if !expired}
+      <div class="revoke">
+        <Button variant="danger-quiet" disabled={stale} onclick={revoke}>
+          {copy.invite.revoke}
+        </Button>
+        {#if stale}<p class="reason">{copy.conn.staleActions}</p>{/if}
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -159,12 +203,14 @@ Props:
     font-weight: 600;
   }
   .run {
-    font: var(--t-small);
-    color: var(--ink-2);
-    overflow-wrap: anywhere;
+    display: grid;
+    gap: var(--s-1);
   }
   .status {
     color: var(--ink-1);
+  }
+  .status.over {
+    color: var(--ink-3);
   }
   .revoke {
     display: grid;

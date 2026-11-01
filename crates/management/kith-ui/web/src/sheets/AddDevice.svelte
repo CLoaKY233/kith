@@ -158,14 +158,23 @@ Props:
     { value: 'invite', label: copy.addDevice.sendInvite },
   ] as const;
 
-  const showFooter = $derived(laptop && tab === 'invite' && flow.invite === null);
+  const showFooter = $derived(laptop && tab === 'invite' && (flow.invite === null || flow.expired));
 </script>
 
 {#snippet createInvite()}
   {#if stale}<p class="reason">{copy.conn.staleActions}</p>{/if}
-  <Button variant="primary" pending={flow.pending} disabled={stale} onclick={() => flow.create()}>
-    {copy.invite.create}
-  </Button>
+  {#if flow.unsupported}
+    <Button variant="secondary" onclick={() => (open = false)}>{copy.action.close}</Button>
+  {:else}
+    <Button
+      variant="primary"
+      pending={flow.pending}
+      disabled={stale}
+      onclick={() => (flow.expired ? flow.reset() : flow.create())}
+    >
+      {copy.invite.create}
+    </Button>
+  {/if}
 {/snippet}
 
 {#snippet approveLive()}
