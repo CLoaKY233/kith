@@ -18,7 +18,7 @@ use kith_ipc::{
     EntryKind, Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning,
 };
 use kith_ledger::JoinProof;
-use kith_policy::{Addresses, Policy, Rule, Selector};
+use kith_policy::{Addresses, Policy, Rule};
 use kith_router::MeshRanges;
 use kith_sys::{Dns, Interface, OsSystem, Platform, System};
 use kith_transport_udp::UdpLink;
@@ -2156,11 +2156,7 @@ impl Daemon {
             Policy::new(rules).map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
         runtime.set_policy(&identity, &policy, now())?;
         self.commit(network).await?;
-        if let ([Selector::Device(from)], [target]) = (rule.sources(), rule.destinations())
-            && let Selector::Device(to) = target.selector()
-        {
-            self.blocked.forget(network, *from, *to);
-        }
+        self.blocked.forget(network, rule);
         Ok(Response::BlockedAllowed)
     }
 

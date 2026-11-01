@@ -148,15 +148,38 @@ impl BlockedLog {
         list
     }
 
-    /// Clears `network`'s connections from `from` to `to` once a rule allows them; what
+    /// Clears the connections `rule` now allows, once it is in `network`'s policy; what
     /// the dataplane sampled before stays counted, so only new refusals show again.
-    pub(crate) fn forget(&mut self, network: NetworkId, from: NodeId, to: NodeId) {
-        for ((id, source, destination, ..), seen) in &mut self.seen {
-            if (*id, *source, *destination) == (network, from, to) {
+    pub(crate) fn forget(&mut self, network: NetworkId, rule: &Rule) {
+        let ([Selector::Device(from)], [target]) = (rule.sources(), rule.destinations()) else {
+            return;
+        };
+        let Selector::Device(to) = target.selector() else {
+            return;
+        };
+        for ((id, source, destination, protocol, port), seen) in &mut self.seen {
+            let covered = match target.protocol() {
+                Protocol::Any => true,
+                Protocol::Icmp => matches!(protocol, 1 | 58),
+                Protocol::Tcp => {
+                    *protocol == 6 && port.is_some_and(|p| allows_port(target.ports(), p))
+                }
+                Protocol::Udp => {
+                    *protocol == 17 && port.is_some_and(|p| allows_port(target.ports(), p))
+                }
+            };
+            if (*id, *source, *destination) == (network, *from, *to) && covered {
                 seen.info.count = 0;
                 seen.unreported = 0;
             }
         }
+    }
+}
+
+fn allows_port(ports: &PortSet, port: u16) -> bool {
+    match ports {
+        PortSet::All => true,
+        PortSet::Only(ranges) => ranges.contains(port),
     }
 }
 

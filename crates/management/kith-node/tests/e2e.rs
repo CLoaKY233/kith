@@ -969,12 +969,20 @@ mod tests {
         )
         .await?;
         never_delivered(&a, &s, &packet).await?;
+        let other_port = udp_ports(
+            alpha.address.parse()?,
+            4000,
+            server.address.parse()?,
+            5001,
+            b"no",
+        )?;
+        never_delivered(&a, &s, &other_port).await?;
 
         let Response::Blocked(blocked) = s.request(Request::Blocked { network }).await else {
             return Err("no blocked list".into());
         };
-        let [seen] = blocked.as_slice() else {
-            return Err(format!("expected one blocked connection: {blocked:?}").into());
+        let Some(seen) = blocked.iter().find(|b| b.port == Some(5000)) else {
+            return Err(format!("port 5000 was not reported: {blocked:?}").into());
         };
         if (seen.from, seen.to, seen.protocol.as_str(), seen.port)
             != (alpha.node, server.node, "udp", Some(5000))
@@ -1009,13 +1017,6 @@ mod tests {
             return Err(format!("allow failed: {allowed:?}").into());
         }
         deliver(&a, &s, &packet).await?;
-        let other_port = udp_ports(
-            alpha.address.parse()?,
-            4000,
-            server.address.parse()?,
-            5001,
-            b"no",
-        )?;
         never_delivered(&a, &s, &other_port).await?;
         let Response::Blocked(blocked) = s.request(Request::Blocked { network }).await else {
             return Err("no blocked list".into());
