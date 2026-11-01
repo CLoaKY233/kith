@@ -62,7 +62,12 @@ struct Device {
     ring: Ring,
 }
 
-/// A [`Ring`] per device, for every device seen since the server started.
+/// How long a device is kept after its newest sample: the hour the ring covers.
+const SPAN_MS: u64 = 3_600_000;
+/// Devices kept at most; the ones heard from longest ago go first.
+const DEVICES: usize = 1024;
+
+/// A [`Ring`] per device, for every device heard from within the last hour.
 #[derive(Debug, Clone, Default)]
 pub struct History {
     devices: BTreeMap<(NetworkId, NodeId), Device>,
@@ -82,6 +87,7 @@ impl History {
                 }
             }
         }
+        self.prune();
     }
 
     /// Adds one sample for a device already named by [`History::record`]; an unknown
@@ -92,6 +98,41 @@ impl History {
             .or_default()
             .ring
             .push(sample);
+        self.prune();
+    }
+
+    /// Drops devices with nothing in the last hour, then the ones heard from longest ago
+    /// beyond [`DEVICES`], so devices that leave do not pile up.
+    fn prune(&mut self) {
+        let Some(newest) = self
+            .devices
+            .values()
+            .filter_map(|device| device.ring.last_ms())
+            .max()
+        else {
+            return;
+        };
+        let since = newest.saturating_sub(SPAN_MS);
+        self.devices
+            .retain(|_, device| device.ring.last_ms().is_none_or(|last| last >= since));
+        if self.devices.len() <= DEVICES {
+            return;
+        }
+        let mut heard: Vec<(Option<u64>, (NetworkId, NodeId))> = self
+            .devices
+            .iter()
+            .map(|(key, device)| (device.ring.last_ms(), *key))
+            .collect();
+        heard.sort_unstable();
+        let extra = self.devices.len().saturating_sub(DEVICES);
+        for (_, key) in heard.into_iter().take(extra) {
+            self.devices.remove(&key);
+        }
+    }
+
+    /// How many devices are kept.
+    pub fn len(&self) -> usize {
+        self.devices.len()
     }
 
     /// Every device's newest `count` samples, ordered by network and device.
@@ -135,6 +176,29 @@ mod tests {
         assert_eq!(ring.len(), CAPACITY);
         let tail: Vec<u64> = ring.tail(2).map(|s| s.at_ms).collect();
         assert_eq!(tail, [3_998_000, 4_000_000]);
+    }
+
+    #[test]
+    fn devices_quiet_for_an_hour_or_beyond_the_cap_are_dropped() {
+        let network = NetworkId::from_bytes([1; 32]);
+        let node = |n: usize| {
+            let mut bytes = [0; 32];
+            bytes[..8].copy_from_slice(&u64::try_from(n).unwrap_or(u64::MAX).to_le_bytes());
+            NodeId::from_bytes(bytes)
+        };
+        let mut history = History::default();
+        history.add(network, node(0), sample(1_000));
+        history.add(network, node(1), sample(SPAN_MS));
+        history.add(network, node(2), sample(SPAN_MS + 2_000));
+        assert_eq!(history.len(), 2);
+        for n in 3..DEVICES + 10 {
+            let at = SPAN_MS + 2_000 * u64::try_from(n).unwrap_or(u64::MAX);
+            history.add(network, node(n), sample(at));
+        }
+        assert_eq!(history.len(), DEVICES);
+        let kept: Vec<NodeId> = history.series(1).iter().map(|one| one.node).collect();
+        assert!(!kept.contains(&node(1)));
+        assert!(kept.contains(&node(DEVICES + 9)));
     }
 
     #[test]
