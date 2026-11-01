@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kith_crypto::{SigningKey, VerifyingKey};
-use kith_filter::{Counters, Filter, Verdict};
+use kith_filter::{Counters, DropReason, Filter, Verdict};
 use kith_policy::CompiledFilter;
 use kith_router::{PrefixTable, Router};
 use kith_transport_udp::{Kind, MAX_SLOT_LEN, RecvBatch, SendBatch, UdpLink, classify};
@@ -22,6 +22,7 @@ use crate::api::{
     Command, DataplaneError, DataplaneHandle, DropCounters, Endpoint, Event, ExternalInterface,
     ExternalMember, ExternalPeerStats, PeerSpec, PeerStats, Stats, channels,
 };
+use crate::blocked::BlockedTable;
 use crate::packet;
 use crate::reassembly::{Complete, Reassembly, is_fragment};
 use crate::timers::Timers;
@@ -184,6 +185,7 @@ struct Output {
     udp: SendBatch,
     events: mpsc::Sender<Event>,
     drops: DropCounters,
+    blocked: BlockedTable,
 }
 
 #[derive(Clone, Copy)]
@@ -229,6 +231,7 @@ impl<T: TunDevice> Engine<T> {
                     udp: SendBatch::with_capacity(kith_tun::BATCH_SIZE, 256 * 1024),
                     events,
                     drops: DropCounters::default(),
+                    blocked: BlockedTable::default(),
                 },
                 scratch: vec![0; required_output_len(MAX_PACKET_CAPACITY).max(MAX_SLOT_LEN)],
                 forward: Vec::with_capacity(MAX_PACKET_CAPACITY),
@@ -655,6 +658,7 @@ impl State {
             peers,
             external,
             drops,
+            blocked: self.out.blocked.snapshot(),
         }
     }
 
@@ -786,7 +790,20 @@ impl State {
             .get_mut(&slot)
             .and_then(|external| external.peers.get_mut(&id))
             .and_then(|entry| entry.member.as_mut());
-        member.is_none_or(|member| member.filter.inbound(packet, now.monotonic) == Verdict::Accept)
+        let Some(member) = member else {
+            return true;
+        };
+        match member.filter.inbound(packet, now.monotonic) {
+            Verdict::Accept => true,
+            Verdict::Drop(reason) => {
+                if reason == DropReason::Policy {
+                    self.out
+                        .blocked
+                        .record(member.network, packet, now.monotonic);
+                }
+                false
+            }
+        }
     }
 
     /// Routes a packet a mesh member sent: to its network's resolver, to this device's
@@ -817,12 +834,13 @@ impl State {
             return;
         }
         if ours {
-            let admitted = if let Some(filter) = self.filters.get_mut(&network) {
-                filter.inbound(whole, now.monotonic) == Verdict::Accept
-            } else {
-                count(&mut self.out.drops.policy);
-                false
-            };
+            let admitted = filter_admits(
+                self.filters.get_mut(&network),
+                &mut self.out,
+                network,
+                whole,
+                now.monotonic,
+            );
             if admitted {
                 self.push_each(whole, parts);
             }
@@ -881,7 +899,7 @@ impl State {
                     entry,
                     role,
                     &mut self.filters,
-                    &mut self.out.drops,
+                    &mut self.out,
                     &done.whole,
                     now.monotonic,
                 ) {
@@ -1258,7 +1276,7 @@ impl State {
                                 entry,
                                 role,
                                 &mut self.filters,
-                                &mut self.out.drops,
+                                &mut self.out,
                                 packet,
                                 now.monotonic,
                             ) && self.tun_out.push(packet).is_err()
@@ -1617,18 +1635,45 @@ fn admits(
     entry: &PeerEntry,
     role: ExitRole,
     filters: &mut BTreeMap<NetworkId, Filter>,
-    drops: &mut DropCounters,
+    out: &mut Output,
     packet: &[u8],
     now: Duration,
 ) -> bool {
-    if !owns_source(entry, role, drops, packet) {
+    if !owns_source(entry, role, &mut out.drops, packet) {
         return false;
     }
-    if let Some(filter) = filters.get_mut(&entry.network) {
-        filter.inbound(packet, now) == Verdict::Accept
+    filter_admits(
+        filters.get_mut(&entry.network),
+        out,
+        entry.network,
+        packet,
+        now,
+    )
+}
+
+/// Whether `network`'s filter lets `packet` in; a network without one admits nothing.
+/// Refusals by policy are sampled for [`crate::Blocked`].
+fn filter_admits(
+    filter: Option<&mut Filter>,
+    out: &mut Output,
+    network: NetworkId,
+    packet: &[u8],
+    now: Duration,
+) -> bool {
+    let verdict = if let Some(filter) = filter {
+        filter.inbound(packet, now)
     } else {
-        count(&mut drops.policy);
-        false
+        count(&mut out.drops.policy);
+        Verdict::Drop(DropReason::Policy)
+    };
+    match verdict {
+        Verdict::Accept => true,
+        Verdict::Drop(reason) => {
+            if reason == DropReason::Policy {
+                out.blocked.record(network, packet, now);
+            }
+            false
+        }
     }
 }
 

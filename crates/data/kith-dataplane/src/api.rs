@@ -164,6 +164,9 @@ pub struct Stats {
     pub external: Vec<ExternalPeerStats>,
     /// Drops since the dataplane started.
     pub drops: DropCounters,
+    /// The connections the policy refused recently, at most 256, with how many packets
+    /// of each were sampled since the dataplane started.
+    pub blocked: Vec<crate::Blocked>,
 }
 
 /// One external peer's session and traffic.
