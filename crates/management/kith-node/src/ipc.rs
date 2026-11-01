@@ -4,7 +4,7 @@ use kith_config::WgQuickConfig;
 use kith_control::records::{DNS_PREFIX, DnsData, DnsRecords, Record};
 use kith_identity::InviteToken;
 use kith_ipc::{
-    Connection, DnsRecord, ErrorCode, Event, IpcServer, PROTOCOL_VERSION, PeerCred, Request,
+    Connection, DnsRecord, Entry, ErrorCode, Event, IpcServer, PROTOCOL_VERSION, PeerCred, Request,
     Response,
 };
 use kith_naming::DEFAULT_DEVICE_TTL;
@@ -14,6 +14,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, warn};
 
+use crate::journal::Journal;
 use crate::types::{Action, Command, NodeError};
 
 /// Events buffered per watcher before the slowest one starts missing them.
@@ -24,6 +25,7 @@ pub(crate) async fn serve(
     server: IpcServer,
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
+    journal: Journal,
     operators: Operators,
 ) -> Result<(), NodeError> {
     loop {
@@ -39,8 +41,11 @@ pub(crate) async fn serve(
         };
         let commands = commands.clone();
         let events = events.clone();
+        let journal = journal.clone();
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(connection, commands, events, operators).await {
+            if let Err(error) =
+                serve_connection(connection, commands, events, journal, operators).await
+            {
                 debug!(%error, "ipc connection ended");
             }
         });
@@ -51,6 +56,7 @@ async fn serve_connection(
     mut connection: Connection,
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
+    journal: Journal,
     operators: Operators,
 ) -> Result<(), NodeError> {
     while let Some(request) = connection.next_request().await? {
@@ -58,6 +64,11 @@ async fn serve_connection(
             let watcher = events.subscribe();
             connection.respond(Response::Watching).await?;
             return watch(connection, watcher).await;
+        }
+        if let Request::Journal { since } = request {
+            let (backlog, live, next) = journal.subscribe(since);
+            connection.respond(Response::Journaling { next }).await?;
+            return follow(connection, backlog, live).await;
         }
         let response = if !is_read_only(&request) && !operators.may_change_state(connection.peer())
         {
@@ -77,6 +88,35 @@ async fn serve_connection(
         connection.respond(response).await?;
     }
     Ok(())
+}
+
+/// Sends `backlog`, then every entry from `live`; a client too slow to keep up is told
+/// how many it missed and carries on from there.
+async fn follow(
+    mut connection: Connection,
+    backlog: Vec<Entry>,
+    mut live: broadcast::Receiver<Entry>,
+) -> Result<(), NodeError> {
+    let mut last = None;
+    for entry in backlog {
+        last = Some(entry.seq);
+        connection.send_entry(entry).await?;
+    }
+    loop {
+        let entry = match live.recv().await {
+            Ok(entry) => entry,
+            Err(RecvError::Lagged(missed)) => {
+                warn!(missed, "an IPC client fell behind the journal");
+                continue;
+            }
+            Err(RecvError::Closed) => return Ok(()),
+        };
+        if last.is_some_and(|seq| entry.seq <= seq) {
+            continue;
+        }
+        last = Some(entry.seq);
+        connection.send_entry(entry).await?;
+    }
 }
 
 async fn watch(
@@ -145,6 +185,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
         Request::Leave { network } => Action::Leave { network },
         Request::Peers { network } => Action::Peers { network },
         Request::Records { network } => Action::Records { network },
+        Request::Traffic => Action::Traffic,
         Request::SetRecord {
             network,
             name,
@@ -207,7 +248,7 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             device_name: non_empty("device name", device_name)?,
             tags,
         },
-        _ => {
+        Request::Journal { .. } | _ => {
             return Err(NodeError::InvalidArgument("unsupported request".to_owned()));
         }
     };
@@ -317,6 +358,8 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::Status
             | Request::Peers { .. }
             | Request::Records { .. }
+            | Request::Journal { .. }
+            | Request::Traffic
             | Request::Watch
     )
 }

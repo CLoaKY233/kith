@@ -10,6 +10,7 @@ mod daemon;
 mod dns;
 mod external;
 mod ipc;
+mod journal;
 mod network;
 mod os;
 mod server;
@@ -18,4 +19,5 @@ mod stealth;
 mod types;
 
 pub use daemon::{Node, NodeHandle, NodeOptions, TunMode, run};
+pub use journal::Journal;
 pub use types::NodeError;

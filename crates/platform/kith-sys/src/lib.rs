@@ -11,8 +11,10 @@
 //! the state directory, so it also cleans up after a crashed run.
 //!
 //! The only `unsafe` is libc: `geteuid` behind [`effective_uid`], and the user and
-//! group lookups in [`group_id`] and [`user_in_group`].
+//! group lookups in [`group_id`] and [`user_in_group`], and the time zone lookup in
+//! [`utc_offset_secs`].
 
+mod clock;
 mod command;
 mod conflicts;
 mod error;
@@ -26,6 +28,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
+pub use clock::utc_offset_secs;
 pub use command::{Cmd, NoopSystem, OsSystem, Output, System, effective_uid};
 pub use conflicts::RouteConflict;
 pub use error::Error;

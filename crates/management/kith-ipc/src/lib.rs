@@ -18,13 +18,13 @@ mod server;
 pub use client::IpcClient;
 pub use error::IpcError;
 pub use message::{
-    DnsRecord, ErrorCode, Event, NetworkSummary, PathKind, PeerInfo, Problem, RecordInfo, Request,
-    Response, Status, Warning,
+    DnsRecord, Entry, EntryKind, ErrorCode, Event, NetworkSummary, PathKind, PeerInfo, Problem,
+    RecordInfo, Request, Response, Status, TrafficSample, TrafficSeries, Warning,
 };
 pub use server::{Connection, IpcServer, PeerCred};
 
 /// The protocol version both sides must agree on in [`Request::Hello`].
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// The largest frame either side accepts.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;

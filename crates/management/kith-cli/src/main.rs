@@ -50,6 +50,8 @@ fn main() -> ExitCode {
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Watch
+        | Cmd::Log { .. }
+        | Cmd::Top
         | Cmd::Doctor
         | Cmd::Config(_) => tokio::runtime::Builder::new_current_thread()
             .enable_all()

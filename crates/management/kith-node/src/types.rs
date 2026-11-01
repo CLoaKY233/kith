@@ -148,6 +148,8 @@ pub(crate) enum Action {
         /// The network.
         network: NetworkId,
     },
+    /// Traffic history of every peer.
+    Traffic,
     /// List a network's DNS names.
     Records {
         /// The network.

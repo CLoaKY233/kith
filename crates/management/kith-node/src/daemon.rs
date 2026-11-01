@@ -14,7 +14,9 @@ use kith_dataplane::{
 use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
-use kith_ipc::{Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning};
+use kith_ipc::{
+    EntryKind, Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning,
+};
 use kith_ledger::JoinProof;
 use kith_policy::Addresses;
 use kith_router::MeshRanges;
@@ -30,6 +32,7 @@ use crate::connectivity::{Connectivity, Output};
 use crate::dns::DnsService;
 use crate::external::{ClientConfig, ExternalPeers, render_client};
 use crate::ipc;
+use crate::journal::{Activity, Journal};
 use crate::network::{Change, NetworkRuntime, NetworkSet};
 use crate::os::{DynSystem, OsPlanner, PlanInputs};
 use crate::server::{Listeners, ServerMode, stun_reply};
@@ -102,6 +105,7 @@ pub struct NodeOptions {
     listen_ip: IpAddr,
     dns_listen: Option<SocketAddr>,
     ipc: bool,
+    journal: Journal,
 }
 
 impl NodeOptions {
@@ -115,7 +119,16 @@ impl NodeOptions {
             listen_ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             dns_listen: None,
             ipc: true,
+            journal: Journal::new(),
         }
+    }
+
+    /// Records what happens in `journal`, shared with whoever else writes to it, such
+    /// as the logger.
+    #[must_use]
+    pub fn journal(mut self, journal: Journal) -> Self {
+        self.journal = journal;
+        self
     }
 
     /// Selects the TUN device.
@@ -261,8 +274,8 @@ impl NodeHandle {
 }
 
 /// Runs the real daemon until SIGINT or SIGTERM, then reverts OS changes.
-pub async fn run(config: Config) -> Result<(), NodeError> {
-    let node = Node::start(NodeOptions::new(config, OsSystem)).await?;
+pub async fn run(config: Config, journal: Journal) -> Result<(), NodeError> {
+    let node = Node::start(NodeOptions::new(config, OsSystem).journal(journal)).await?;
     shutdown_signal().await?;
     node.shutdown().await
 }
@@ -330,6 +343,8 @@ pub(crate) struct Daemon {
     gossiped: BTreeMap<NetworkId, Vec<(NodeId, Vec<SocketAddr>)>>,
     exit: Option<(NetworkId, NodeId)>,
     ipc_task: Option<JoinHandle<()>>,
+    journal: Journal,
+    activity: Activity,
 }
 
 impl Drop for Daemon {
@@ -463,6 +478,7 @@ fn start_ipc(
     config: &Config,
     commands: mpsc::Sender<Command>,
     events: broadcast::Sender<Event>,
+    journal: Journal,
 ) -> Result<JoinHandle<()>, NodeError> {
     let server = kith_ipc::IpcServer::bind(&config.daemon.socket_path)?;
     let operators = ipc::Operators {
@@ -475,7 +491,7 @@ fn start_ipc(
         tracing::warn!(%error, group = config.daemon.operator_group, "the operator group cannot use the socket; use sudo");
     }
     Ok(tokio::spawn(async move {
-        if let Err(error) = ipc::serve(server, commands, events, operators).await {
+        if let Err(error) = ipc::serve(server, commands, events, journal, operators).await {
             tracing::warn!(%error, "ipc server stopped");
         }
     }))
@@ -530,7 +546,12 @@ impl Daemon {
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
         let ipc_task = if options.ipc {
-            Some(start_ipc(config, commands.clone(), events.clone())?)
+            Some(start_ipc(
+                config,
+                commands.clone(),
+                events.clone(),
+                options.journal.clone(),
+            )?)
         } else {
             None
         };
@@ -571,6 +592,8 @@ impl Daemon {
             gossiped: BTreeMap::new(),
             exit: None,
             ipc_task,
+            journal: options.journal.clone(),
+            activity: Activity::default(),
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -648,6 +671,9 @@ impl Daemon {
             self.notes
                 .warnings
                 .push_back((Instant::now(), Chain(&error).to_string()));
+            self.journal.push(EntryKind::Warning {
+                message: Chain(&error).to_string(),
+            });
             let _receivers = self.events.send(Event::Warning {
                 message: error.to_string(),
             });
@@ -684,6 +710,7 @@ impl Daemon {
             Action::Join { token, device_name } => self.join(&token, &device_name).await,
             Action::Leave { network } => self.leave(network).await,
             Action::Peers { network } => self.peers(network).await,
+            Action::Traffic => Ok(Response::Traffic(self.activity.traffic())),
             Action::Records { network } => Ok(Response::Records(crate::dns::record_list(
                 self.member_map(network)?,
             ))),
@@ -923,6 +950,12 @@ impl Daemon {
         self.exit = node.map(|node| (network, node));
         self.dataplane.set_exit(self.exit).await?;
         self.state.save_exit(self.exit)?;
+        self.journal.push(EntryKind::ExitChanged {
+            exit: node.and_then(|node| {
+                let map = self.networks.maps().get(&network)?;
+                Some(format!("{}/{}", map.name(), map.peers().get(&node)?.label))
+            }),
+        });
         self.refresh(None).await?;
         Ok(Response::ExitSet)
     }
@@ -2085,6 +2118,11 @@ impl Daemon {
         let known: BTreeSet<NodeId> = stats.peers.iter().map(|stat| stat.node).collect();
         self.presence.traffic.retain(|node, _| known.contains(node));
         self.announce_presence(&stats);
+        let peers: Vec<(NetworkId, Vec<PeerInfo>)> = member_maps_with_ids(self.networks.maps())
+            .map(|(network, map)| (network, self.peer_infos(network, map, &stats)))
+            .collect();
+        self.activity
+            .observe(&peers, &drop_reasons(&stats.drops), &self.journal);
     }
 
     /// Tells the network which of this device's plain WireGuard members are online,

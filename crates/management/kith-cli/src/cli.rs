@@ -123,6 +123,18 @@ pub(crate) enum Cmd {
     /// Show the current state, then each change as it happens
     #[bpaf(command)]
     Watch,
+    /// Show what happened: devices coming and going, path changes, drops, the daemon's log
+    #[bpaf(command)]
+    Log {
+        /// Keep printing new entries as they happen
+        #[bpaf(short, long)]
+        follow: bool,
+        /// Leave out the daemon's log lines
+        events: bool,
+    },
+    /// Show live traffic per peer, busiest first
+    #[bpaf(command)]
+    Top,
     /// Check what is wrong and say how to fix it
     #[bpaf(command)]
     Doctor,

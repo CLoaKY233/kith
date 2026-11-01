@@ -42,7 +42,7 @@ fn seen_ago(secs: Option<u64>) -> String {
 }
 
 /// Binary units with one truncated decimal, like `1.1 MiB`.
-fn byte_size(bytes: u64) -> String {
+pub(crate) fn byte_size(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     let mut scale: u64 = 1024;
     let mut tenths = None;
@@ -59,7 +59,7 @@ fn byte_size(bytes: u64) -> String {
     }
 }
 
-fn write_row<S: AsRef<str>>(
+pub(crate) fn write_row<S: AsRef<str>>(
     out: &mut impl Write,
     indent: &str,
     cells: &[S],

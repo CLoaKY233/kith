@@ -112,6 +112,11 @@ impl Names {
         }
     }
 
+    /// `text`'s network, or the only one when it is left out.
+    fn network_or_only(&self, text: Option<&str>) -> Result<NetworkId, CliError> {
+        text.map_or_else(|| self.only_network(), |text| self.network(text))
+    }
+
     fn only_network(&self) -> Result<NetworkId, CliError> {
         match self.networks.as_slice() {
             [(id, _)] => Ok(*id),
@@ -152,16 +157,10 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             network: names.network(network)?,
         },
         Cmd::Peers { network, .. } => Request::Peers {
-            network: match network {
-                Some(network) => names.network(network)?,
-                None => names.only_network()?,
-            },
+            network: names.network_or_only(network.as_deref())?,
         },
         Cmd::Dns(DnsCmd::List { network, .. }) => Request::Records {
-            network: match network {
-                Some(network) => names.network(network)?,
-                None => names.only_network()?,
-            },
+            network: names.network_or_only(network.as_deref())?,
         },
         Cmd::Dns(DnsCmd::Set {
             network,
@@ -222,7 +221,14 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             relay: *relay,
         },
         Cmd::Wg(wg) => wg_request(wg, names)?,
-        Cmd::Up | Cmd::Down | Cmd::Watch | Cmd::Doctor | Cmd::Config(_) | Cmd::Daemon { .. } => {
+        Cmd::Up
+        | Cmd::Down
+        | Cmd::Watch
+        | Cmd::Log { .. }
+        | Cmd::Top
+        | Cmd::Doctor
+        | Cmd::Config(_)
+        | Cmd::Daemon { .. } => {
             return Err(CliError("not a daemon request".to_owned()));
         }
     })
@@ -342,17 +348,17 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Exit(_)
         | Cmd::Relay(_)
         | Cmd::Server { .. }
-        | Cmd::Wg(_)
-        | Cmd::Watch => {}
+        | Cmd::Wg(_) => {}
+        Cmd::Watch => return crate::watch::watch(&socket_path(opts)?, out).await,
+        Cmd::Log { follow, events } => {
+            return crate::watch::log(&socket_path(opts)?, *follow, *events, out).await;
+        }
+        Cmd::Top => return crate::watch::top(&socket_path(opts)?, out).await,
         Cmd::Doctor => return doctor(opts, out).await,
     }
 
     let mut client = connect(&socket_path(opts)?).await?;
     match &opts.cmd {
-        Cmd::Watch => {
-            drop(client);
-            return crate::watch::run(&socket_path(opts)?, out).await;
-        }
         Cmd::Status { json } => return status(&mut client, *json, out).await,
         Cmd::Create { .. }
         | Cmd::Invite { .. }
@@ -369,6 +375,9 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Doctor
         | Cmd::Up
         | Cmd::Down
+        | Cmd::Watch
+        | Cmd::Log { .. }
+        | Cmd::Top
         | Cmd::Daemon { .. } => {}
     }
 

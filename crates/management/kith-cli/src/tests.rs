@@ -621,44 +621,103 @@ fn peers_may_leave_out_the_network() {
     ));
 }
 
-#[cfg(unix)]
 #[test]
-fn watch_reports_each_change_once() {
-    use crate::watch::{Snapshot, changes};
-    let status = fake_status();
-    let peers = fake_peers();
-    let before = Snapshot::new(&status, std::slice::from_ref(&peers));
-    assert!(changes(&before, &before).is_empty(), "no change, no lines");
+fn journal_entries_read_as_sentences() {
+    use kith_ipc::{Entry, EntryKind};
 
-    let mut later = status;
-    later.exit_node = None;
-    later.drops.insert("policy".into(), 5);
-    let mut moved = peers.clone();
-    moved[0].path = Some(PathKind::Relay);
-    moved[1].online = true;
-    moved[1].path = Some(PathKind::Direct);
-    moved[2].online = false;
-    moved.push(PeerInfo {
-        name: "ipad".into(),
-        ..peers[0].clone()
-    });
-    let after = Snapshot::new(&later, std::slice::from_ref(&moved));
+    use crate::watch::{clock, describe, line};
+    let names = [(NET, "home".to_owned())].into();
+    let online = EntryKind::PeerOnline {
+        network: NET,
+        node: NODE,
+        name: "nas".into(),
+        path: Some(PathKind::Relay),
+        gateway: None,
+    };
+    assert_eq!(describe(&online, &names), "home/nas online, relayed");
+    let phone = EntryKind::PeerOnline {
+        network: NET,
+        node: NODE,
+        name: "phone".into(),
+        path: None,
+        gateway: Some("vps".into()),
+    };
+    assert_eq!(describe(&phone, &names), "home/phone online, via vps");
+    let elsewhere = EntryKind::PeerOffline {
+        network: NetworkId::from_bytes([0x01; 32]),
+        node: NODE,
+        name: "tv".into(),
+    };
     assert_eq!(
-        changes(&before, &after),
-        [
-            "home/ipad joined (100.64.0.2)",
-            "home/nas now relay",
-            "home/phone online, direct",
-            "home/pixel offline",
-            "internet traffic no longer goes through an exit",
-            "3 packets dropped: policy",
-        ]
+        describe(&elsewhere, &names),
+        "01010101/tv offline",
+        "an unknown network shows its id"
     );
 
-    let mut gone = moved;
-    gone.retain(|peer| peer.name != "ipad");
-    let removed = Snapshot::new(&later, std::slice::from_ref(&gone));
-    assert_eq!(changes(&after, &removed), ["home/ipad removed"]);
+    assert_eq!(clock(86_399_000, 0), "23:59:59");
+    assert_eq!(clock(0, 19_800), "05:30:00", "India is UTC+5:30");
+    assert_eq!(
+        clock(0, -3600),
+        "23:00:00",
+        "an offset may cross midnight backwards"
+    );
+    let entry = Entry {
+        seq: 4,
+        at_ms: 3_600_000,
+        kind: EntryKind::ExitChanged { exit: None },
+    };
+    assert_eq!(
+        line(&entry, &names, 0),
+        "01:00:00  internet traffic no longer goes through an exit"
+    );
+}
+
+#[test]
+fn top_shows_rates_busiest_first() {
+    use kith_ipc::{TrafficSample, TrafficSeries};
+
+    let sample = |at_ms, rx_bytes, tx_bytes| TrafficSample {
+        at_ms,
+        rx_bytes,
+        tx_bytes,
+    };
+    let series = [
+        TrafficSeries {
+            network: NET,
+            node: NODE,
+            name: "quiet".into(),
+            samples: vec![sample(0, 0, 0), sample(2000, 2048, 0)],
+        },
+        TrafficSeries {
+            network: NET,
+            node: PHONE,
+            name: "busy".into(),
+            samples: vec![sample(0, 0, 0), sample(2000, 4 << 20, 2 << 20)],
+        },
+        TrafficSeries {
+            network: NET,
+            node: NODE,
+            name: "new".into(),
+            samples: vec![],
+        },
+    ];
+    let mut out = Vec::new();
+    crate::watch::traffic_table(&mut out, &series, &[(NET, "home".to_owned())].into()).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "a peer with no samples is left out:\n{text}"
+    );
+    assert!(
+        lines[1].starts_with("home/busy") && lines[1].contains("2.0 MiB/s"),
+        "{text}"
+    );
+    assert!(
+        lines[2].starts_with("home/quiet") && lines[2].contains("1.0 KiB/s"),
+        "{text}"
+    );
 }
 
 #[test]

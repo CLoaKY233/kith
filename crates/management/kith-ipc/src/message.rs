@@ -145,6 +145,14 @@ pub enum Request {
         /// Network to list.
         network: NetworkId,
     },
+    /// Sends the journal from entry `since` on (the oldest kept, if `None` or too old),
+    /// then each new entry as it happens, until the connection closes.
+    Journal {
+        /// The first sequence number wanted.
+        since: Option<u64>,
+    },
+    /// Traffic per peer over the last hour.
+    Traffic,
 }
 
 /// A typed DNS record.
@@ -259,6 +267,13 @@ pub enum Response {
     DeviceRemoved,
     /// Answers [`Request::Records`].
     Records(Vec<RecordInfo>),
+    /// Answers [`Request::Journal`]; entries follow on the connection.
+    Journaling {
+        /// The sequence number the next new entry will get: entries before it are history.
+        next: u64,
+    },
+    /// Answers [`Request::Traffic`].
+    Traffic(Vec<TrafficSeries>),
 }
 
 /// Why the daemon refused a request.
@@ -423,4 +438,138 @@ pub enum Event {
 pub(crate) enum ServerMessage {
     Response(Response),
     Event(Event),
+    Entry(Entry),
+}
+
+/// One thing that happened, numbered so a client can resume where it stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    /// Increases by one per entry, from 0 when the daemon started.
+    pub seq: u64,
+    /// When, in milliseconds since the Unix epoch.
+    pub at_ms: u64,
+    /// What.
+    pub kind: EntryKind,
+}
+
+/// What a journal [`Entry`] records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum EntryKind {
+    /// A peer came online, reached as `path` (or through `gateway`, for a phone).
+    PeerOnline {
+        /// Its network.
+        network: NetworkId,
+        /// The peer.
+        node: NodeId,
+        /// Its name in the network.
+        name: String,
+        /// How it is reached.
+        path: Option<PathKind>,
+        /// The kith device a plain WireGuard member goes through.
+        gateway: Option<String>,
+    },
+    /// A peer went offline.
+    PeerOffline {
+        /// Its network.
+        network: NetworkId,
+        /// The peer.
+        node: NodeId,
+        /// Its name in the network.
+        name: String,
+    },
+    /// An online peer is now reached another way.
+    PathChanged {
+        /// Its network.
+        network: NetworkId,
+        /// The peer.
+        node: NodeId,
+        /// Its name in the network.
+        name: String,
+        /// The path before.
+        from: Option<PathKind>,
+        /// The path now.
+        to: Option<PathKind>,
+    },
+    /// An online peer's address changed, as when a phone moves from Wi-Fi to mobile data.
+    EndpointChanged {
+        /// Its network.
+        network: NetworkId,
+        /// The peer.
+        node: NodeId,
+        /// Its name in the network.
+        name: String,
+        /// The new address.
+        endpoint: String,
+    },
+    /// A device became a member.
+    DeviceJoined {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// Its name.
+        name: String,
+        /// Its mesh address.
+        address: String,
+    },
+    /// A device stopped being a member.
+    DeviceRemoved {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// Its name.
+        name: String,
+    },
+    /// The exit node this device uses changed; `None` when it stopped using one.
+    ExitChanged {
+        /// `network/device`.
+        exit: Option<String>,
+    },
+    /// The data plane dropped more packets for `reason`.
+    Dropped {
+        /// Why, as `kith status` names it.
+        reason: String,
+        /// How many since the last entry for this reason.
+        count: u64,
+    },
+    /// A problem the daemon hit.
+    Warning {
+        /// Human-readable text.
+        message: String,
+    },
+    /// A line from the daemon's log.
+    Log {
+        /// `error`, `warn`, `info`, `debug` or `trace`.
+        level: String,
+        /// The module that logged it.
+        target: String,
+        /// The message and its fields.
+        message: String,
+    },
+}
+
+/// Traffic counters of one peer, sampled every few seconds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficSeries {
+    /// Its network.
+    pub network: NetworkId,
+    /// The peer.
+    pub node: NodeId,
+    /// Its name in the network.
+    pub name: String,
+    /// Oldest first.
+    pub samples: Vec<TrafficSample>,
+}
+
+/// Total bytes received from and sent to a peer at one moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrafficSample {
+    /// When, in milliseconds since the Unix epoch.
+    pub at_ms: u64,
+    /// Received since the session began.
+    pub rx_bytes: u64,
+    /// Sent since the session began.
+    pub tx_bytes: u64,
 }

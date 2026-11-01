@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::codec::Framed;
 use crate::message::ServerMessage;
-use crate::{ErrorCode, Event, IpcError, PROTOCOL_VERSION, Request, Response};
+use crate::{Entry, ErrorCode, Event, IpcError, PROTOCOL_VERSION, Request, Response};
 
 #[cfg(unix)]
 type Stream = tokio::net::UnixStream;
@@ -205,6 +205,11 @@ impl Connection {
     /// Pushes an event to a client that sent [`Request::Watch`].
     pub async fn send_event(&mut self, event: Event) -> Result<(), IpcError> {
         self.framed.send(&ServerMessage::Event(event)).await
+    }
+
+    /// Sends one journal entry, after [`crate::Response::Journaling`].
+    pub async fn send_entry(&mut self, entry: Entry) -> Result<(), IpcError> {
+        self.framed.send(&ServerMessage::Entry(entry)).await
     }
 
     async fn reject(&mut self, code: ErrorCode, message: String) {

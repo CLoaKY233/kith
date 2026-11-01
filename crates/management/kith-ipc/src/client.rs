@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::codec::Framed;
 use crate::message::ServerMessage;
-use crate::{Event, IpcError, PROTOCOL_VERSION, REQUEST_TIMEOUT, Request, Response};
+use crate::{Entry, Event, IpcError, PROTOCOL_VERSION, REQUEST_TIMEOUT, Request, Response};
 
 #[cfg(unix)]
 type Stream = tokio::net::UnixStream;
@@ -78,7 +78,9 @@ impl IpcClient {
                 let item = match self.framed.recv::<ServerMessage>().await {
                     Ok(Some(ServerMessage::Event(event))) => Ok(event),
                     Ok(None) => break,
-                    Ok(Some(ServerMessage::Response(_))) => Err(IpcError::Unexpected),
+                    Ok(Some(ServerMessage::Response(_) | ServerMessage::Entry(_))) => {
+                        Err(IpcError::Unexpected)
+                    }
                     Err(error) => Err(error),
                 };
                 let fatal = item.is_err();
@@ -90,6 +92,35 @@ impl IpcClient {
         Ok(rx)
     }
 
+    /// Streams the journal from entry `since` (or the oldest kept), then each new entry.
+    /// Also returns the first sequence number that was not yet history.
+    pub async fn journal(
+        mut self,
+        since: Option<u64>,
+    ) -> Result<(u64, mpsc::Receiver<Result<Entry, IpcError>>), IpcError> {
+        let Response::Journaling { next } = self.request(Request::Journal { since }).await? else {
+            return Err(IpcError::Unexpected);
+        };
+        let (tx, rx) = mpsc::channel(256);
+        tokio::spawn(async move {
+            loop {
+                let item = match self.framed.recv::<ServerMessage>().await {
+                    Ok(Some(ServerMessage::Entry(entry))) => Ok(entry),
+                    Ok(None) => break,
+                    Ok(Some(ServerMessage::Response(_) | ServerMessage::Event(_))) => {
+                        Err(IpcError::Unexpected)
+                    }
+                    Err(error) => Err(error),
+                };
+                let fatal = item.is_err();
+                if tx.send(item).await.is_err() || fatal {
+                    break;
+                }
+            }
+        });
+        Ok((next, rx))
+    }
+
     async fn exchange(&mut self, request: &Request) -> Result<Response, IpcError> {
         self.framed.send(request).await?;
         match self.framed.recv::<ServerMessage>().await? {
@@ -97,7 +128,7 @@ impl IpcClient {
                 Err(IpcError::Remote { code, message })
             }
             Some(ServerMessage::Response(response)) => Ok(response),
-            Some(ServerMessage::Event(_)) => Err(IpcError::Unexpected),
+            Some(ServerMessage::Event(_) | ServerMessage::Entry(_)) => Err(IpcError::Unexpected),
             None => Err(IpcError::Closed),
         }
     }

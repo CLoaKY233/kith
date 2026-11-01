@@ -9,7 +9,7 @@ mod tests {
 
     use kith_config::Config;
     use kith_identity::{BootstrapAddr, InviteToken};
-    use kith_ipc::{PeerInfo, Request, Response};
+    use kith_ipc::{EntryKind, PeerInfo, Request, Response};
     use kith_node::{Node, NodeHandle, NodeOptions, TunMode};
     use kith_sys::NoopSystem;
     use kith_types::{NetworkId, NodeId};
@@ -874,6 +874,73 @@ mod tests {
         )
         .await
         .map_err(|_| "did not come back to direct in time")??;
+        shutdown([a, b, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_journal_records_joins_exits_and_traffic() -> TestResult {
+        let s = start_server(true, false, None).await?;
+        let journal = kith_node::Journal::new();
+        let watched = journal.clone();
+        let a = start_node(
+            |config| config,
+            move |options| options.journal(watched.clone()),
+            true,
+        )
+        .await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer_info(&a, network, "server").await?;
+        let b = start().await?;
+        join(&s, &b, network, "beta").await?;
+        let beta = peer(&a, network, "beta").await?;
+        let alpha = peer(&b, network, "alpha").await?;
+        deliver(&b, &a, &udp_packet(beta, alpha, b"hi")?).await?;
+        use_exit(&a, network, Some(server.node)).await?;
+
+        let wanted = |entries: &[kith_ipc::Entry]| {
+            let joined = entries.iter().any(|e| {
+                matches!(&e.kind, EntryKind::DeviceJoined { name, address, .. }
+                    if name == "beta" && *address == beta.to_string())
+            });
+            let exit = entries.iter().any(|e| {
+                matches!(&e.kind, EntryKind::ExitChanged { exit: Some(exit) } if exit == "home/server")
+            });
+            joined && exit
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        while !wanted(&journal.entries()) {
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!(
+                    "the journal missed the join or the exit: {:?}",
+                    journal.entries()
+                )
+                .into());
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
+        let seqs: Vec<u64> = journal.entries().iter().map(|e| e.seq).collect();
+        if seqs.windows(2).any(|pair| pair[1] != pair[0] + 1) {
+            return Err(format!("entries are not numbered one by one: {seqs:?}").into());
+        }
+
+        let Response::Traffic(traffic) = a.request(Request::Traffic).await else {
+            return Err("no traffic history".into());
+        };
+        let to_server = traffic
+            .iter()
+            .find(|series| series.name == "server")
+            .ok_or("no traffic history for the server")?;
+        if to_server.samples.is_empty()
+            || to_server
+                .samples
+                .windows(2)
+                .any(|pair| pair[1].at_ms < pair[0].at_ms)
+        {
+            return Err(
+                format!("traffic samples are missing or out of order: {to_server:?}").into(),
+            );
+        }
         shutdown([a, b, s]).await
     }
 

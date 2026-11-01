@@ -936,3 +936,10 @@ fn group_lookups_find_root_and_reject_unknown_names() {
         "an unknown user is in no group"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn utc_offset_is_within_a_day() {
+    let offset = crate::utc_offset_secs(1_800_000_000);
+    assert!(offset.abs() <= 14 * 3600, "{offset}");
+}
