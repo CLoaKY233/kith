@@ -7,6 +7,7 @@
 # KITH_NO_START=1      install only; run `kith up` yourself later
 # KITH_DOWNLOADS=url   fetch releases from a mirror instead of GitHub
 # KITH_BIN_DIR=dir     install somewhere other than /usr/local/bin
+# KITH_UI=1            also install the web UI (kith ui) without asking
 set -eu
 
 repo="CLoaKY233/kith"
@@ -66,30 +67,56 @@ need uname
 target="$(target)"
 version="${KITH_VERSION:-$(latest_version)}"
 version="${version#v}"
-name="kith-$version-$target"
-
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-say "downloading kith $version for $target"
-curl -fsSL -o "$tmp/$name.tar.gz" "$downloads/v$version/$name.tar.gz" ||
-    fail "download failed: $downloads/v$version/$name.tar.gz"
 curl -fsSL -o "$tmp/SHA256SUMS" "$downloads/v$version/SHA256SUMS" ||
     fail "could not download the checksums"
 
-expected="$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
-[ -n "$expected" ] || fail "SHA256SUMS has no entry for $name.tar.gz"
-[ "$(sha256 "$tmp/$name.tar.gz")" = "$expected" ] ||
-    fail "checksum mismatch for $name.tar.gz; not installing"
+# Downloads, verifies and installs the release binary $1 into $bin_dir.
+install_bin() {
+    name="$1-$version-$target"
+    say "downloading $1 $version for $target"
+    curl -fsSL -o "$tmp/$name.tar.gz" "$downloads/v$version/$name.tar.gz" ||
+        fail "download failed: $downloads/v$version/$name.tar.gz"
+    expected="$(grep " $name.tar.gz\$" "$tmp/SHA256SUMS" | cut -d' ' -f1)"
+    [ -n "$expected" ] || fail "SHA256SUMS has no entry for $name.tar.gz"
+    [ "$(sha256 "$tmp/$name.tar.gz")" = "$expected" ] ||
+        fail "checksum mismatch for $name.tar.gz; not installing"
+    tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
+    if mkdir -p "$bin_dir" 2>/dev/null && [ -w "$bin_dir" ]; then
+        install -m 0755 "$tmp/$name/$1" "$bin_dir/$1"
+    else
+        as_root mkdir -p "$bin_dir"
+        as_root install -m 0755 "$tmp/$name/$1" "$bin_dir/$1"
+    fi
+    say "installed $bin_dir/$1"
+}
 
-tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
-if mkdir -p "$bin_dir" 2>/dev/null && [ -w "$bin_dir" ]; then
-    install -m 0755 "$tmp/$name/kith" "$bin_dir/kith"
-else
-    as_root mkdir -p "$bin_dir"
-    as_root install -m 0755 "$tmp/$name/kith" "$bin_dir/kith"
+install_bin kith
+
+ui="${KITH_UI:-}"
+case "$target" in
+    armv7-*)
+        [ "$ui" = 1 ] && say "no web UI build for $target; skipping kith-ui"
+        ui=0
+        ;;
+esac
+if [ -z "$ui" ]; then
+    if [ -t 0 ]; then
+        printf 'Also install the web UI (kith ui)? [y/N] '
+        read -r answer || answer=""
+        case "$answer" in
+            y | Y | yes | Yes) ui=1 ;;
+        esac
+    else
+        say "to also install the web UI (kith ui), run the installer with KITH_UI=1:"
+        say "  curl -fsSL https://raw.githubusercontent.com/$repo/main/install.sh | KITH_UI=1 sh"
+    fi
 fi
-say "installed $bin_dir/kith"
+if [ "$ui" = 1 ]; then
+    install_bin kith-ui
+fi
 
 if [ "$(uname -s)" = Linux ] && command -v groupadd >/dev/null 2>&1; then
     if ! getent group kith >/dev/null 2>&1; then

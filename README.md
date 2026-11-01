@@ -44,6 +44,18 @@ kith up
 
 `kith --help` lists every command; `kith <command> --help` shows its options. To turn a VPS into an always-on exit and relay, see [docs/server.md](docs/server.md).
 
+### Web UI
+
+`kith ui` opens a live view of your networks in the browser: devices, their connections, traffic and recent events. It runs on your own device, listens on 127.0.0.1 only, and talks to the local kith service; nothing is hosted elsewhere.
+
+It is a separate binary, `kith-ui`, for macOS and for Linux on x86_64 and aarch64. The installer asks whether to add it when run in a terminal; with `curl | sh`, set `KITH_UI=1`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CLoaKY233/kith/main/install.sh | KITH_UI=1 sh
+```
+
+From source: `cargo build --release -p kith-ui`, and put `kith-ui` next to `kith`.
+
 ## How it differs
 
 Tailscale, Headscale and NetBird have a coordination server that every device talks to: Tailscale's, or one you host. innernet also needs a server. Nebula has no control plane, but you run a certificate authority and "lighthouse" hosts.

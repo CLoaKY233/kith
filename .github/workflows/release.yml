@@ -17,13 +17,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true }
+          - { target: x86_64-unknown-linux-musl, ui: true, os: ubuntu-latest, profile: embedded, zig: true }
+          - { target: aarch64-unknown-linux-musl, ui: true, os: ubuntu-latest, profile: embedded, zig: true }
           - { target: armv7-unknown-linux-musleabihf, os: ubuntu-latest, profile: embedded, zig: true }
           - { target: mipsel-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true, nightly: true }
           - { target: mips-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true, nightly: true }
-          - { target: aarch64-apple-darwin, os: macos-latest, profile: dist }
-          - { target: x86_64-apple-darwin, os: macos-latest, profile: dist }
+          - { target: aarch64-apple-darwin, ui: true, os: macos-latest, profile: dist }
+          - { target: x86_64-apple-darwin, ui: true, os: macos-latest, profile: dist }
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.nightly == true }}
     steps:
@@ -46,12 +46,17 @@ jobs:
         run: cargo +nightly zigbuild -p kith-cli --profile ${{ matrix.profile }} --target ${{ matrix.target }} --locked -Zbuild-std=std,panic_abort
       - if: ${{ !matrix.zig }}
         run: cargo build -p kith-cli --profile ${{ matrix.profile }} --target ${{ matrix.target }} --locked
+      - if: ${{ matrix.ui && matrix.zig }}
+        run: cargo zigbuild -p kith-ui --profile dist --target ${{ matrix.target }} --locked
+      - if: ${{ matrix.ui && !matrix.zig }}
+        run: cargo build -p kith-ui --profile dist --target ${{ matrix.target }} --locked
       - name: package
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           PROFILE: ${{ matrix.profile }}
           TOOLCHAIN: ${{ matrix.nightly && 'nightly' || '' }}
+          UI: ${{ matrix.ui && '1' || '' }}
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
@@ -63,11 +68,18 @@ jobs:
           mkdir -p "dist/$name"
           cp "$bin" LICENSE "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
-          echo "ARCHIVE=dist/$name.tar.gz" >> "$GITHUB_ENV"
+          if [ -n "$UI" ]; then
+            ui_name="kith-ui-${version}-${TARGET}"
+            ui_bin="target/${TARGET}/dist/kith-ui"
+            if [ -n "$strip_bin" ]; then "$strip_bin" "$ui_bin"; elif [ "$RUNNER_OS" = macOS ]; then strip "$ui_bin"; fi
+            mkdir -p "dist/$ui_name"
+            cp "$ui_bin" LICENSE "dist/$ui_name/"
+            tar -C dist -czf "dist/$ui_name.tar.gz" "$ui_name"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   release:
