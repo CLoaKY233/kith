@@ -22,6 +22,7 @@ jobs:
   # sources build.
   page:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: crates/management/kith-ui/web
@@ -31,8 +32,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26.10.0
-          cache: npm
-          cache-dependency-path: crates/management/kith-ui/web/package-lock.json
       - name: the tag commits web/dist
         run: |
           if ! git ls-files --error-unmatch dist/index.html > /dev/null 2>&1; then
@@ -51,8 +50,11 @@ jobs:
             exit 1
           fi
 
+  # No caches in this workflow: a shipped binary must not depend on what another run left
+  # in the Actions cache.
   build:
     needs: page
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -60,8 +62,7 @@ jobs:
           - { target: x86_64-unknown-linux-musl, ui: true, os: ubuntu-latest, profile: embedded, zig: true }
           - { target: aarch64-unknown-linux-musl, ui: true, os: ubuntu-latest, profile: embedded, zig: true }
           - { target: armv7-unknown-linux-musleabihf, os: ubuntu-latest, profile: embedded, zig: true }
-          - { target: mipsel-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true, nightly: true }
-          - { target: mips-unknown-linux-musl, os: ubuntu-latest, profile: embedded, zig: true, nightly: true }
+          # MIPS (nightly: true) is off until router builds: 32-bit MIPS has no AtomicU64.
           - { target: aarch64-apple-darwin, ui: true, os: macos-latest, profile: dist }
           - { target: x86_64-apple-darwin, ui: true, os: macos-latest, profile: dist }
     runs-on: ${{ matrix.os }}
@@ -73,8 +74,6 @@ jobs:
         run: rustup target add ${{ matrix.target }}
       - if: ${{ matrix.nightly }}
         run: rustup toolchain install nightly --profile minimal --component rust-src,llvm-tools
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with: { key: "release-${{ matrix.target }}" }
       - if: ${{ matrix.zig }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       - if: ${{ matrix.zig }}
@@ -97,6 +96,7 @@ jobs:
           PROFILE: ${{ matrix.profile }}
           TOOLCHAIN: ${{ matrix.nightly && 'nightly' || '' }}
           UI: ${{ matrix.ui && '1' || '' }}
+          COPYFILE_DISABLE: "1"
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
@@ -129,6 +129,8 @@ jobs:
   # The desktop shell (apps/kith-app): its own workspace, built with the Tauri CLI into
   # native bundles. It embeds the committed kith-ui/web/dist, like kith-ui.
   app:
+    needs: page
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -144,10 +146,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - run: rustup target add ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: "app-${{ matrix.target }}"
-          workspaces: "apps/kith-app -> target"
       - if: ${{ runner.os == 'Linux' }}
         run: |
           sudo apt-get update
@@ -165,7 +163,12 @@ jobs:
           bundle="target/${TARGET}/release/bundle"
           for file in "$bundle"/dmg/*.dmg "$bundle"/deb/*.deb "$bundle"/appimage/*.AppImage; do
             [ -e "$file" ] || continue
-            cp "$file" "dist/kith-app-${version}-${TARGET}.${file##*.}"
+            out="dist/kith-app-${version}-${TARGET}.${file##*.}"
+            if [ -e "$out" ]; then
+              echo "::error::more than one .${file##*.} bundle for $TARGET"
+              exit 1
+            fi
+            cp "$file" "$out"
           done
           ls dist/kith-app-*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -174,10 +177,12 @@ jobs:
           path: apps/kith-app/dist/kith-app-*
           if-no-files-found: error
 
+  # Publishes only when every build and bundle succeeded: a release missing an archive
+  # breaks install.sh for that platform, and a published tag cannot be re-run.
   release:
     needs: [page, build, app]
-    if: ${{ !cancelled() && needs.page.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -192,5 +197,17 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
+          version="${GITHUB_REF_NAME#v}"
+          missing=""
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf aarch64-apple-darwin x86_64-apple-darwin; do
+            [ -f "kith-${version}-${target}.tar.gz" ] || missing="$missing kith-${version}-${target}.tar.gz"
+          done
+          for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+            [ -f "kith-ui-${version}-${target}.tar.gz" ] || missing="$missing kith-ui-${version}-${target}.tar.gz"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::install.sh needs these archives, which no build produced:$missing"
+            exit 1
+          fi
           sha256sum kith-*.tar.gz kith-app-* > SHA256SUMS
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --verify-tag kith-*.tar.gz kith-app-* SHA256SUMS
