@@ -69,7 +69,7 @@ pub(crate) struct Names {
 }
 
 impl Names {
-    fn network(&self, text: &str) -> Result<NetworkId, CliError> {
+    pub(crate) fn network(&self, text: &str) -> Result<NetworkId, CliError> {
         if let Ok(id) = text.parse() {
             return Ok(id);
         }
@@ -227,6 +227,7 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
         Cmd::Wg(wg) => wg_request(wg, names)?,
         Cmd::Up
         | Cmd::Down
+        | Cmd::Admission(_)
         | Cmd::Watch
         | Cmd::Log { .. }
         | Cmd::Top
@@ -360,6 +361,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
             return crate::watch::log(&socket_path(opts)?, *follow, *events, out).await;
         }
         Cmd::Top => return crate::watch::top(&socket_path(opts)?, out).await,
+        Cmd::Admission(cmd) => return crate::admission::run(cmd, &socket_path(opts)?, out).await,
         Cmd::Doctor => return doctor(opts, out).await,
     }
 
@@ -379,6 +381,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Server { .. }
         | Cmd::Wg(_)
         | Cmd::Config(_)
+        | Cmd::Admission(_)
         | Cmd::Doctor
         | Cmd::Up
         | Cmd::Down
@@ -504,7 +507,7 @@ pub(crate) async fn fetch_peers(
     }
 }
 
-fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     std::process::Command::new("hostname")
         .output()
         .ok()

@@ -3,7 +3,7 @@ use core::time::Duration;
 
 use kith_channel::Presence;
 use kith_config::WgQuickConfig;
-use kith_identity::InviteToken;
+use kith_identity::{InviteToken, RequestCode};
 use kith_ipc::Response;
 use kith_netmon::Change;
 use kith_policy::Policy;
@@ -247,6 +247,34 @@ pub(crate) enum Action {
         /// Its policy tags.
         tags: Vec<String>,
     },
+    /// Make a request code for a network.
+    RequestCode {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Ask through a request code to be added, or learn the answer.
+    RequestJoin {
+        /// The parsed code.
+        code: Box<RequestCode>,
+        /// This device's name in the network.
+        device_name: String,
+    },
+    /// List the join requests waiting for an admin.
+    PendingJoins,
+    /// Add a device that asked to join; admins only.
+    ApproveJoin {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+    },
+    /// Turn down a device that asked to join; admins only.
+    DenyJoin {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+    },
 }
 
 /// What the control channel's handler reported to the loop.
@@ -283,6 +311,13 @@ pub(crate) enum ChannelEvent {
         from: NodeId,
         /// Its links.
         links: Vec<kith_channel::Link>,
+    },
+    /// Join requests arrived or were denied; the new ones are listed.
+    Admissions {
+        /// The network.
+        network: NetworkId,
+        /// The devices that newly asked, with the names they asked for.
+        new: Vec<(NodeId, String)>,
     },
 }
 

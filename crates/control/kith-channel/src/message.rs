@@ -1,14 +1,14 @@
 use std::net::SocketAddr;
 
-use kith_ledger::{JoinProof, MAX_NAME_LEN, MAX_SIGNED_OP_LEN};
+use kith_ledger::{AdmissionRequest, JoinProof, MAX_NAME_LEN, MAX_SIGNED_OP_LEN};
 use kith_sync::MAX_SYNC_MESSAGE_LEN;
-use kith_types::{NetworkId, NodeId};
+use kith_types::{NetworkId, NodeId, Timestamp};
 use kith_wire::registry::CHANNEL_MESSAGE;
 use kith_wire::{FrameDecoder, WireError, envelope, frame};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{ChannelError, MAX_ENDPOINT_ADDRS, MAX_ENDPOINT_NODES};
+use crate::{ChannelError, MAX_ADMISSIONS, MAX_ENDPOINT_ADDRS, MAX_ENDPOINT_NODES};
 
 const CHANNEL_VERSION: u64 = 1;
 
@@ -90,6 +90,15 @@ pub(crate) enum Message {
         network: NetworkId,
         links: Vec<Link>,
     },
+    AskToJoin {
+        request: Box<AdmissionRequest>,
+    },
+    AskPending,
+    Admissions {
+        network: NetworkId,
+        requests: Vec<AdmissionRequest>,
+        denied: Vec<(NodeId, Timestamp)>,
+    },
 }
 
 impl Message {
@@ -140,6 +149,17 @@ impl Message {
             }
             Self::Presence { entries, .. } => within(entries.len(), MAX_ENDPOINT_NODES),
             Self::Links { links, .. } => within(links.len(), MAX_ENDPOINT_NODES),
+            Self::AskToJoin { request } => within(request.name.len(), MAX_NAME_LEN),
+            Self::AskPending => Ok(()),
+            Self::Admissions {
+                requests, denied, ..
+            } => {
+                within(requests.len(), MAX_ADMISSIONS)?;
+                within(denied.len(), MAX_ADMISSIONS)?;
+                requests
+                    .iter()
+                    .try_for_each(|request| within(request.name.len(), MAX_NAME_LEN))
+            }
         }
     }
 }

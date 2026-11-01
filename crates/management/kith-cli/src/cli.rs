@@ -76,6 +76,8 @@ pub(crate) enum Cmd {
         #[bpaf(positional("LINK"))]
         link: String,
     },
+    /// Ask to join a network, approve or deny devices that ask
+    Admission(#[bpaf(external(admission_cmd))] AdmissionCmd),
     /// Remove another device from a network (admins only)
     #[bpaf(command)]
     Remove {
@@ -262,6 +264,47 @@ pub(crate) enum RelayCmd {
         network: String,
         #[bpaf(positional("NAME"))]
         name: String,
+    },
+}
+
+/// Joining by asking an admin instead of holding an invite.
+#[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
+pub(crate) enum AdmissionCmd {
+    /// Print a code a new device can use to ask an admin to let it join
+    #[bpaf(command("request-code"))]
+    RequestCode {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+    },
+    /// Ask an admin to let this device join, then wait for the answer
+    #[bpaf(command)]
+    Request {
+        /// This device's name (default: hostname)
+        #[bpaf(long, argument("NAME"))]
+        name: Option<String>,
+        #[bpaf(positional("CODE"))]
+        code: String,
+    },
+    /// List devices waiting to join
+    #[bpaf(command)]
+    Requests,
+    /// Let a waiting device join (admins only)
+    #[bpaf(command)]
+    Approve {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The device's requested name or id
+        #[bpaf(positional("DEVICE"))]
+        device: String,
+    },
+    /// Turn down a waiting device (admins only)
+    #[bpaf(command)]
+    Deny {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The device's requested name or id
+        #[bpaf(positional("DEVICE"))]
+        device: String,
     },
 }
 

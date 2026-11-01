@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod admission;
 mod cli;
 mod daemon;
 mod doctor;
@@ -45,6 +46,7 @@ fn main() -> ExitCode {
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
+        | Cmd::Admission(_)
         | Cmd::Peers { .. }
         | Cmd::Map { .. }
         | Cmd::Dns(_)

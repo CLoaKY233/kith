@@ -17,6 +17,7 @@ mod identity;
 mod invite;
 mod keystore;
 mod message_types;
+mod request;
 
 pub use bootstrap::{Bootstrap, BootstrapAddr, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
 pub use identity::{DeviceIdentity, IdentityError};
@@ -25,3 +26,4 @@ pub use invite::{
     MAX_NETWORK_NAME_LEN,
 };
 pub use keystore::{KeyStore, KeyStoreError, MemoryKeyStore};
+pub use request::{REQUEST_PREFIX, RequestCode};

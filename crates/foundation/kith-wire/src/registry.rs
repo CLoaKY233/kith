@@ -18,6 +18,8 @@ pub const LEDGER_SIGNED_OP: MessageType = MessageType(0x11);
 pub const IDENTITY_SECRET_KEY: MessageType = MessageType(0x20);
 /// An invite token, as carried in a `kith://join/` link.
 pub const IDENTITY_INVITE: MessageType = MessageType(0x21);
+/// A request code, as carried in a `kith://request/` link.
+pub const IDENTITY_REQUEST_CODE: MessageType = MessageType(0x22);
 
 // 0x30..=0x3f: trust plane, policy.
 /// An access-control policy document.
@@ -48,9 +50,9 @@ mod tests {
     use alloc::collections::BTreeSet;
 
     use super::{
-        CHANNEL_MESSAGE, CONTROL_RECORD, DISCO_MESSAGE, IDENTITY_INVITE, IDENTITY_SECRET_KEY,
-        IPC_MESSAGE, LEDGER_SIGNED_OP, LEDGER_UNSIGNED_OP, POLICY_DOCUMENT, RELAY_FRAME,
-        SYNC_MESSAGE,
+        CHANNEL_MESSAGE, CONTROL_RECORD, DISCO_MESSAGE, IDENTITY_INVITE, IDENTITY_REQUEST_CODE,
+        IDENTITY_SECRET_KEY, IPC_MESSAGE, LEDGER_SIGNED_OP, LEDGER_UNSIGNED_OP, POLICY_DOCUMENT,
+        RELAY_FRAME, SYNC_MESSAGE,
     };
 
     #[test]
@@ -60,6 +62,7 @@ mod tests {
             LEDGER_SIGNED_OP,
             IDENTITY_SECRET_KEY,
             IDENTITY_INVITE,
+            IDENTITY_REQUEST_CODE,
             POLICY_DOCUMENT,
             RELAY_FRAME,
             DISCO_MESSAGE,

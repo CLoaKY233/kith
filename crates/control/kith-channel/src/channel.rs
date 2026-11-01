@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use kith_crypto::SigningKey;
-use kith_ledger::{JoinProof, Ledger, SignedOp};
+use kith_ledger::{AdmissionRequest, JoinProof, Ledger, SignedOp};
 use kith_sync::SyncSession;
-use kith_types::{NetworkId, NodeId};
+use kith_types::{NetworkId, NodeId, Timestamp};
 use rustls::pki_types::ServerName;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -42,6 +42,7 @@ type GossipFrames = BTreeMap<(NetworkId, Topic), Arc<[u8]>>;
 enum Topic {
     Endpoints,
     Presence,
+    Admissions,
     Links,
 }
 
@@ -207,6 +208,25 @@ impl<H: ChannelHandler> Channel<H> {
             .gossip(network, Topic::Links, &Message::Links { network, links })
     }
 
+    /// Gossips the join requests this node holds pending and the ones admins denied, now
+    /// and as members connect, until replaced.
+    pub fn send_admissions(
+        &self,
+        network: NetworkId,
+        requests: Vec<AdmissionRequest>,
+        denied: Vec<(NodeId, Timestamp)>,
+    ) -> Result<(), ChannelError> {
+        self.hub.gossip(
+            network,
+            Topic::Admissions,
+            &Message::Admissions {
+                network,
+                requests,
+                denied,
+            },
+        )
+    }
+
     /// Connected members and the address of each connection.
     pub fn peers(&self) -> Vec<(NodeId, SocketAddr)> {
         lock(&self.hub.connections)
@@ -344,50 +364,61 @@ impl ChannelClient {
             proof: Box::new(proof),
         };
         write_message(&mut stream, &request).await?;
-        let genesis = match read(&mut frames, &mut stream).await? {
-            Message::JoinAccepted { genesis } => genesis,
-            Message::JoinRejected { reason } => return Err(ChannelError::JoinRejected(reason)),
+        match read(&mut frames, &mut stream).await? {
+            Message::JoinAccepted { genesis } => {
+                receive_ledger(hub, &mut frames, &mut stream, network, &genesis).await
+            }
+            Message::JoinRejected { reason } => Err(ChannelError::JoinRejected(reason)),
             Message::Hello { .. }
             | Message::JoinRequest { .. }
             | Message::Sync { .. }
             | Message::Endpoints { .. }
             | Message::Presence { .. }
-            | Message::Links { .. } => return Err(ChannelError::UnexpectedMessage),
+            | Message::AskToJoin { .. }
+            | Message::AskPending
+            | Message::Admissions { .. }
+            | Message::Links { .. } => Err(ChannelError::UnexpectedMessage),
+        }
+    }
+
+    /// Asks `member` at `addr` to have an admin add this device. `None` means the request
+    /// is pending; once an admin added the device, returns the synced ledger.
+    pub async fn ask<H: ChannelHandler>(
+        channel: &Channel<H>,
+        addr: SocketAddr,
+        member: NodeId,
+        request: AdmissionRequest,
+    ) -> Result<Option<Ledger>, ChannelError> {
+        let hub = &channel.hub;
+        let network = request.network;
+        let mut stream = hub.dial(addr, member).await?;
+        let mut frames = FrameReader::new();
+        let ask = Message::AskToJoin {
+            request: Box::new(request),
         };
-        let mut ledger = Ledger::new(SignedOp::from_bytes(&genesis)?)?;
-        if ledger.network_id() != network {
-            return Err(ChannelError::UnexpectedMessage);
-        }
-        let mut session = SyncSession::new(false, network);
-        while !session.is_done() {
-            match read(&mut frames, &mut stream).await? {
-                Message::Sync {
-                    network: synced,
-                    bytes,
-                } if synced == network => {
-                    session.handle_message(&mut ledger, &bytes)?;
-                    while let Some(bytes) = session.poll_transmit(&ledger) {
-                        write_message(&mut stream, &Message::Sync { network, bytes }).await?;
-                    }
+        write_message(&mut stream, &ask).await?;
+        match read(&mut frames, &mut stream).await? {
+            Message::AskPending => {
+                if let Err(error) = stream.shutdown().await {
+                    debug!(%error, "closing the request connection failed");
                 }
-                Message::Hello { .. }
-                | Message::Endpoints { .. }
-                | Message::Presence { .. }
-                | Message::Links { .. } => {}
-                Message::Sync { .. }
-                | Message::JoinRequest { .. }
-                | Message::JoinAccepted { .. }
-                | Message::JoinRejected { .. } => return Err(ChannelError::UnexpectedMessage),
+                Ok(None)
             }
+            Message::JoinAccepted { genesis } => {
+                receive_ledger(hub, &mut frames, &mut stream, network, &genesis)
+                    .await
+                    .map(Some)
+            }
+            Message::JoinRejected { reason } => Err(ChannelError::JoinRejected(reason)),
+            Message::Hello { .. }
+            | Message::JoinRequest { .. }
+            | Message::Sync { .. }
+            | Message::Endpoints { .. }
+            | Message::Presence { .. }
+            | Message::AskToJoin { .. }
+            | Message::Admissions { .. }
+            | Message::Links { .. } => Err(ChannelError::UnexpectedMessage),
         }
-        if let Err(error) = stream.shutdown().await {
-            debug!(%error, "closing the join connection failed");
-        }
-        if !ledger.view().is_member(&hub.identity.node_id()) {
-            return Err(ChannelError::NotMember);
-        }
-        debug!(%network, ops = ledger.len(), "joined network");
-        Ok(ledger)
     }
 
     /// Resolves once the connection has closed, so the caller can redial.
@@ -405,6 +436,52 @@ impl<H> Channel<H> {
     ) -> Result<TlsStream<TcpStream>, ChannelError> {
         self.hub.dial(addr, expected).await
     }
+}
+
+async fn receive_ledger<H>(
+    hub: &Hub<H>,
+    frames: &mut FrameReader,
+    stream: &mut TlsStream<TcpStream>,
+    network: NetworkId,
+    genesis: &[u8],
+) -> Result<Ledger, ChannelError> {
+    let mut ledger = Ledger::new(SignedOp::from_bytes(genesis)?)?;
+    if ledger.network_id() != network {
+        return Err(ChannelError::UnexpectedMessage);
+    }
+    let mut session = SyncSession::new(false, network);
+    while !session.is_done() {
+        match read(frames, stream).await? {
+            Message::Sync {
+                network: synced,
+                bytes,
+            } if synced == network => {
+                session.handle_message(&mut ledger, &bytes)?;
+                while let Some(bytes) = session.poll_transmit(&ledger) {
+                    write_message(stream, &Message::Sync { network, bytes }).await?;
+                }
+            }
+            Message::Hello { .. }
+            | Message::Endpoints { .. }
+            | Message::Presence { .. }
+            | Message::Admissions { .. }
+            | Message::Links { .. } => {}
+            Message::Sync { .. }
+            | Message::JoinRequest { .. }
+            | Message::JoinAccepted { .. }
+            | Message::JoinRejected { .. }
+            | Message::AskToJoin { .. }
+            | Message::AskPending => return Err(ChannelError::UnexpectedMessage),
+        }
+    }
+    if let Err(error) = stream.shutdown().await {
+        debug!(%error, "closing the join connection failed");
+    }
+    if !ledger.view().is_member(&hub.identity.node_id()) {
+        return Err(ChannelError::NotMember);
+    }
+    debug!(%network, ops = ledger.len(), "joined network");
+    Ok(ledger)
 }
 
 async fn read(

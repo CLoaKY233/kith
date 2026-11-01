@@ -78,7 +78,7 @@ mod view;
 mod tests;
 
 pub use error::LedgerError;
-pub use join::JoinProof;
+pub use join::{AdmissionRequest, JoinProof};
 pub use ledger::{BatchOutcome, InsertOutcome, Ledger};
 pub use limits::{
     MAX_ADMINS, MAX_NAME_LEN, MAX_ORPHANS, MAX_PARENTS, MAX_RECORD_KEY_LEN, MAX_RECORD_VALUE_LEN,

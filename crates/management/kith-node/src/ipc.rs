@@ -2,7 +2,7 @@ use core::time::Duration;
 
 use kith_config::WgQuickConfig;
 use kith_control::records::{DNS_PREFIX, DnsData, DnsRecords, Record};
-use kith_identity::InviteToken;
+use kith_identity::{InviteToken, RequestCode};
 use kith_ipc::{
     Connection, DnsRecord, Entry, ErrorCode, Event, IpcServer, PROTOCOL_VERSION, PeerCred, Request,
     Response,
@@ -249,11 +249,32 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             device_name: non_empty("device name", device_name)?,
             tags,
         },
-        Request::Journal { .. } | _ => {
-            return Err(NodeError::InvalidArgument("unsupported request".to_owned()));
-        }
+        other @ (Request::Journal { .. } | _) => return admission_action(other),
     };
     Ok(action)
+}
+
+fn admission_action(request: Request) -> Result<Action, NodeError> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "every request translate does not know is unsupported, Journal included"
+    )]
+    Ok(match request {
+        Request::RequestCode { network } => Action::RequestCode { network },
+        Request::RequestJoin {
+            request_code,
+            device_name,
+        } => Action::RequestJoin {
+            code: Box::new(RequestCode::parse(request_code.trim()).map_err(|error| {
+                NodeError::InvalidArgument(format!("not a request code: {error}"))
+            })?),
+            device_name: non_empty("device name", device_name)?,
+        },
+        Request::PendingJoins => Action::PendingJoins,
+        Request::ApproveJoin { network, node } => Action::ApproveJoin { network, node },
+        Request::DenyJoin { network, node } => Action::DenyJoin { network, node },
+        _ => return Err(NodeError::InvalidArgument("unsupported request".to_owned())),
+    })
 }
 
 fn non_empty(what: &str, value: String) -> Result<String, NodeError> {
@@ -363,6 +384,8 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::Traffic
             | Request::Topology { .. }
             | Request::Watch
+            | Request::PendingJoins
+            | Request::RequestCode { .. }
     )
 }
 

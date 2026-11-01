@@ -22,3 +22,6 @@ const MAX_ENDPOINT_NODES: usize = 256;
 
 /// The most addresses one endpoint gossip message lists per node.
 const MAX_ENDPOINT_ADDRS: usize = 32;
+
+/// The most pending join requests, and the most denials, one gossip message carries.
+pub const MAX_ADMISSIONS: usize = 64;

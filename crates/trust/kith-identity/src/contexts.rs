@@ -10,9 +10,13 @@ pub(crate) const SECRET_KEY_CHECKSUM: Context = Context::new("kith 2026-10 secre
 /// Truncated checksum appended to an invite payload, to catch typos in links.
 pub(crate) const INVITE_CHECKSUM: Context = Context::new("kith 2026-10 invite checksum v1");
 
+/// Truncated checksum appended to a request code payload.
+pub(crate) const REQUEST_CODE_CHECKSUM: Context =
+    Context::new("kith 2026-10 request code checksum v1");
+
 /// Every context above, for uniqueness tests and audits.
 #[cfg(test)]
-pub(crate) const ALL: &[Context] = &[SECRET_KEY_CHECKSUM, INVITE_CHECKSUM];
+pub(crate) const ALL: &[Context] = &[SECRET_KEY_CHECKSUM, INVITE_CHECKSUM, REQUEST_CODE_CHECKSUM];
 
 #[cfg(test)]
 mod tests {

@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod admissions;
 mod channel;
 mod connectivity;
 mod daemon;

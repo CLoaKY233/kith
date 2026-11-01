@@ -19,8 +19,8 @@ pub use client::IpcClient;
 pub use error::IpcError;
 pub use message::{
     DnsRecord, Entry, EntryKind, ErrorCode, Event, LinkInfo, LinkReport, NetworkSummary, PathKind,
-    PeerInfo, Problem, RecordInfo, Request, Response, Status, TrafficSample, TrafficSeries,
-    Warning,
+    PeerInfo, PendingJoin, Problem, RecordInfo, Request, Response, Status, TrafficSample,
+    TrafficSeries, Warning,
 };
 pub use server::{Connection, IpcServer, PeerCred};
 
