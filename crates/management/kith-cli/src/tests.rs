@@ -853,6 +853,28 @@ async fn log_prints_the_journal_and_following_fails_when_the_daemon_goes() {
 }
 
 #[test]
+fn up_under_sudo_keeps_the_socket_it_was_given() {
+    let socket = std::path::Path::new("/tmp/my kith.sock");
+    let args = crate::service::root_args("up", Some(socket));
+    let opts = opts().run_inner(&args[..]).unwrap();
+    assert_eq!(opts.cmd, Cmd::Up);
+    assert_eq!(opts.socket.as_deref(), Some(socket));
+    assert_eq!(crate::service::root_args("down", None), ["down"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn up_waits_for_a_daemon_that_answers_not_a_leftover_socket() {
+    let path = std::env::temp_dir().join(format!("kith-cli-up-{}.sock", std::process::id()));
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    assert!(crate::service::answers(&path));
+    drop(listener);
+    assert!(path.exists(), "a dead daemon leaves its socket behind");
+    assert!(!crate::service::answers(&path));
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
 fn names_from_other_devices_cannot_drive_the_terminal() {
     use kith_ipc::{Entry, EntryKind};
 
