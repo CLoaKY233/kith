@@ -7,3 +7,6 @@ pub(crate) const SECRET_KEY: MessageType = registry::IDENTITY_SECRET_KEY;
 
 /// An invite token ([`crate::InviteToken`]), before base32 and checksum.
 pub(crate) const INVITE: MessageType = registry::IDENTITY_INVITE;
+
+/// A request code ([`crate::RequestCode`]), before base32 and checksum.
+pub(crate) const REQUEST_CODE: MessageType = registry::IDENTITY_REQUEST_CODE;

@@ -213,6 +213,10 @@ pub(crate) fn describe(kind: &EntryKind, names: &NetworkNames) -> String {
             target,
             message,
         } => format!("{level:<5} {target}: {message}"),
+        EntryKind::JoinRequested { network, name, .. } => format!(
+            "{} asks to join; kith approve or kith deny",
+            who(network, name)
+        ),
         _ => "something the daemon knows and this kith does not; update kith".to_owned(),
     }
 }

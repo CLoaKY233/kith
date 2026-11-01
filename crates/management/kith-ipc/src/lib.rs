@@ -18,8 +18,8 @@ mod server;
 pub use client::IpcClient;
 pub use error::IpcError;
 pub use message::{
-    DnsRecord, Entry, EntryKind, ErrorCode, Event, NetworkSummary, PathKind, PeerInfo, Problem,
-    RecordInfo, Request, Response, Status, TrafficSample, TrafficSeries, Warning,
+    DnsRecord, Entry, EntryKind, ErrorCode, Event, NetworkSummary, PathKind, PeerInfo, PendingJoin,
+    Problem, RecordInfo, Request, Response, Status, TrafficSample, TrafficSeries, Warning,
 };
 pub use server::{Connection, IpcServer, PeerCred};
 

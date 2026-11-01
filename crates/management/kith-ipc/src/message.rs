@@ -153,6 +153,35 @@ pub enum Request {
     },
     /// Traffic per peer over the last hour.
     Traffic,
+    /// Makes a code a new device can use to ask an admin to add it. Any member may.
+    RequestCode {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Asks, through a request code, for an admin to add this device. Send it again to
+    /// learn whether an admin approved or denied the request.
+    RequestJoin {
+        /// The `kith://request/` code.
+        request_code: String,
+        /// This device's name in the network.
+        device_name: String,
+    },
+    /// Lists the join requests waiting for an admin, in every network.
+    PendingJoins,
+    /// Adds a device that asked to join; admins only.
+    ApproveJoin {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+    },
+    /// Turns down a device that asked to join; admins only.
+    DenyJoin {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+    },
 }
 
 /// A typed DNS record.
@@ -274,6 +303,47 @@ pub enum Response {
     },
     /// Answers [`Request::Traffic`].
     Traffic(Vec<TrafficSeries>),
+    /// Answers [`Request::RequestCode`].
+    RequestCode {
+        /// The `kith://request/` code.
+        code: String,
+    },
+    /// Answers [`Request::RequestJoin`]: no admin has decided yet.
+    JoinPending {
+        /// The network.
+        network: NetworkId,
+        /// Its name, as the code gives it.
+        network_name: String,
+    },
+    /// Answers [`Request::RequestJoin`]: an admin denied the request.
+    JoinDenied {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Answers [`Request::PendingJoins`].
+    PendingJoins(Vec<PendingJoin>),
+    /// Answers [`Request::ApproveJoin`].
+    JoinApproved {
+        /// The device's name in the network.
+        device: String,
+    },
+    /// Answers [`Request::DenyJoin`].
+    JoinRequestDenied,
+}
+
+/// A device waiting for an admin to let it join, from [`Request::PendingJoins`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingJoin {
+    /// The network it asked to join.
+    pub network: NetworkId,
+    /// The device.
+    pub node: NodeId,
+    /// The name it asked for.
+    pub name: String,
+    /// Where it asked from, when it asked this device directly.
+    pub from: Option<String>,
+    /// Seconds since it asked.
+    pub age_secs: u64,
 }
 
 /// Why the daemon refused a request.
@@ -547,6 +617,15 @@ pub enum EntryKind {
         target: String,
         /// The message and its fields.
         message: String,
+    },
+    /// A device asked to join and waits for an admin.
+    JoinRequested {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// The name it asked for.
+        name: String,
     },
 }
 

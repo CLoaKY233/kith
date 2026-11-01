@@ -1429,4 +1429,174 @@ mod tests {
         }
         shutdown([p, a, s]).await
     }
+
+    async fn request_code(member: &NodeHandle, network: NetworkId) -> TestResult<String> {
+        let response = member.request(Request::RequestCode { network }).await;
+        let Response::RequestCode { code } = response else {
+            return Err(format!("request code failed: {response:?}").into());
+        };
+        Ok(code)
+    }
+
+    /// Asks with `code` until the answer is something other than pending.
+    async fn ask_until_answered(
+        asker: &NodeHandle,
+        code: &str,
+        name: &str,
+    ) -> TestResult<Response> {
+        for _ in 0..100 {
+            let response = asker
+                .request(Request::RequestJoin {
+                    request_code: code.to_owned(),
+                    device_name: name.to_owned(),
+                })
+                .await;
+            if !matches!(response, Response::JoinPending { .. }) {
+                return Ok(response);
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err("the request was never answered".into())
+    }
+
+    async fn waiting(admin: &NodeHandle, node: NodeId) -> TestResult<kith_ipc::PendingJoin> {
+        for _ in 0..100 {
+            if let Response::PendingJoins(pending) = admin.request(Request::PendingJoins).await
+                && let Some(held) = pending.into_iter().find(|held| held.node == node)
+            {
+                return Ok(held);
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err("the request never reached the admin".into())
+    }
+
+    async fn node_id(node: &NodeHandle) -> TestResult<NodeId> {
+        let response = node.request(Request::Status).await;
+        if let Response::Status(status) = response {
+            return status.node.ok_or_else(|| "no identity".into());
+        }
+        Err(format!("status failed: {response:?}").into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_device_asks_through_a_member_and_joins_once_an_admin_approves() -> TestResult {
+        let journal = kith_node::Journal::new();
+        let watched = journal.clone();
+        let admin = start_node(
+            |config| config,
+            move |options| options.journal(watched.clone()),
+            true,
+        )
+        .await?;
+        let member = start().await?;
+        let asker = start().await?;
+        let network = create(&admin, "admin").await?;
+        join(&admin, &member, network, "member").await?;
+        let code = request_code(&member, network).await?;
+        let asker_id = node_id(&asker).await?;
+
+        let first = asker
+            .request(Request::RequestJoin {
+                request_code: code.clone(),
+                device_name: "laptop".into(),
+            })
+            .await;
+        if !matches!(first, Response::JoinPending { .. }) {
+            return Err(format!("the request was not held: {first:?}").into());
+        }
+        let held = waiting(&admin, asker_id).await?;
+        if held.name != "laptop" || held.network != network {
+            return Err(format!("the admin sees {held:?}").into());
+        }
+        let journaled = journal.entries().iter().any(|entry| {
+            matches!(&entry.kind, EntryKind::JoinRequested { node, .. } if *node == asker_id)
+        });
+        if !journaled {
+            return Err("the request is not in the admin's journal".into());
+        }
+        if member
+            .request(Request::ApproveJoin {
+                network,
+                node: asker_id,
+            })
+            .await
+            == (Response::JoinApproved {
+                device: "laptop".into(),
+            })
+        {
+            return Err("a member who is not an admin approved a request".into());
+        }
+
+        let approved = admin
+            .request(Request::ApproveJoin {
+                network,
+                node: asker_id,
+            })
+            .await;
+        if approved
+            != (Response::JoinApproved {
+                device: "laptop".into(),
+            })
+        {
+            return Err(format!("approval failed: {approved:?}").into());
+        }
+        let answer = ask_until_answered(&asker, &code, "laptop").await?;
+        if answer
+            != (Response::Joined {
+                network,
+                device: "laptop".into(),
+            })
+        {
+            return Err(format!("the asker did not join: {answer:?}").into());
+        }
+        let from = peer(&asker, network, "admin").await?;
+        let to = peer(&admin, network, "laptop").await?;
+        deliver(&admin, &asker, &udp_packet(from, to, b"welcome")?).await?;
+        deliver(&asker, &admin, &udp_reply(to, from, b"thanks")?).await?;
+        shutdown([admin, member, asker]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_denied_device_is_told_and_stays_out() -> TestResult {
+        let admin = start().await?;
+        let asker = start().await?;
+        let network = create(&admin, "admin").await?;
+        let code = request_code(&admin, network).await?;
+        let asker_id = node_id(&asker).await?;
+        let first = asker
+            .request(Request::RequestJoin {
+                request_code: code.clone(),
+                device_name: "laptop".into(),
+            })
+            .await;
+        if !matches!(first, Response::JoinPending { .. }) {
+            return Err(format!("the request was not held: {first:?}").into());
+        }
+        waiting(&admin, asker_id).await?;
+        let denied = admin
+            .request(Request::DenyJoin {
+                network,
+                node: asker_id,
+            })
+            .await;
+        if denied != Response::JoinRequestDenied {
+            return Err(format!("deny failed: {denied:?}").into());
+        }
+        let answer = ask_until_answered(&asker, &code, "laptop").await?;
+        if answer != (Response::JoinDenied { network }) {
+            return Err(format!("the asker was not told: {answer:?}").into());
+        }
+        if let Response::PendingJoins(pending) = admin.request(Request::PendingJoins).await
+            && !pending.is_empty()
+        {
+            return Err(format!("a denied request is still listed: {pending:?}").into());
+        }
+        if let Response::Peers(peers) = admin.request(Request::Peers { network }).await
+            && peers.iter().any(|peer| peer.node == asker_id)
+        {
+            return Err("a denied device became a member".into());
+        }
+        shutdown([admin, asker]).await
+    }
 }

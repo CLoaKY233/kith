@@ -13,7 +13,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use kith_crypto::{Context, Signature, SigningKey, VerifyingKey};
-use kith_types::{NetworkId, NodeId};
+use kith_types::{NetworkId, NodeId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::LedgerError;
@@ -102,5 +102,73 @@ fn device_message(network: NetworkId, invite_key: &VerifyingKey) -> Vec<u8> {
     let mut message = Vec::with_capacity(64);
     message.extend_from_slice(network.as_bytes());
     message.extend_from_slice(&invite_key.to_bytes());
+    message
+}
+
+/// Signs an [`AdmissionRequest`].
+pub(crate) const ADMISSION_REQUEST_CONTEXT: Context =
+    Context::new("kith 2026-10 ledger admission request v1");
+
+/// A device asking an admin to add it, with no invite. It grants nothing by itself: an admin
+/// who approves it signs an ordinary `AddDevice` op. The device's signature over
+/// `network (32) | device (32) | requested_at (8, big-endian) | name` stops anyone from
+/// asking on behalf of a key they do not hold, and dates the request so it can expire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmissionRequest {
+    /// The network asked to join.
+    pub network: NetworkId,
+    /// The asking device.
+    pub device: NodeId,
+    /// The name it asks for, at most [`MAX_NAME_LEN`](crate::MAX_NAME_LEN) bytes.
+    pub name: String,
+    /// When the device made the request, by its own clock.
+    pub requested_at: Timestamp,
+    /// The device key's signature over the request.
+    pub signature: Signature,
+}
+
+impl AdmissionRequest {
+    /// Creates a request by `device_key` to join `network` under `name`, made at `now`.
+    pub fn create(
+        network: NetworkId,
+        device_key: &SigningKey,
+        name: &str,
+        now: Timestamp,
+    ) -> Result<Self, LedgerError> {
+        check_name(name)?;
+        let device = device_key.node_id();
+        Ok(Self {
+            network,
+            device,
+            name: String::from(name),
+            requested_at: now,
+            signature: device_key.sign(
+                ADMISSION_REQUEST_CONTEXT,
+                &admission_message(network, device, now, name),
+            ),
+        })
+    }
+
+    /// Checks the name limit and the device's signature.
+    pub fn verify(&self) -> Result<(), LedgerError> {
+        check_name(&self.name)?;
+        let device_key = VerifyingKey::from_node_id(self.device)
+            .map_err(|_| LedgerError::InvalidKey(self.device))?;
+        device_key
+            .verify(
+                ADMISSION_REQUEST_CONTEXT,
+                &admission_message(self.network, self.device, self.requested_at, &self.name),
+                &self.signature,
+            )
+            .map_err(|_| LedgerError::BadJoinProof)
+    }
+}
+
+fn admission_message(network: NetworkId, device: NodeId, at: Timestamp, name: &str) -> Vec<u8> {
+    let mut message = Vec::with_capacity(72 + name.len());
+    message.extend_from_slice(network.as_bytes());
+    message.extend_from_slice(device.as_bytes());
+    message.extend_from_slice(&at.as_millis().to_be_bytes());
+    message.extend_from_slice(name.as_bytes());
     message
 }

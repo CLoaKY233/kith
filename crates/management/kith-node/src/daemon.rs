@@ -17,7 +17,7 @@ use kith_identity::{
 use kith_ipc::{
     EntryKind, Event, NetworkSummary, PeerInfo, Problem, Request, Response, Status, Warning,
 };
-use kith_ledger::JoinProof;
+use kith_ledger::{AdmissionRequest, JoinProof, Ledger};
 use kith_policy::Addresses;
 use kith_router::MeshRanges;
 use kith_sys::{Dns, Interface, OsSystem, Platform, System};
@@ -310,6 +310,8 @@ pub(crate) struct Started {
     pub(crate) dataplane: DataplaneHandle,
 }
 
+mod requests;
+
 /// The event loop's state; owned by one task, so nothing is locked.
 #[derive(Debug)]
 pub(crate) struct Daemon {
@@ -345,6 +347,8 @@ pub(crate) struct Daemon {
     ipc_task: Option<JoinHandle<()>>,
     journal: Journal,
     activity: Activity,
+    /// This device's own join requests, kept so asking again reuses the same request.
+    asks: BTreeMap<NetworkId, AdmissionRequest>,
 }
 
 impl Drop for Daemon {
@@ -594,6 +598,7 @@ impl Daemon {
             ipc_task,
             journal: options.journal.clone(),
             activity: Activity::default(),
+            asks: BTreeMap::new(),
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -783,6 +788,13 @@ impl Daemon {
                 device_name,
                 tags,
             } => self.export(network, device_name, tags).await,
+            Action::RequestCode { network } => self.request_code(network),
+            Action::RequestJoin { code, device_name } => {
+                self.request_join(&code, &device_name).await
+            }
+            Action::PendingJoins => Ok(self.pending_joins()),
+            Action::ApproveJoin { network, node } => self.approve_join(network, node).await,
+            Action::DenyJoin { network, node } => self.deny_join(network, node),
         }
     }
 
@@ -847,6 +859,18 @@ impl Daemon {
             device_name,
         )?;
         let ledger = self.channel.join(token, proof).await?;
+        self.finish_join(ledger, network, token.bootstrap(), device_name)
+            .await
+    }
+
+    /// Takes in the ledger a sponsor sent after this device was added, as by an invite.
+    async fn finish_join(
+        &mut self,
+        ledger: Ledger,
+        network: NetworkId,
+        bootstrap: &[Bootstrap],
+        device_name: &str,
+    ) -> Result<Response, NodeError> {
         if ledger.network_id() != network {
             return Err(NodeError::InvalidArgument(String::from(
                 "the sponsor returned another network",
@@ -856,7 +880,7 @@ impl Daemon {
             ledger,
             self.identity.node_id(),
         )?)?;
-        for entry in token.bootstrap() {
+        for entry in bootstrap {
             let addrs = match entry.addr() {
                 BootstrapAddr::Socket(addr) => vec![*addr],
                 BootstrapAddr::Host(host, port) => resolve(host.as_str(), *port).await,
@@ -885,6 +909,7 @@ impl Daemon {
         if self.networks.remove(&network)?.is_none() {
             return Err(NodeError::NotFound(network.to_string()));
         }
+        crate::channel::lock_admissions(self.channel.admissions()).forget(network);
         self.state.remove_network(network)?;
         self.dataplane.remove_network(network).await?;
         self.addresses.remove(&network);
@@ -1565,6 +1590,7 @@ impl Daemon {
                 }
                 Ok(())
             }
+            ChannelEvent::Admissions { network, new } => self.on_admissions(network, new),
         }
     }
 

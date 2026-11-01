@@ -1,20 +1,21 @@
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use kith_channel::{Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer, Presence};
 use kith_control::NetMap;
 use kith_control::records::Relay;
-use kith_identity::{BootstrapAddr, DeviceIdentity, InviteToken};
-use kith_ledger::{JoinProof, Ledger};
+use kith_identity::{Bootstrap, BootstrapAddr, DeviceIdentity, InviteToken};
+use kith_ledger::{AdmissionRequest, JoinProof, Ledger};
 use kith_types::{NetworkId, NodeId, Timestamp};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::JoinHandle;
 use tracing::debug;
 
+use crate::admissions::Admissions;
 use crate::network::{LedgerRegistry, sponsor_join};
 use crate::types::{ChannelEvent, Command, NodeError};
 
@@ -43,6 +44,17 @@ pub(crate) struct NodeHandler {
     ledgers: LedgerRegistry,
     identity: Arc<DeviceIdentity>,
     commands: mpsc::Sender<Command>,
+    admissions: SharedAdmissions,
+}
+
+/// Join requests waiting for an admin, shared by the handler and the loop.
+pub(crate) type SharedAdmissions = Arc<Mutex<Admissions>>;
+
+/// Locks the admissions; they hold no invariant a panicking holder could break.
+pub(crate) fn lock_admissions(
+    admissions: &SharedAdmissions,
+) -> std::sync::MutexGuard<'_, Admissions> {
+    admissions.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl NodeHandler {
@@ -108,6 +120,65 @@ impl ChannelHandler for NodeHandler {
     fn on_ledger_changed(&self, network: NetworkId) {
         self.report(ChannelEvent::LedgerChanged { network });
     }
+
+    fn handle_ask(&self, request: AdmissionRequest, from: SocketAddr) -> Result<(), String> {
+        let network = request.network;
+        let (device, name) = (request.device, request.name.clone());
+        if self
+            .with_ledger(network, |ledger| ledger.view().is_member(&device))
+            .is_none()
+        {
+            return Err(String::from("unknown network"));
+        }
+        let new = lock_admissions(&self.admissions)
+            .offer(request, Some(from), now())
+            .map_err(|refusal| refusal.to_string())?;
+        if new {
+            self.report(ChannelEvent::Admissions {
+                network,
+                new: vec![(device, name)],
+            });
+        }
+        Ok(())
+    }
+
+    fn on_admissions(
+        &self,
+        network: NetworkId,
+        from: NodeId,
+        requests: Vec<AdmissionRequest>,
+        denied: Vec<(NodeId, Timestamp)>,
+    ) {
+        let Some((members, from_admin)) = self.with_ledger(network, |ledger| {
+            let view = ledger.view();
+            let members: BTreeSet<NodeId> = requests
+                .iter()
+                .map(|request| request.device)
+                .filter(|device| view.is_member(device))
+                .collect();
+            (members, view.admins().contains(&from))
+        }) else {
+            return;
+        };
+        let at = now();
+        let mut admissions = lock_admissions(&self.admissions);
+        let mut changed = from_admin && admissions.absorb_denials(network, denied, at);
+        let mut new = Vec::new();
+        for request in requests {
+            if request.network != network || members.contains(&request.device) {
+                continue;
+            }
+            let (device, name) = (request.device, request.name.clone());
+            if admissions.offer(request, None, at) == Ok(true) {
+                new.push((device, name));
+                changed = true;
+            }
+        }
+        drop(admissions);
+        if changed {
+            self.report(ChannelEvent::Admissions { network, new });
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -132,6 +203,7 @@ pub(crate) struct ChannelLayer {
     server: ChannelServer,
     local: NodeId,
     sessions: BTreeMap<NodeId, Session>,
+    admissions: SharedAdmissions,
     _resync: Task,
 }
 
@@ -144,10 +216,12 @@ impl ChannelLayer {
         commands: mpsc::Sender<Command>,
     ) -> Result<Self, NodeError> {
         let local = identity.node_id();
+        let admissions = SharedAdmissions::default();
         let handler = Arc::new(NodeHandler {
             ledgers,
             identity: Arc::clone(&identity),
             commands,
+            admissions: Arc::clone(&admissions),
         });
         let channel = Channel::new(identity.signing_key(), Arc::clone(&handler))?;
         let server = ChannelServer::bind(&channel, listen).await?;
@@ -158,6 +232,7 @@ impl ChannelLayer {
             server,
             local,
             sessions: BTreeMap::new(),
+            admissions,
             _resync: resync,
         })
     }
@@ -225,6 +300,46 @@ impl ChannelLayer {
         Ok(self.channel.send_endpoints(network, entries)?)
     }
 
+    /// Join requests waiting for an admin, as the handler holds them.
+    pub(crate) fn admissions(&self) -> &SharedAdmissions {
+        &self.admissions
+    }
+
+    /// Gossips the join requests pending in `network` and the denied ones.
+    pub(crate) fn gossip_admissions(
+        &self,
+        network: NetworkId,
+        requests: Vec<AdmissionRequest>,
+        denied: Vec<(NodeId, Timestamp)>,
+    ) -> Result<(), NodeError> {
+        Ok(self.channel.send_admissions(network, requests, denied)?)
+    }
+
+    /// Asks each bootstrap member in turn to hold `request` for an admin. `None` means it
+    /// is pending; a ledger means an admin added this device.
+    pub(crate) async fn ask(
+        &self,
+        bootstrap: &[Bootstrap],
+        request: &AdmissionRequest,
+    ) -> Result<Option<Ledger>, NodeError> {
+        let mut last = None;
+        for entry in bootstrap {
+            for addr in bootstrap_addrs(entry).await {
+                match ChannelClient::ask(&self.channel, addr, entry.node(), request.clone()).await {
+                    Ok(answer) => return Ok(answer),
+                    Err(error @ ChannelError::JoinRejected(_)) => return Err(error.into()),
+                    Err(error) => {
+                        debug!(%addr, node = %entry.node(), %error, "bootstrap entry failed");
+                        last = Some(error.into());
+                    }
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            NodeError::InvalidArgument(String::from("no member in the code could be reached"))
+        }))
+    }
+
     /// Tries each bootstrap entry, pinned to that entry's node, and returns the ledger.
     pub(crate) async fn join(
         &self,
@@ -268,6 +383,21 @@ impl ChannelLayer {
         Err(last.unwrap_or_else(|| {
             NodeError::InvalidArgument(String::from("the invite has no bootstrap entries"))
         }))
+    }
+}
+
+async fn bootstrap_addrs(entry: &Bootstrap) -> Vec<SocketAddr> {
+    match entry.addr() {
+        BootstrapAddr::Socket(addr) => vec![*addr],
+        BootstrapAddr::Host(host, port) => {
+            match tokio::net::lookup_host((host.as_str(), *port)).await {
+                Ok(found) => found.collect(),
+                Err(error) => {
+                    debug!(%entry, %error, "bootstrap host did not resolve");
+                    Vec::new()
+                }
+            }
+        }
     }
 }
 

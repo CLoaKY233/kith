@@ -14,7 +14,8 @@ don't decide: how devices find each other, join, and stay in sync.
 
 **Authentication.** Control connections authenticate both ends by their kith identity, an Ed25519 key, using TLS raw public keys. The client pins the server's expected `NodeId`. The server accepts any key, then allows:
 - members, for sync and gossip;
-- invite holders, for a single `JoinRequest` only.
+- invite holders, for a single `JoinRequest` only;
+- devices asking to join, for a single `AskToJoin` only.
 
 ## Joining
 
@@ -22,6 +23,16 @@ don't decide: how devices find each other, join, and stay in sync.
 2. The new device opens a control connection to a bootstrap address, pinned to the sponsor's `NodeId`, which the token carries. It sends `JoinRequest { proof: JoinProof }`.
 3. The sponsor checks expiry against its own clock, drafts and signs the `Join` op, and inserts it. It replies `JoinAccepted`, then runs a ledger sync session on the same connection. The device ends up with the full ledger.
 4. From then on, the device is a member everywhere: its NodeId is in the view, so every peer installs it as a WireGuard peer.
+
+### Asking an admin instead
+
+A device without an invite can ask to join; nothing is granted until an admin signs.
+
+1. Any member runs `kith request-code <network>`. The `kith://request/` code holds the network id, its name and that member's addresses and `NodeId`. It holds no secret.
+2. The new device runs `kith request <code>`. Its daemon signs an `AdmissionRequest` (network, its `NodeId`, the name it wants, the time) with its own key and sends `AskToJoin` to a member in the code. The member checks the signature and that the request is under 10 minutes old, holds it pending, answers `AskPending`, and gossips its pending requests to the other members, so admins see it in `kith requests` and in their journal.
+3. Each member holds at most 32 pending requests per network and one per device; a newer request from the same device replaces the older. Requests expire 10 minutes after they were made, by the requester's signed time, so gossip cannot bring an expired one back.
+4. `kith approve` signs an ordinary `AddDevice` op with the requested name, so the ledger's rules are unchanged. `kith deny` records the denial on the admin and gossips it, so the request leaves every admin's list; members trust denials only from admins.
+5. The waiting device asks again every few seconds with the same request. Once the member it asks sees the device in the ledger, it answers `JoinAccepted` and syncs the ledger, as for an invite; if the request was denied, it answers `JoinRejected("denied")`.
 
 ## Staying in sync
 

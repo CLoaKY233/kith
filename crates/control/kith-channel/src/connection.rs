@@ -5,9 +5,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use kith_ledger::{JoinProof, Ledger, SignedOp};
+use kith_ledger::{AdmissionRequest, JoinProof, Ledger, SignedOp};
 use kith_sync::SyncSession;
-use kith_types::{NetworkId, NodeId};
+use kith_types::{NetworkId, NodeId, Timestamp};
 use tokio::io::{AsyncWrite, AsyncWriteExt, ReadHalf};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
@@ -232,6 +232,7 @@ impl<H: ChannelHandler> Connection<H> {
         match (self.member, message) {
             (false, Message::Hello { networks }) => self.on_first_hello(networks),
             (false, Message::JoinRequest { network, proof }) => self.on_join(network, proof),
+            (false, Message::AskToJoin { request }) => self.on_ask(*request),
             (false, _) => Err(Close::Violation("non-member sent neither hello nor join")),
             (true, Message::Hello { networks }) => self.on_hello(networks),
             (true, Message::Sync { network, bytes }) => self.on_sync(network, &bytes),
@@ -239,9 +240,19 @@ impl<H: ChannelHandler> Connection<H> {
             (true, Message::Presence { network, entries }) => self.on_presence(network, entries),
             (
                 true,
+                Message::Admissions {
+                    network,
+                    requests,
+                    denied,
+                },
+            ) => self.on_admissions(network, requests, denied),
+            (
+                true,
                 Message::JoinRequest { .. }
                 | Message::JoinAccepted { .. }
-                | Message::JoinRejected { .. },
+                | Message::JoinRejected { .. }
+                | Message::AskToJoin { .. }
+                | Message::AskPending,
             ) => Err(Close::Violation("join message from a member")),
         }
     }
@@ -302,6 +313,25 @@ impl<H: ChannelHandler> Connection<H> {
             self.handler.on_ledger_changed(network);
             self.broadcast_changed(network);
         }
+        self.accept(network)
+    }
+
+    fn on_ask(&mut self, request: AdmissionRequest) -> Result<(), Close> {
+        if request.device != self.peer.node {
+            return self.reject("the request names another device");
+        }
+        let network = request.network;
+        if self.handler.is_member(network, self.peer.node) {
+            return self.accept(network);
+        }
+        if let Err(reason) = self.handler.handle_ask(request, self.peer.addr) {
+            return self.reject(&reason);
+        }
+        self.send(&Message::AskPending)?;
+        Err(Close::Rejected)
+    }
+
+    fn accept(&mut self, network: NetworkId) -> Result<(), Close> {
         let genesis = self
             .handler
             .with_ledger(network, |ledger| {
@@ -382,6 +412,20 @@ impl<H: ChannelHandler> Connection<H> {
             return Err(Close::Violation("gossip for a network that is not shared"));
         }
         self.handler.on_presence(network, self.peer.node, entries);
+        Ok(())
+    }
+
+    fn on_admissions(
+        &self,
+        network: NetworkId,
+        requests: Vec<AdmissionRequest>,
+        denied: Vec<(NodeId, Timestamp)>,
+    ) -> Result<(), Close> {
+        if !self.active.contains(&network) {
+            return Err(Close::Violation("gossip for a network that is not shared"));
+        }
+        self.handler
+            .on_admissions(network, self.peer.node, requests, denied);
         Ok(())
     }
 
