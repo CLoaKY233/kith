@@ -144,7 +144,7 @@ Props:
   }
   :global(.kith-sheet-head) {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: var(--s-3);
     padding: var(--s-4) var(--s-5);

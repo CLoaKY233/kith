@@ -18,7 +18,7 @@ Props:
   - onOpenChange?: (open: boolean) => void.
 -->
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { announce } from '../lib/announce';
   import { copy } from '../lib/copy';
@@ -47,6 +47,7 @@ Props:
     nameProblemText,
     networkContext,
     normalizeInput,
+    progressText,
   } from './act';
 
   type Mode = 'mine' | 'all';
@@ -75,12 +76,8 @@ Props:
   const stale = $derived(cannotAct(live.conn));
 
   const exits = $derived(live.exits[netId] ?? []);
-  const exitName = $derived(
-    exits.find((e) => e.allowed)?.name ??
-      exits[0]?.name ??
-      live.status?.exit_node?.split('/').at(-1) ??
-      null,
-  );
+  /** Only an exit this phone may use; without one, All traffic is unavailable. */
+  const exitName = $derived(exits.find((e) => e.allowed)?.name ?? null);
 
   // Step 1.
   let name = $state('');
@@ -92,6 +89,7 @@ Props:
   let nameInput = $state<HTMLInputElement | null>(null);
   let creating = $state.raw<ActionHandle<PhoneCreated> | null>(null);
   let made = $state.raw<PhoneCreated | null>(null);
+  const formId = $props.id();
 
   // Step 3.
   let mode = $state<Mode>('mine');
@@ -105,6 +103,8 @@ Props:
   let slowToConnect = $state(false);
   let internetDue = $state(false);
   let sawTraffic = $state(false);
+  let revealButton = $state<HTMLButtonElement | null>(null);
+  let downloadButton = $state<HTMLButtonElement | null>(null);
 
   /** The phone this sheet is about: made here, or the `node` it was opened for. */
   const phone = $derived.by((): PhoneCreated | null => {
@@ -206,11 +206,25 @@ Props:
       const handle = actions.createPhone(netId, name, list);
       creating = handle;
       const settled = await handle.done;
-      if (creating === handle && settled.result) made = settled.result;
+      if (creating === handle && settled.result) {
+        made = settled.result;
+        // The form and its button leave the page: focus moves to step 3's action.
+        await tick();
+        (downloadFirst ? downloadButton : revealButton)?.focus();
+      }
     } finally {
       submitting = false;
     }
   }
+
+  const createPending = $derived(submitting || creating?.state === 'pending');
+  const createProgress = $derived(creating ? progressText(creating) : null);
+  const madeTags = $derived(
+    tags
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .join(', '),
+  );
 
   const createFailure = $derived(
     creating?.state === 'failed' && creating.error ? failureText(creating.error, name) : null,
@@ -222,9 +236,14 @@ Props:
     forget();
   }
 
+  /** A tier-3 handle waits in `awaiting_os_auth`, not `pending` (§13). */
+  const revealPending = $derived(
+    revealing?.state === 'pending' || revealing?.state === 'awaiting_os_auth',
+  );
+
   /** Tier 3: asks the server, which waits for OS confirmation, then uses the config. */
   async function reveal(use: Use): Promise<void> {
-    if (!phone || stale || revealing?.state === 'pending') return;
+    if (!phone || stale || revealPending) return;
     if (config) {
       apply(use, config);
       return;
@@ -274,6 +293,11 @@ Props:
       ? failureText(revealing.error, phone.name)
       : null,
   );
+
+  // The config leaves the page once neither the QR nor the text shows it.
+  $effect(() => {
+    if (config && !qrShown && !textOpen) untrack(forget);
+  });
 
   // First handshake: the QR collapses and the config leaves the page.
   $effect(() => {
@@ -336,10 +360,24 @@ Props:
 
   const exitsHref = $derived(href({ name: 'exits', net: networkName }));
 
+  /**
+   * Keeps the phone in this entry's URL first, so Back from Exits reopens step 3 for it
+   * (there is no other way back to an unconnected phone's config yet).
+   */
   function toExits(event: MouseEvent): void {
     event.preventDefault();
-    open = false;
+    if (phone) {
+      const here = new URL(location.href);
+      here.searchParams.set('node', phone.node);
+      history.replaceState(history.state, '', `${here.pathname}${here.search}`);
+    }
     go(exitsHref);
+  }
+
+  function showDevice(): void {
+    if (!phone) return;
+    open = false;
+    go(href({ name: 'device', net: networkName, dev: phone.name }));
   }
 </script>
 
@@ -348,9 +386,12 @@ Props:
     <li class="step">
       <h3 class="t-heading">{copy.addPhone.stepName}</h3>
       {#if phone}
+        {#if made}<p class="fact">{copy.addPhone.made(made.name, madeTags)}</p>{/if}
         <p class="fact">{copy.addPhone.helper(phone.name, networkName)}</p>
+        {#if made && createProgress}<p class="note">{createProgress}</p>{/if}
       {:else}
         <form
+          id={formId}
           class="fields"
           onsubmit={(event) => {
             event.preventDefault();
@@ -359,7 +400,7 @@ Props:
         >
           <Field
             label={copy.addPhone.name}
-            helper={copy.addPhone.helper(name || copy.addPhone.initial, networkName)}
+            helper={name && !nameError ? copy.addPhone.helper(name, networkName) : undefined}
             error={nameError}
             hint={spacesHint ? copy.createNetwork.spaces : null}
           >
@@ -369,6 +410,7 @@ Props:
                 kind="name"
                 bind:value={name}
                 bind:ref={nameInput}
+                readonly={createPending}
                 oninput={typed}
                 onblur={() => void validate()}
               />
@@ -383,10 +425,14 @@ Props:
           {/if}
           <Field label={copy.addPhone.tags}>
             {#snippet children(control)}
-              <Input {...control} kind="name" bind:value={tags} />
+              <Input {...control} kind="name" bind:value={tags} readonly={createPending} />
             {/snippet}
           </Field>
-          {#if createFailure}<p class="fail">{createFailure}</p>{/if}
+          {#if createFailure}
+            <p class="fail">{createFailure}</p>
+          {:else if createProgress}
+            <p class="note">{createProgress}</p>
+          {/if}
         </form>
       {/if}
     </li>
@@ -398,19 +444,26 @@ Props:
 
     <li class="step">
       <h3 class="t-heading">{copy.addPhone.stepScan}</h3>
-      {#if phone && !connected}
+      {#if !phone}
+        <p class="note">{copy.addPhone.scanLater}</p>
+      {:else if !connected}
         <div class="mode">
           <Segmented
             value={mode}
-            label={copy.addPhone.stepScan}
+            label={copy.addPhone.routeLabel}
             options={[
               { value: 'mine', label: copy.addPhone.justMine },
-              { value: 'all', label: copy.addPhone.everything, disabled: !exitAvailable },
+              {
+                value: 'all',
+                label: copy.addPhone.everything,
+                disabled: !exitAvailable,
+                reason: copy.addPhone.noExitReason,
+              },
             ]}
             onValueChange={changeMode}
           />
           {#if !exitAvailable}
-            <a class="link" href={exitsHref} onclick={toExits}>{copy.addPhone.noExit}</a>
+            <a class="link" href={exitsHref} onclick={toExits}>{copy.addPhone.noExitLink}</a>
           {:else}
             <p class="note">
               {mode === 'all'
@@ -422,10 +475,10 @@ Props:
       {/if}
 
       {#if qrShown && config}
-        <QrPanel svg={config.qr_svg} />
+        <QrPanel svg={config.qr_svg} bind:shown={qrShown} collapse={connected} />
       {/if}
 
-      {#if revealing?.state === 'pending'}
+      {#if revealPending}
         <p class="note">{copy.tier3.waiting}</p>
       {:else if revealFailure}
         <p class="fail">{revealFailure}</p>
@@ -452,39 +505,52 @@ Props:
     {#if !phone}
       <Button
         variant="primary"
+        type="submit"
+        form={formId}
         disabled={stale}
-        pending={submitting}
-        onclick={() => void create()}
+        pending={createPending}
       >
         {copy.addPhone.create}
       </Button>
     {:else if connected}
       <Button onclick={() => (open = false)}>{copy.action.close}</Button>
+      <Button variant="primary" onclick={showDevice}>{copy.join.showDevice}</Button>
     {:else}
-      {#if qrShown}
-        <Button onclick={forget}>{copy.qr.hide}</Button>
-      {/if}
       {#if downloadFirst}
         {#if !qrShown}
-          <Button disabled={stale} onclick={() => void reveal('qr')}>{copy.addPhone.reveal}</Button>
+          <Button
+            bind:ref={revealButton}
+            disabled={stale}
+            pending={revealPending}
+            onclick={() => void reveal('qr')}
+          >
+            {copy.addPhone.reveal}
+          </Button>
         {/if}
         <Button
+          bind:ref={downloadButton}
           variant="primary"
           disabled={stale}
-          pending={revealing?.state === 'pending'}
+          pending={revealPending}
           onclick={() => void reveal('download')}
         >
           {copy.addPhone.download}
         </Button>
       {:else}
-        <Button disabled={stale} onclick={() => void reveal('download')}>
+        <Button
+          bind:ref={downloadButton}
+          disabled={stale}
+          pending={revealPending}
+          onclick={() => void reveal('download')}
+        >
           {copy.addPhone.download}
         </Button>
         {#if !qrShown}
           <Button
+            bind:ref={revealButton}
             variant="primary"
             disabled={stale}
-            pending={revealing?.state === 'pending'}
+            pending={revealPending}
             onclick={() => void reveal('qr')}
           >
             {copy.addPhone.reveal}

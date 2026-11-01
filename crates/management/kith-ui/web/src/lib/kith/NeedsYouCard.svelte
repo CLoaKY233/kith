@@ -26,7 +26,7 @@ Props:
   import { needs, type NeedDetail } from '../../frame/needs.svelte';
   import { prefs } from '../../frame/prefs.svelte';
   import { go, href } from '../../router';
-  import AllowBlocked from '../../sheets/AllowBlocked.svelte';
+  import AllowBlocked, { allowRequest } from '../../sheets/AllowBlocked.svelte';
   import { copy } from '../copy';
   import { relative, rtt } from '../format';
   import Icon from '../icons/Icon.svelte';
@@ -396,24 +396,21 @@ Props:
       <div class="actions">
         <Button variant="ghost" onclick={ignore}>{copy.blocked.ignore}</Button>
         {#if admin}
-          <Button disabled={frozen} onclick={() => (allowOpen = true)}>{copy.blocked.allowThis}</Button>
+          <AllowBlocked bind:open={allowOpen} id={blocked.id}>
+            {#snippet trigger(props)}
+              <Button {...props} disabled={frozen}>{copy.blocked.allowThis}</Button>
+            {/snippet}
+          </AllowBlocked>
         {:else}
           <Button onclick={() => (asking = true)}>{copy.exits.askAdmin}</Button>
         {/if}
       </div>
       {#if frozen && admin}<p class="reason">{copy.conn.staleActions}</p>{/if}
-      {#if admin}
-        <AllowBlocked bind:open={allowOpen} id={blocked.id} />
-      {:else if asking}
+      {#if !admin}
         <AskAdminSheet
+          bind:open={asking}
           net={blocked.network}
-          request={copy.askAdmin.allowCommand(
-            network,
-            blocked.from_name,
-            blocked.to_name,
-            blocked.protocol,
-            blocked.port,
-          )}
+          request={allowRequest(blocked, network)}
         />
       {/if}
     {:else if health}

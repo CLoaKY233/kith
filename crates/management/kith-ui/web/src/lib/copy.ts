@@ -698,6 +698,10 @@ export const copy = {
     /** `done` for a connection without a port, such as ICMP. */
     doneAny: (from: string, to: string): string => `${from} can reach ${to} now.`,
     gone: 'This blocked connection is no longer waiting.',
+    /** The Allow sheet's title, such as `Allow phone → nas :22`. */
+    title: (from: string, to: string, port: number | null): string =>
+      `Allow ${from} → ${to}${port === null ? '' : ` :${port}`}`,
+    titleAny: 'Allow a blocked connection',
   },
 
   /** §7.6 Add a phone. */
@@ -719,6 +723,12 @@ export const copy = {
     justMineHelp: (network: string): string => `Reach ${network}'s devices.`,
     everythingHelp: (exit: string): string => `Everything, through ${exit}.`,
     noExit: 'No exit yet. Set one up in Exits →',
+    noExitReason: 'No exit yet.',
+    noExitLink: 'Set one up in Exits →',
+    routeLabel: 'What the phone reaches',
+    scanLater: 'The QR code appears here after you create the phone config.',
+    /** What step 1 created: `phone-2 · tags phone`. */
+    made: (phone: string, tags: string): string => (tags ? `${phone}${DOT}tags ${tags}` : phone),
     reveal: "Show QR code (contains this phone's private key)",
     download: 'Download .conf',
     showText: 'Show config as text',
