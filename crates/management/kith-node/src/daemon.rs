@@ -556,16 +556,10 @@ impl Daemon {
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
         let journal = options.journal.clone();
-        let ipc_task = if options.ipc {
-            Some(start_ipc(
-                config,
-                commands.clone(),
-                events.clone(),
-                journal.clone(),
-            )?)
-        } else {
-            None
-        };
+        let ipc_task = options
+            .ipc
+            .then(|| start_ipc(config, commands.clone(), events.clone(), journal.clone()))
+            .transpose()?;
         let started = Started {
             dns_addr: dns.as_ref().map(DnsService::local_addr),
             control_addr: channel.local_addr(),
