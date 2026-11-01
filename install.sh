@@ -97,7 +97,10 @@ install_bin kith
 
 ui="${KITH_UI:-}"
 case "$target" in
-    armv7-*) ui=0 ;;
+    armv7-*)
+        [ "$ui" = 1 ] && say "no web UI build for $target; skipping kith-ui"
+        ui=0
+        ;;
 esac
 if [ -z "$ui" ]; then
     if [ -t 0 ]; then
