@@ -787,6 +787,69 @@ export const copy = {
   tier3: {
     waiting: 'Waiting for confirmation on this computer…',
   },
+
+  /** §6.3, §6.4, §12.4: Devices and Device detail, beyond the shared keys above. */
+  deviceView: {
+    addDeviceMobile: '+ Add device',
+    filterChipsLabel: 'Show devices',
+    viewLabel: 'View',
+    sortBy: (by: string): string => `Sort: ${by}`,
+    caret: '▾',
+    listLabel: (network: string): string => `Devices in ${network}`,
+    rowMenu: (device: string): string => `More for ${device}`,
+    copyAddress: 'Copy address',
+    copyName: 'Copy name',
+    copyThis: (what: string): string => `Copy ${what}`,
+    addedAgo: (ago: string): string => `added ${ago}`,
+    spokenBytesPerSec: [
+      'bytes per second',
+      'kilobytes per second',
+      'megabytes per second',
+      'gigabytes per second',
+      'terabytes per second',
+    ] as const,
+    relayed: 'relayed',
+    stealth: 'stealth',
+    relayNode: 'relay',
+    selfMac: 'This Mac',
+    selfDevice: 'This device',
+    endpoint: 'Endpoint',
+    pathLabel: (hops: readonly string[], latency: string | null): string =>
+      `${hops.join(' to ')}${latency ? `, ${latency}` : ''}`,
+    nameLabel: 'Device name',
+    renamed: (from: string, to: string): string => `Renamed ${from} to ${to}`,
+    totals: {
+      '1m': (down: string, up: string): string => `↓ ${down} ↑ ${up} in the last minute`,
+      '15m': (down: string, up: string): string => `↓ ${down} ↑ ${up} in the last 15 minutes`,
+      '1h': (down: string, up: string): string => `↓ ${down} ↑ ${up} in the last hour`,
+    },
+    noHistory: 'Nothing has happened to this device yet.',
+    detailLabel: (device: string): string => `${device} details`,
+    askRemove: (device: string, network: string): string =>
+      `Ask to remove ${device} from ${network}…`,
+    askAllowExit: (device: string): string => `Ask to allow ${device} as exit…`,
+    removeCommand: (network: string, device: string): string =>
+      `kith remove ${network} ${device}`,
+    allowExitCommand: (network: string, device: string): string =>
+      `kith exit allow ${network} ${device}`,
+    allowCommand: (network: string, from: string, to: string, proto: string, port: string): string =>
+      `kith allow ${network} ${from} ${to} ${proto}${port ? ` ${port}` : ''}`,
+    allowExitTitle: (device: string): string => `Allow ${device} as an exit?`,
+    allowExitBody: (device: string, network: string): string =>
+      `Devices in ${network} that may use it can send all their internet traffic through ${device}. Websites see ${device}'s address instead of theirs.`,
+    allowExitSubmit: (device: string): string => `Allow ${device} as exit`,
+    allowedExit: (device: string): string => `${device} is now an exit.`,
+    usingExit: (device: string): string => `This device's internet goes through ${device}.`,
+  },
+
+  /** §12.4 Verdicts the table leaves implied: no RTT yet, offline between 10 min and a day, never seen. */
+  verdictMore: {
+    direct: 'Reachable directly',
+    relayed: (relay: string): string => `Reachable through ${relay}.`,
+    offlineSome: (ago: string): string => `Not reachable right now. Seen ${ago}.`,
+    never: 'Not connected yet.',
+    waitingPhone: 'Waiting for its first connection.',
+  },
 } as const;
 
 export type Copy = typeof copy;
