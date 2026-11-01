@@ -555,12 +555,13 @@ impl Daemon {
         let external = restore_external(&state, config).await?;
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
+        let journal = options.journal.clone();
         let ipc_task = if options.ipc {
             Some(start_ipc(
                 config,
                 commands.clone(),
                 events.clone(),
-                options.journal.clone(),
+                journal.clone(),
             )?)
         } else {
             None
@@ -602,7 +603,7 @@ impl Daemon {
             gossiped: BTreeMap::new(),
             exit: None,
             ipc_task,
-            journal: options.journal.clone(),
+            journal,
             activity: Activity::default(),
             topology: Topology::new(local),
             share_links: config.network.share_links,
