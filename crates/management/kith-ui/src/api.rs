@@ -144,21 +144,20 @@ async fn body<T: DeserializeOwned>(request: Request<Incoming>) -> Result<T, ApiE
     serde_json::from_slice(&bytes).map_err(|error| ApiError::bad(format!("bad JSON: {error}")))
 }
 
-fn qr_svg(text: &str) -> Result<String, ApiError> {
-    let code = QrCode::new(text.as_bytes()).map_err(|error| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("cannot make a QR code: {error}"),
-        )
-    })?;
-    Ok(code
-        .render::<svg::Color<'_>>()
-        .min_dimensions(240, 240)
-        .build())
+/// The text as a QR code, or `None` when it is too long for one.
+///
+/// A config for a large network can pass the QR limit; the page still gets the text.
+fn qr_svg(text: &str) -> Option<String> {
+    let code = QrCode::new(text.as_bytes()).ok()?;
+    Some(
+        code.render::<svg::Color<'_>>()
+            .min_dimensions(240, 240)
+            .build(),
+    )
 }
 
-fn config(text: &str) -> Result<Value, ApiError> {
-    Ok(json!({ "config": text, "qr_svg": qr_svg(text)? }))
+fn config(text: &str) -> Value {
+    json!({ "config": text, "qr_svg": qr_svg(text) })
 }
 
 #[derive(Deserialize)]
@@ -244,7 +243,7 @@ async fn invite(state: &State, network: NetworkId, input: InviteIn) -> Result<Va
     else {
         return Err(unexpected());
     };
-    Ok(json!({ "qr_svg": qr_svg(&invite_link)?, "link": invite_link }))
+    Ok(json!({ "qr_svg": qr_svg(&invite_link), "link": invite_link }))
 }
 
 async fn phone(state: &State, network: NetworkId, input: PhoneIn) -> Result<Value, ApiError> {
@@ -266,10 +265,10 @@ async fn phone(state: &State, network: NetworkId, input: PhoneIn) -> Result<Valu
         return Err(unexpected());
     };
     let everything = match everything {
-        Some(text) => config(&text)?,
+        Some(text) => config(&text),
         None => Value::Null,
     };
-    Ok(json!({ "name": device, "device": config(&mesh)?, "everything": everything }))
+    Ok(json!({ "name": device, "device": config(&mesh), "everything": everything }))
 }
 
 /// Uses an exit node, or stops with `network: null`, which needs some member network.

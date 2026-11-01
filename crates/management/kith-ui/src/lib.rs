@@ -84,10 +84,16 @@ impl Server {
         format!("{}/?token={}", self.state.origin, self.state.token.hex())
     }
 
-    /// Accepts connections until accepting fails.
+    /// Accepts connections until the task is dropped.
+    ///
+    /// A failed accept, such as running out of file descriptors, waits briefly and tries
+    /// again, so one bad moment does not stop the page.
     pub async fn run(self) -> io::Result<()> {
         loop {
-            let (stream, _) = self.listener.accept().await?;
+            let Ok((stream, _)) = self.listener.accept().await else {
+                tokio::time::sleep(core::time::Duration::from_millis(100)).await;
+                continue;
+            };
             let state = Arc::clone(&self.state);
             tokio::spawn(async move {
                 let service = service_fn(move |request| {
