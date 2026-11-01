@@ -14,6 +14,9 @@ use tokio::time::Instant;
 /// How often a device repeats its report when nothing changed.
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
+/// The most links one topology answer holds, so it stays well inside an IPC frame.
+pub(crate) const MAX_RESPONSE_LINKS: usize = 1500;
+
 /// How long a report is kept after it arrived: a device that stops reporting is gone.
 const REPORT_EXPIRY: Duration = Duration::from_secs(60);
 

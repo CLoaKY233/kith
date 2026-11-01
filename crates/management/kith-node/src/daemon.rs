@@ -2188,7 +2188,8 @@ impl Daemon {
         }
     }
 
-    /// Every member's latest link report for `network`, this device's computed now.
+    /// Every member's latest link report for `network`, this device's computed now. The
+    /// freshest reports are kept when the whole would not fit in one IPC frame.
     async fn topology(&self, network: NetworkId) -> Result<Response, NodeError> {
         let map = self.member_map(network)?;
         let stats = self.dataplane.stats().await?;
@@ -2214,19 +2215,28 @@ impl Daemon {
             age_secs: 0,
             links: own.iter().map(to_info).collect(),
         }];
-        for (from, age, links) in self.topology.reports(network, Instant::now()) {
-            if !map.peers().contains_key(&from) {
-                continue;
-            }
+        let mut received: Vec<_> = self
+            .topology
+            .reports(network, Instant::now())
+            .filter(|(from, _, _)| map.peers().contains_key(from))
+            .collect();
+        received.sort_by_key(|(_, age, _)| *age);
+        let mut budget = crate::topology::MAX_RESPONSE_LINKS.saturating_sub(own.len());
+        for (from, age, links) in received {
+            let links: Vec<LinkInfo> = links
+                .iter()
+                .filter(|link| link.peer == local || map.peers().contains_key(&link.peer))
+                .map(to_info)
+                .collect();
+            let Some(left) = budget.checked_sub(links.len()) else {
+                break;
+            };
+            budget = left;
             reports.push(LinkReport {
                 node: from,
                 name: name_of(&from),
                 age_secs: age.as_secs(),
-                links: links
-                    .iter()
-                    .filter(|link| link.peer == local || map.peers().contains_key(&link.peer))
-                    .map(to_info)
-                    .collect(),
+                links,
             });
         }
         Ok(Response::Topology(reports))
