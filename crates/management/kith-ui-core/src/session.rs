@@ -29,9 +29,12 @@ use crate::wire::{ApiErrorCode, SessionIn};
 const COOKIE_PREFIX: &str = "kith_ui_";
 /// How long a link token stays good.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(120);
-/// What every answer allows the page to load.
+/// What every answer allows the page to load. `base-uri` and `form-action` do not fall
+/// back to `default-src`, so they are named: an injected `<base>` or form must not send
+/// the page's requests or fields elsewhere.
 const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
-script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
+script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; \
+form-action 'self'; frame-ancestors 'none'";
 
 /// A 32-byte random secret: the link token or a session secret.
 #[derive(Clone)]
@@ -286,6 +289,7 @@ fn secure(headers: &mut HeaderMap, api: bool) {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
