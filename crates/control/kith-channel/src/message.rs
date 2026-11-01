@@ -8,7 +8,7 @@ use kith_wire::{FrameDecoder, WireError, envelope, frame};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{ChannelError, MAX_ADMISSIONS, MAX_ENDPOINT_ADDRS, MAX_ENDPOINT_NODES};
+use crate::{ChannelError, MAX_ADMISSIONS, MAX_ENDPOINT_ADDRS, MAX_ENDPOINT_NODES, MAX_LINKS};
 
 const CHANNEL_VERSION: u64 = 1;
 
@@ -148,7 +148,7 @@ impl Message {
                     .try_for_each(|(_, addrs)| within(addrs.len(), MAX_ENDPOINT_ADDRS))
             }
             Self::Presence { entries, .. } => within(entries.len(), MAX_ENDPOINT_NODES),
-            Self::Links { links, .. } => within(links.len(), MAX_ENDPOINT_NODES),
+            Self::Links { links, .. } => within(links.len(), MAX_LINKS),
             Self::AskToJoin { request } => within(request.name.len(), MAX_NAME_LEN),
             Self::AskPending => Ok(()),
             Self::Admissions {

@@ -16,7 +16,10 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::channel::ALPN;
 use crate::message::{FrameReader, Message};
-use crate::{Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer, Presence};
+use crate::{
+    Channel, ChannelClient, ChannelError, ChannelHandler, ChannelServer, Link, LinkPath, MAX_LINKS,
+    Presence,
+};
 
 const NOW: u64 = 1_000_000;
 const HOUR: u64 = 3_600_000;
@@ -496,6 +499,34 @@ fn golden_bytes() {
     expected.extend([0; 15]);
     expected.extend([1, 5]);
     assert_eq!(endpoints.to_frame().unwrap(), expected);
+}
+
+#[test]
+fn a_link_report_longer_than_the_limit_is_refused_both_ways() {
+    let link = |byte: u8| Link {
+        peer: NodeId::from_bytes([byte; 32]),
+        path: LinkPath::Relay,
+        relay: Some(NodeId::from_bytes([0; 32])),
+        rtt_ms: Some(u32::MAX),
+        bytes_per_sec: u64::MAX,
+    };
+    let report = |len: usize| Message::Links {
+        network: NetworkId::from_bytes([2; 32]),
+        links: (0..len).map(|i| link(i.to_le_bytes()[0])).collect(),
+    };
+    let encode = |message: &Message| {
+        kith_wire::envelope::encode(kith_wire::registry::CHANNEL_MESSAGE, 1, message).unwrap()
+    };
+    let full = report(MAX_LINKS);
+    assert!(full.to_frame().is_ok());
+    assert_eq!(Message::decode(&encode(&full)).unwrap(), full);
+
+    let over = report(MAX_LINKS + 1);
+    assert!(matches!(over.to_frame(), Err(ChannelError::LimitExceeded)));
+    assert!(matches!(
+        Message::decode(&encode(&over)),
+        Err(ChannelError::LimitExceeded)
+    ));
 }
 
 proptest! {

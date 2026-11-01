@@ -20,6 +20,9 @@ pub use message::{Link, LinkPath, Presence};
 /// The most nodes one endpoint gossip message describes.
 const MAX_ENDPOINT_NODES: usize = 256;
 
+/// The most links one link report carries; a longer report is refused on both ends.
+pub const MAX_LINKS: usize = MAX_ENDPOINT_NODES;
+
 /// The most addresses one endpoint gossip message lists per node.
 const MAX_ENDPOINT_ADDRS: usize = 32;
 
