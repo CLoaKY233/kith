@@ -122,7 +122,7 @@ export const copy = {
 
   /** §5 RelativeTime. Clock and weekday forms come from format.ts. */
   time: {
-    now: 'now',
+    now: 'just now',
     secondsAgo: (s: number): string => `${s}${THIN}s ago`,
     minutesAgo: (m: number): string => `${m}${THIN}min ago`,
     hoursAgo: (h: number): string => `${h}${THIN}h ago`,
@@ -564,8 +564,18 @@ export const copy = {
     nameTooLong: 'Names can be up to 63 characters.',
     nameHyphenEdge: "Names can't start or end with a hyphen.",
     nameTaken: 'Another device in this network has this name.',
-    internal: (message: string): string =>
-      `kith couldn't do this: ${message}. Details are in Logs.`,
+    conflictPlain: 'Someone changed this a moment ago. Showing the latest.',
+    notFoundPlain: 'This is no longer in this network.',
+    invalid: (message: string): string => {
+      const said = message.trim().replace(/\.+$/, '');
+      return said === '' ? 'kith refused this value.' : `kith refused this value: ${said}.`;
+    },
+    internal: (message: string): string => {
+      const said = message.trim().replace(/\.+$/, '');
+      return said === ''
+        ? "kith couldn't do this. Details are in Logs."
+        : `kith couldn't do this: ${said}. Details are in Logs.`;
+    },
     osAuthDenied: 'This computer did not confirm it. Nothing was signed.',
     notImplemented: "This version of kith can't do this yet.",
   },

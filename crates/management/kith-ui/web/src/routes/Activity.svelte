@@ -26,9 +26,9 @@ Props:
   import { liveContext } from '../lib/kith/liveContext';
   import { devicesByName, findNetwork, membershipOf } from '../lib/kith/network';
   import VirtualList from '../lib/kith/VirtualList.svelte';
-  import { live } from '../lib/live/store.svelte';
+  import { live, notifications } from '../lib/live/store.svelte';
   import { SORT_FREEZE_MS, TINT_MS } from '../lib/live/timing';
-  import { prefs, promptSnoozed, setPref, snoozePrompt, wasHiddenAt } from '../lib/prefs.svelte';
+  import { wasHiddenAt } from '../lib/prefs.svelte';
   import { readPx } from '../lib/tokens';
   import type { Entry } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
@@ -117,7 +117,8 @@ Props:
 
   /** Day labels follow the server clock; this changes once a day. */
   const today = $derived(startOfDay(live.lastTickMs || live.now()));
-  const rows = $derived(buildFeed(live.journal, shown, filter, ctx, live.gaps, today));
+  const gaps = $derived(live.gaps.map((g) => ({ from: g.from, to: g.to, at_ms: g.toMs ?? g.fromMs })));
+  const rows = $derived(buildFeed(live.journal, shown, filter, ctx, gaps, today));
 
   // Rows expanded by the person, kept here because virtualised rows unmount.
   const open = new SvelteSet<string>();
@@ -136,7 +137,6 @@ Props:
   // §7.12: offer notifications after something that would have notified arrived while
   // the tab was hidden.
   let askDismissed = $state(false);
-  const canNotify = typeof Notification !== 'undefined';
   function recentlyUsed(network: string, node: string): boolean {
     const columns = live.traffic.get(`${network}/${node}`);
     if (!columns || columns.length < 2) return false;
@@ -152,22 +152,16 @@ Props:
     }),
   );
   const ask = $derived(
-    canNotify &&
-      !askDismissed &&
-      !prefs.notifications &&
-      Notification.permission === 'default' &&
-      !promptSnoozed(Date.now()) &&
-      wouldHaveNotified,
+    !askDismissed && notifications.offerable && (notifications.missed || wouldHaveNotified),
   );
 
   async function turnOn(): Promise<void> {
-    const permission = await Notification.requestPermission();
-    setPref('notifications', permission === 'granted');
+    await notifications.turnOn();
     askDismissed = true;
   }
 
   function notNow(): void {
-    snoozePrompt(Date.now());
+    notifications.notNow();
     askDismissed = true;
   }
 

@@ -38,6 +38,11 @@ describe('api (spec §2)', () => {
     expect((await failure(api.get('/api/status'))).code).toBe('daemon_down');
     answer(502, '');
     expect((await failure(api.get('/api/status'))).code).toBe('internal');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    answer(500, JSON.stringify({ error: 'internal', message: 'boom' }));
+    expect(errorText(await failure(api.post('/api/networks/h/invites')))).toBe(
+      "kith couldn't do this: HTTP 500. Details are in Logs.",
+    );
   });
 
   it('reports a request that never got an answer with status 0', async () => {
@@ -70,6 +75,18 @@ describe('errorText (spec §12.5)', () => {
       op: 'op1',
     }).toFailure();
     expect(errorText(conflict)).toBe('laptop changed this a moment ago. Showing the latest.');
+  });
+
+  it('never shows a bare or broken server message', () => {
+    expect(errorText(f('not_found'))).toBe(copy.error.notFoundPlain);
+    expect(errorText(f('conflict', 'x', 409))).toBe(copy.error.conflictPlain);
+    expect(errorText(f('internal', 'disk full.'))).toBe(
+      "kith couldn't do this: disk full. Details are in Logs.",
+    );
+    expect(errorText(f('internal', ' '))).toBe("kith couldn't do this. Details are in Logs.");
+    expect(errorText(f('invalid_argument', 'bad port'))).toBe('kith refused this value: bad port.');
+    expect(errorText(f('session_used', '', 401))).toBe(copy.gate.authUsed);
+    expect(errorText(f('session_expired', '', 401))).toBe(copy.gate.authExpired);
   });
 
   it('maps validator problems to field errors', () => {

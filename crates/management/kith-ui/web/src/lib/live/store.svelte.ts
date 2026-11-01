@@ -11,7 +11,7 @@
 // announce. This file makes the page's one instance with the browser's fetch, EventSource
 // and frames.
 
-import { go, href } from '../../router';
+import { go, href, parse } from '../../router';
 import { api } from '../api';
 import type { Boot, Entry } from '../types.gen';
 import { createActions, type Actions } from './actions';
@@ -55,6 +55,8 @@ export function ackOp(op: string, by: number, of: number): void {
   runner.ack(op, by, of);
 }
 
+store.onAck((op, by, of) => ackOp(op, by, of));
+
 /** Calls `listener` with each new journal entry; returns a function that stops it. */
 export function onEntry(listener: (entry: Entry) => void): () => void {
   return store.onEntry(listener);
@@ -62,11 +64,26 @@ export function onEntry(listener: (entry: Entry) => void): () => void {
 
 /** Browser notification opt-in and delivery (§7.12): Settings and the Activity card. */
 export const notifications = new Notifications(
-  browserEnv(live.now, (need) => {
-    const name = need ? (store.status?.networks.find((n) => n.id === need.network)?.name ?? null) : null;
-    if (need && name) go(`${href({ name: 'overview', net: name })}?need=${encodeURIComponent(need.id)}`);
+  browserEnv(live.now, (target) => {
+    if (!target) return;
+    const network = target.network ?? currentNetwork();
+    if (network === null) return;
+    if ('id' in target) {
+      go(`${href({ name: 'overview', net: network })}?need=${encodeURIComponent(target.id)}`);
+    } else if (target.page === 'device') {
+      go(href({ name: 'device', net: network, dev: target.device }));
+    } else {
+      go(href({ name: target.page, net: network }));
+    }
   }),
 );
+
+/** The network the page shows now, else this device's first. */
+function currentNetwork(): string | null {
+  const route = typeof location === 'undefined' ? null : parse(location.pathname);
+  if (route && 'net' in route) return route.net;
+  return store.status?.networks[0]?.id ?? null;
+}
 
 watch(live, runner, notifications, onEntry);
 

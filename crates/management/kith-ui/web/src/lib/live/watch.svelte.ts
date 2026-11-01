@@ -6,7 +6,7 @@ import { untrack } from 'svelte';
 import { announce } from '../announce';
 import { copy } from '../copy';
 import type { Entry, StatusView } from '../types.gen';
-import type { ConnState, TrafficColumns } from '../types';
+import type { ConnState, GateReason, TrafficColumns } from '../types';
 import { daemonNotice, noticeFor, type Notice, type NoticeContext } from './notify';
 import type { Runner } from './runner';
 import {
@@ -14,6 +14,7 @@ import {
   BLOCKED_ANNOUNCE_MS,
   DAEMON_STOPPED_NOTIFY_MS,
   IDLE_BYTES_PER_SEC,
+  MOTION,
   NOTIFY_REPLAY_CUTOFF_MS,
   RECENTLY_USED_MS,
   SECOND,
@@ -22,6 +23,7 @@ import {
 /** The store fields the watcher reads. */
 export interface WatchHost {
   readonly conn: ConnState;
+  readonly gate?: GateReason | null;
   readonly status: StatusView | null;
   readonly traffic: ReadonlyMap<string, TrafficColumns>;
   now(): number;
@@ -79,9 +81,12 @@ export class Watcher {
   private lostTimer: ReturnType<typeof setTimeout> | null = null;
   private stoppedTimer: ReturnType<typeof setTimeout> | null = null;
   private lostAnnounced = false;
+  private lastGate: GateReason | null = null;
+  private readonly focusMain: () => void;
 
-  constructor(host: WatchHost, runner: Runner, notices: NoticeSink) {
+  constructor(host: WatchHost, runner: Runner, notices: NoticeSink, focusMain: () => void = () => {}) {
     this.host = host;
+    this.focusMain = focusMain;
     this.runner = runner;
     this.notices = notices;
     this.ctx = noticeContext(host);
@@ -122,6 +127,18 @@ export class Watcher {
     }
   }
 
+  /** Handles a gate change: leaving the daemon-down or group gate is the daemon recovered
+   * (§11.1), so it is announced and focus moves to the new main. */
+  gate(): void {
+    const gate = this.host.gate ?? null;
+    const was = this.lastGate;
+    this.lastGate = gate;
+    if (gate !== null || (was !== 'daemon_down' && was !== 'not_in_group')) return;
+    this.lostAnnounced = false;
+    announce(copy.conn.daemonBack, 'assertive');
+    this.focusMain();
+  }
+
   /** Stops the timers; for tests and teardown. */
   clearTimers(): void {
     if (this.lostTimer !== null) clearTimeout(this.lostTimer);
@@ -129,6 +146,15 @@ export class Watcher {
     this.lostTimer = null;
     this.stoppedTimer = null;
   }
+}
+
+/** Moves focus to the app's main once the gate has faded out. */
+function focusContent(): void {
+  if (typeof document === 'undefined') return;
+  setTimeout(() => {
+    const mains = document.querySelectorAll<HTMLElement>('#content');
+    mains[mains.length - 1]?.focus();
+  }, MOTION.dialog);
 }
 
 /** Runs a Watcher off the store: `subscribe` delivers each new journal entry once, and the
@@ -139,12 +165,16 @@ export function watch(
   notices: NoticeSink,
   subscribe: (listener: (entry: Entry) => void) => () => void,
 ): () => void {
-  const watcher = new Watcher(host, runner, notices);
+  const watcher = new Watcher(host, runner, notices, focusContent);
   const unsubscribe = subscribe((entry) => watcher.entry(entry));
   const stop = $effect.root(() => {
     $effect(() => {
       void host.conn;
       untrack(() => watcher.conn());
+    });
+    $effect(() => {
+      void host.gate;
+      untrack(() => watcher.gate());
     });
   });
   return () => {

@@ -24,6 +24,7 @@ function handle(
     error: null,
     conflict: null,
     result: null,
+    ledger: true,
     done: new Promise(() => undefined),
   };
 }

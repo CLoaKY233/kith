@@ -54,7 +54,49 @@ describe('boot', () => {
     expect(live.paths.get(deviceKey(NET, node('dev-box')))).toEqual({ path: 'relay', flapping: false });
     expect(live.seenAt[deviceKey(NET, node('tv'))]).toBe(T0 - 11_520_000);
     expect(live.changed.size).toBe(0);
-    expect(h.stream.resume()).toBe(`${fixture.boot}:${seq}`);
+    expect(h.stream.resume()).toBe(`${fixture.boot}:${Math.max(0, seq - JOURNAL_CAP)}`);
+  });
+
+  it('replays the kept history into the journal without changing state or notifying', async () => {
+    const h = new Harness();
+    await h.store.start(bootAt(T0, { seq: 259 }));
+    expect(h.stream.resume()).toBe(`${fixture.boot}:0`);
+    const peers = JSON.stringify(h.store.peers);
+    const seen: number[] = [];
+    h.store.onEntry((e) => seen.push(e.seq));
+
+    h.stream.on.gap({ missed_from: 1, missed_to: 9 });
+    for (let s = 10; s <= 259; s += 1) h.stream.on.entry(s % 2 ? offline(s, 'nas') : log(s));
+    h.stream.on.entry(log(260));
+    h.frame();
+
+    expect(h.store.journal).toHaveLength(251);
+    expect(h.store.gaps).toHaveLength(0);
+    expect(h.store.seq).toBe(260);
+    expect(JSON.stringify(h.store.peers)).toBe(peers);
+    expect(seen).toEqual([260]);
+  });
+
+  it('loads the kept hour of traffic in front of the boot tail', async () => {
+    const h = new Harness();
+    const shift = T0 - fixture.recorded_at_ms;
+    h.answers.set(
+      '/api/traffic',
+      fixture.traffic.map((series) => ({
+        ...series,
+        samples: series.samples.map((s) => ({ ...s, at_ms: s.at_ms + shift })),
+      })),
+    );
+    await h.store.start(bootAt(T0));
+    await settle();
+    const key = deviceKey(NET, node('nas'));
+    const after = h.store.traffic.get(key);
+    const kept = fixture.traffic.find((t) => t.node === node('nas'))?.samples.length ?? 0;
+    expect(h.store.trafficLoaded).toBe(true);
+    expect(kept).toBeGreaterThan(150);
+    expect(after?.length).toBe(kept);
+    const at = after ? Array.from(after.at.subarray(0, after.length)) : [];
+    expect(at).toEqual([...at].sort((a, b) => a - b));
   });
 
   it('polls /api/boot every 2 s behind the daemon gate and hydrates when it answers', async () => {
@@ -125,6 +167,18 @@ describe('commit', () => {
 });
 
 describe('connection', () => {
+  it('keeps reconnecting while a reopened stream stays silent', async () => {
+    const h = await started();
+    vi.advanceTimersByTime(STALE_MS);
+    expect(h.stream.reconnects).toBe(1);
+    h.stream.on.open();
+    vi.advanceTimersByTime(STALE_MS + 500);
+    expect(h.stream.reconnects).toBe(2);
+    vi.advanceTimersByTime(STALE_MS + 1000);
+    expect(h.stream.reconnects).toBe(3);
+    expect(h.store.conn).toBe('stale');
+  });
+
   it('goes stale 5 s after the last tick and shows it 3 s later; a tick brings it back', async () => {
     const h = await started();
     vi.advanceTimersByTime(STALE_MS);
