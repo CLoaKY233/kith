@@ -1,4 +1,7 @@
 //! `/api/networks/:net/invites`: invite links.
+//!
+//! The daemon cannot list or revoke invites yet, so the list holds the invites made
+//! through this page since `kith-ui` started, until they lapse.
 
 use std::sync::Arc;
 
@@ -8,19 +11,28 @@ use axum::extract::{Path, State};
 use kith_ipc::{Request, Response};
 use serde_json::json;
 
-use crate::api::{Answer, ApiError, network_id, qr_svg};
+use crate::api::{Answer, ApiError, as_admin, daemon, lock, network_id, qr_svg};
 use crate::ipc::Source;
+use crate::session::Token;
 use crate::wire::{Invite, InviteIn};
 use crate::{Shared, now_ms};
 
-/// `GET /api/networks/:net/invites`.
+/// Hex digits in an invite's id.
+const ID_LEN: usize = 8;
+
+/// `GET /api/networks/:net/invites`: open invites, newest first.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
-    match &shared.source {
-        Source::Fixture(fixture) => Ok(Json(json!(
-            fixture.invites.get(&net).cloned().unwrap_or_default()
-        ))),
-        Source::Daemon(_) => Err(ApiError::not_implemented("listing invites")),
-    }
+    let invites = match &shared.source {
+        Source::Fixture(fixture) => fixture.invites.get(&net).cloned().unwrap_or_default(),
+        Source::Daemon(_) => {
+            let now = now_ms();
+            let mut made = lock(&shared.api.invites);
+            let open = made.entry(net).or_default();
+            open.retain(|invite| invite.expires_at_ms > now);
+            open.iter().rev().cloned().collect()
+        }
+    };
+    Ok(Json(json!(invites)))
 }
 
 /// `POST /api/networks/:net/invites`.
@@ -30,34 +42,43 @@ pub(crate) async fn create(
     input: Result<Json<InviteIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let Source::Daemon(daemon) = &shared.source else {
-        return Err(ApiError::fixture());
-    };
+    let network = network_id(&net)?;
     let request = Request::CreateInvite {
-        network: network_id(&net)?,
+        network,
         expires_in_secs: input.expires_secs,
         max_uses: input.uses,
     };
-    let Response::Invite { invite_link } = daemon.ask(request).await? else {
+    let Response::Invite { invite_link } = as_admin(daemon(&shared)?, network, request).await?
+    else {
         return Err(ApiError::unexpected());
     };
-    Ok(Json(json!(Invite {
-        id: String::new(),
+    let id = Token::random()
+        .map_err(|_| ApiError::unexpected())?
+        .hex()
+        .get(..ID_LEN)
+        .map(|hex| format!("inv-{hex}"))
+        .unwrap_or_default();
+    let invite = Invite {
+        id,
         qr_svg: qr_svg(&invite_link),
         link: invite_link,
         expires_at_ms: now_ms().saturating_add(input.expires_secs.saturating_mul(1000)),
         uses: input.uses,
         used_by: Vec::new(),
-    })))
+    };
+    lock(&shared.api.invites)
+        .entry(net)
+        .or_default()
+        .push(invite.clone());
+    Ok(Json(json!(invite)))
 }
 
-/// `POST /api/networks/:net/invites/:id/revoke`.
+/// `POST /api/networks/:net/invites/:id/revoke`: the daemon cannot revoke an invite yet,
+/// so this answers 501 and the invite stays valid until it lapses.
 pub(crate) async fn revoke(
     State(shared): State<Arc<Shared>>,
     Path((_net, _id)): Path<(String, String)>,
 ) -> Answer {
-    match &shared.source {
-        Source::Fixture(_) => Err(ApiError::fixture()),
-        Source::Daemon(_) => Err(ApiError::not_implemented("revoking an invite")),
-    }
+    daemon(&shared)?;
+    Err(ApiError::not_implemented("revoking an invite"))
 }

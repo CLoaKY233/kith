@@ -73,6 +73,7 @@ pub fn declarations() -> String {
     push::<wire::CreateNetworkIn>(&mut out, &config);
     push::<wire::JoinIn>(&mut out, &config);
     push::<wire::RequestJoinIn>(&mut out, &config);
+    push::<wire::JoinCode>(&mut out, &config);
     push::<wire::JoinRequestState>(&mut out, &config);
     push::<wire::InviteIn>(&mut out, &config);
     push::<wire::Invite>(&mut out, &config);

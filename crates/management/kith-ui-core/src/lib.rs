@@ -74,10 +74,16 @@ struct Shared {
     dev_origins: Vec<String>,
     assets: Option<&'static [Asset]>,
     boot: String,
+    api: api::State,
 }
 
 /// The whole server: the API, the event stream and the page.
 pub fn router(config: Config) -> io::Result<Router> {
+    build(config, osauth::Gate::System)
+}
+
+/// [`router`], with tier-3 changes confirmed by `gate`.
+fn build(config: Config, gate: osauth::Gate) -> io::Result<Router> {
     let boot = match &config.source {
         Source::Fixture(fixture) => fixture.boot.clone(),
         Source::Daemon(_) => Token::random()?
@@ -93,6 +99,7 @@ pub fn router(config: Config) -> io::Result<Router> {
         dev_origins: config.dev_origins,
         assets: config.assets,
         boot,
+        api: api::State::new(gate),
     });
     let networks = Router::new()
         .route("/peers", get(api::peers::list))
@@ -109,6 +116,7 @@ pub fn router(config: Config) -> io::Result<Router> {
         .route("/phones/{node}/config", post(api::phones::config))
         .route("/joins/{node}/approve", post(api::joins::approve))
         .route("/joins/{node}/deny", post(api::joins::deny))
+        .route("/request-code", get(api::joins::request_code))
         .route("/devices/{node}/rename", post(api::devices::rename))
         .route("/devices/{node}/remove", post(api::devices::remove))
         .route("/leave", post(api::devices::leave));

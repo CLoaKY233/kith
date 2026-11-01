@@ -516,6 +516,17 @@ pub struct RequestJoinIn {
     pub device_name: String,
 }
 
+/// `GET /api/networks/:net/request-code`: what a new device runs to ask an admin to let
+/// it in, for "Approve it live".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct JoinCode {
+    /// The `kith://request/` code.
+    pub code: String,
+    /// The command to run on the new device, with the code in it.
+    pub command: String,
+}
+
 /// The state of this device's own join request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

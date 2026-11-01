@@ -5,12 +5,20 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use kith_ipc::Request;
+use kith_ipc::{EntryKind, Request, Response};
+use kith_types::{NetworkId, NodeId};
+use serde_json::json;
 
-use crate::Shared;
-use crate::api::{Answer, ApiError, accepted, network_id, node_id};
-use crate::ipc::Source;
-use crate::wire::{CreateNetworkIn, JoinIn, RequestJoinIn};
+use crate::api::codes::check_code;
+use crate::api::status::JOIN_LIFETIME_MS;
+use crate::api::{
+    Answer, ApiError, accepted, as_admin, daemon, history, network_id, node_id, settled, status_of,
+};
+use crate::ipc::{Daemon, Source};
+use crate::wire::{
+    ApiErrorCode, CreateNetworkIn, JoinCode, JoinIn, JoinRequestState, RequestJoinIn, Resolution,
+};
+use crate::{Shared, now_ms};
 
 /// `POST /api/networks`.
 pub(crate) async fn create_network(
@@ -18,15 +26,13 @@ pub(crate) async fn create_network(
     input: Result<Json<CreateNetworkIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let Source::Daemon(daemon) = &shared.source else {
-        return Err(ApiError::fixture());
+    let request = Request::CreateNetwork {
+        name: input.name,
+        device_name: input.device_name,
     };
-    daemon
-        .ask(Request::CreateNetwork {
-            name: input.name,
-            device_name: input.device_name,
-        })
-        .await?;
+    let Response::NetworkCreated { .. } = daemon(&shared)?.ask(request).await? else {
+        return Err(ApiError::unexpected());
+    };
     Ok(accepted())
 }
 
@@ -36,44 +42,179 @@ pub(crate) async fn join(
     input: Result<Json<JoinIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let Source::Daemon(daemon) = &shared.source else {
-        return Err(ApiError::fixture());
+    let request = Request::Join {
+        invite_link: input.invite_link,
+        device_name: input.device_name,
     };
-    daemon
-        .ask(Request::Join {
-            invite_link: input.invite_link,
-            device_name: input.device_name,
-        })
-        .await?;
+    let Response::Joined { .. } = daemon(&shared)?.ask(request).await? else {
+        return Err(ApiError::unexpected());
+    };
     Ok(accepted())
 }
 
-/// `POST /api/join/request`.
+/// `POST /api/join/request`: asks an admin to let this device in, or learns the answer.
+///
+/// The page sends it again every few seconds while it waits; the daemon reuses the same
+/// signed request, so admins see one request and one check code.
 pub(crate) async fn request(
     State(shared): State<Arc<Shared>>,
     input: Result<Json<RequestJoinIn>, JsonRejection>,
 ) -> Answer {
-    let Json(_input) = input?;
-    match &shared.source {
-        Source::Fixture(_) => Err(ApiError::fixture()),
-        Source::Daemon(_) => Err(ApiError::not_implemented("asking to join")),
+    let Json(input) = input?;
+    let daemon = daemon(&shared)?;
+    let mut client = daemon.connect().await?;
+    let Response::Status(status) = client.request(Request::Status).await? else {
+        return Err(ApiError::unexpected());
+    };
+    let code = status.node.as_ref().map(check_code).unwrap_or_default();
+    let answer = client
+        .request(Request::RequestJoin {
+            request_code: input.request_code,
+            device_name: input.device_name,
+        })
+        .await?;
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "any other answer is a protocol error"
+    )]
+    let state = match answer {
+        Response::JoinPending {
+            network,
+            network_name,
+        } => JoinRequestState {
+            network: Some(network.to_string()),
+            network_name,
+            check_code: code,
+            resolution: None,
+        },
+        Response::JoinDenied { network } => JoinRequestState {
+            network: Some(network.to_string()),
+            network_name: String::new(),
+            check_code: code,
+            resolution: Some(Resolution::Denied),
+        },
+        Response::Joined { network, .. } => {
+            let network_name = status_of(daemon)
+                .await?
+                .networks
+                .into_iter()
+                .find(|summary| summary.id == network)
+                .map(|summary| summary.name)
+                .unwrap_or_default();
+            JoinRequestState {
+                network: Some(network.to_string()),
+                network_name,
+                check_code: code,
+                resolution: Some(Resolution::Approved),
+            }
+        }
+        _ => return Err(ApiError::unexpected()),
+    };
+    Ok(Json(json!(state)))
+}
+
+/// `GET /api/networks/:net/request-code`: the code a new device asks to join with.
+pub(crate) async fn request_code(
+    State(shared): State<Arc<Shared>>,
+    Path(net): Path<String>,
+) -> Answer {
+    let code = match &shared.source {
+        Source::Fixture(fixture) => {
+            let name = fixture
+                .status
+                .status
+                .get("networks")
+                .and_then(|networks| networks.as_array())
+                .into_iter()
+                .flatten()
+                .find(|network| network.get("id").and_then(|id| id.as_str()) == Some(&net))
+                .and_then(|network| network.get("name")?.as_str())
+                .ok_or_else(|| ApiError::not_found("this device is not in that network"))?;
+            format!("kith://request/{name}-recorded")
+        }
+        Source::Daemon(daemon) => {
+            let network = network_id(&net)?;
+            let Response::RequestCode { code } =
+                daemon.ask(Request::RequestCode { network }).await?
+            else {
+                return Err(ApiError::unexpected());
+            };
+            code
+        }
+    };
+    Ok(Json(json!(JoinCode {
+        command: format!("kith request {code}"),
+        code,
+    })))
+}
+
+/// Why a request is no longer pending: someone approved it, denied it, or it lapsed.
+async fn settled_join(daemon: &Daemon, network: NetworkId, node: NodeId) -> ApiError {
+    let member = match daemon.ask(Request::Peers { network }).await {
+        Ok(Response::Peers(peers)) => peers.iter().any(|peer| peer.node == node),
+        Ok(_) => false,
+        Err(error) => return error,
+    };
+    let entries = history(daemon).await.unwrap_or_default();
+    let now = now_ms();
+    let at = |wanted: fn(&EntryKind) -> Option<(NetworkId, NodeId)>| {
+        entries
+            .iter()
+            .rev()
+            .find(|entry| wanted(&entry.kind) == Some((network, node)))
+            .map(|entry| entry.at_ms)
+    };
+    let joined = at(|kind| {
+        if let EntryKind::DeviceJoined { network, node, .. } = kind {
+            Some((*network, *node))
+        } else {
+            None
+        }
+    });
+    if member || joined.is_some() {
+        return settled(Some(Resolution::Approved), joined.unwrap_or(now), None);
+    }
+    let asked = at(|kind| {
+        if let EntryKind::JoinRequested { network, node, .. } = kind {
+            Some((*network, *node))
+        } else {
+            None
+        }
+    });
+    match asked.map(|at_ms| at_ms.saturating_add(JOIN_LIFETIME_MS)) {
+        Some(lapsed) if lapsed <= now => settled(Some(Resolution::Expired), lapsed, None),
+        Some(_) | None => settled(Some(Resolution::Denied), now, None),
+    }
+}
+
+/// Approves or denies; when the request is already settled, 409 says how.
+async fn answer(shared: &Shared, net: &str, node: &str, approve: bool) -> Answer {
+    let daemon = daemon(shared)?;
+    let (network, node) = (network_id(net)?, node_id(node)?);
+    let request = if approve {
+        Request::ApproveJoin { network, node }
+    } else {
+        Request::DenyJoin { network, node }
+    };
+    match as_admin(daemon, network, request).await {
+        Ok(Response::JoinApproved { .. } | Response::JoinRequestDenied) => Ok(accepted()),
+        Ok(_) => Err(ApiError::unexpected()),
+        Err(error) if error.code() == ApiErrorCode::NotFound => {
+            Err(settled_join(daemon, network, node).await)
+        }
+        Err(error) => Err(error),
     }
 }
 
 /// `POST /api/networks/:net/joins/:node/approve`.
+///
+/// The device joins as a member, under the name it asked for: the daemon cannot name it
+/// on approval yet, so a `name` in the body is ignored.
 pub(crate) async fn approve(
     State(shared): State<Arc<Shared>>,
     Path((net, node)): Path<(String, String)>,
 ) -> Answer {
-    let Source::Daemon(daemon) = &shared.source else {
-        return Err(ApiError::fixture());
-    };
-    let request = Request::ApproveJoin {
-        network: network_id(&net)?,
-        node: node_id(&node)?,
-    };
-    daemon.ask(request).await?;
-    Ok(accepted())
+    answer(&shared, &net, &node, true).await
 }
 
 /// `POST /api/networks/:net/joins/:node/deny`.
@@ -81,13 +222,5 @@ pub(crate) async fn deny(
     State(shared): State<Arc<Shared>>,
     Path((net, node)): Path<(String, String)>,
 ) -> Answer {
-    let Source::Daemon(daemon) = &shared.source else {
-        return Err(ApiError::fixture());
-    };
-    let request = Request::DenyJoin {
-        network: network_id(&net)?,
-        node: node_id(&node)?,
-    };
-    daemon.ask(request).await?;
-    Ok(accepted())
+    answer(&shared, &net, &node, false).await
 }

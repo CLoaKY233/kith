@@ -1294,6 +1294,20 @@ request_code: string,
 device_name: string, };
 
 /**
+ * `GET /api/networks/:net/request-code`: what a new device runs to ask an admin to let
+ * it in, for "Approve it live".
+ */
+export type JoinCode = { 
+/**
+ * The `kith://request/` code.
+ */
+code: string, 
+/**
+ * The command to run on the new device, with the code in it.
+ */
+command: string, };
+
+/**
  * The state of this device's own join request.
  */
 export type JoinRequestState = { 
