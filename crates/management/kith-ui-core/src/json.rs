@@ -140,11 +140,10 @@ pub fn to_value(value: &impl Serialize) -> Result<Value, serde_json::Error> {
     Ok(value)
 }
 
-/// A journal entry flattened to `{seq, at_ms, kind, ...fields}`.
+/// A journal entry flattened to `{seq, at_ms, kind, ...fields}`; a field of the same name
+/// never replaces `seq`, `at_ms` or `kind`.
 pub fn entry(entry: &Entry) -> Result<Value, serde_json::Error> {
     let mut out = Map::new();
-    out.insert("seq".to_owned(), entry.seq.into());
-    out.insert("at_ms".to_owned(), entry.at_ms.into());
     let kind = match to_value(&entry.kind)? {
         Value::String(name) => snake_case(&name),
         Value::Object(tagged) => {
@@ -159,6 +158,8 @@ pub fn entry(entry: &Entry) -> Result<Value, serde_json::Error> {
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) => String::new(),
     };
+    out.insert("seq".to_owned(), entry.seq.into());
+    out.insert("at_ms".to_owned(), entry.at_ms.into());
     out.insert("kind".to_owned(), Value::String(kind));
     Ok(Value::Object(out))
 }
