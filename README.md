@@ -1,5 +1,7 @@
 # kith
 
+[![ci](https://github.com/CLoaKY233/kith/actions/workflows/ci.yml/badge.svg)](https://github.com/CLoaKY233/kith/actions/workflows/ci.yml)
+
 A WireGuard mesh VPN with no coordination server.
 
 Devices join a network with an invite link and keep a signed membership ledger among themselves. There is no account to make and no server that has to stay up for the network to work: any member can let in a device that holds an invite, and the network carries on when any one machine is off.
@@ -62,6 +64,12 @@ Alpha. It works day to day across a Mac, a Linux server and phones, but expect r
 - `kith up` and `kith down` work on macOS and Linux. On other systems, run `kith daemon` under your service manager.
 - A network has one admin; adding more from the CLI is not done yet.
 - No outside security audit. [docs/security.md](docs/security.md) covers the threat model and known gaps.
+
+Known issues:
+
+- A phone added with `kith wg export` sometimes has no internet until its tunnel is turned off and on once.
+- Release builds cover macOS and Linux on x86-64, arm64 and armv7. MIPS routers (most OpenWrt devices) need a build from source for now.
+- The macOS build is not signed by Apple. The install script works; a binary downloaded with a browser is blocked by Gatekeeper until you allow it.
 
 ## How it works
 
