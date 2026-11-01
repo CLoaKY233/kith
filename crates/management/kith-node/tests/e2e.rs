@@ -1055,6 +1055,20 @@ mod tests {
             return Err(format!("the journal missed the block: {:?}", journal.entries()).into());
         }
 
+        let refused = a
+            .request(Request::AllowBlocked {
+                network,
+                from: seen.from,
+                to: seen.to,
+                protocol: seen.protocol.clone(),
+                port: seen.port,
+            })
+            .await;
+        if !matches!(refused, Response::Error { .. }) {
+            return Err(format!("a member who is not an admin allowed it: {refused:?}").into());
+        }
+        never_delivered(&a, &s, &packet).await?;
+
         let allowed = s
             .request(Request::AllowBlocked {
                 network,
