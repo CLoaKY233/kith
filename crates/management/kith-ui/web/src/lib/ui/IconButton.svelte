@@ -74,11 +74,15 @@ States: rest (`--ink-2`), hover (`--sunken`, `--ink-1`), active, pressed or expa
     'aria-disabled': disabled ? ('true' as const) : undefined,
     onclick: click,
   });
+  /** A caller's tabindex (a row's roving focus) wins over the primitives' trigger props. */
+  const tabStop: Record<string, unknown> = $derived(
+    rest.tabindex === undefined ? {} : { tabindex: rest.tabindex },
+  );
 </script>
 
 <Tooltip text={label}>
   {#snippet trigger(props)}
-    <button bind:this={ref} {...mergeProps(guards, rest, own, props, triggerProps)}>
+    <button bind:this={ref} {...mergeProps(guards, rest, own, props, triggerProps, tabStop)}>
       <Icon name={icon} />
     </button>
   {/snippet}

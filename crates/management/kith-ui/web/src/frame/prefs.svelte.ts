@@ -1,14 +1,13 @@
 // Per-viewer preferences (spec §6.8): theme, compact rows, single-key shortcuts, the last
-// network, hidden needs and palette recency. Kept in localStorage, every access wrapped
-// in try/catch: a private window or blocked storage just means defaults.
+// network and hidden needs; palette recency lives with the palette (lib/ui/Command). Kept
+// in localStorage, every access wrapped in try/catch: a private window or blocked storage
+// just means defaults.
 // App.svelte applies the theme and density to <html>; Settings writes through `prefs`.
 
 import { IGNORE_BLOCKED_MS } from '../lib/live/timing';
 import type { Density, Theme } from '../lib/types';
 
 const KEY = 'kith.prefs';
-/** How many palette picks to remember for ranking (§10). */
-const RECENT_MAX = 20;
 
 type Stored = {
   theme: Theme;
@@ -65,9 +64,6 @@ class Prefs {
   }
   set lastNetwork(value: string | null) {
     if (value !== this.#state.lastNetwork) this.#write({ lastNetwork: value });
-  }
-  get recent(): readonly string[] {
-    return this.#state.recent;
   }
 
   /** Whether a need was hidden less than a day ago (§7.5 `Hidden for a day`). */

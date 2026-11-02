@@ -511,6 +511,7 @@ Props:
     width: var(--detail);
     max-width: 100vw;
     overflow-y: auto;
+    border-left: var(--hairline) solid var(--line);
     box-shadow: var(--shadow-pop);
     animation: drawer-in var(--d-sheet) var(--e-sheet);
   }

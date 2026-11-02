@@ -79,7 +79,7 @@ Props: none.
   });
 </script>
 
-<div bind:this={host} class="contents">
+<div bind:this={host} class="contents" data-kith-keep>
   <Toaster
     class="kith-toaster"
     position={narrow.current ? 'top-center' : 'bottom-right'}
@@ -88,7 +88,8 @@ Props: none.
     gap={8}
     offset="var(--s-5)"
     mobileOffset={{
-      top: 'calc(var(--gutter-mobile) + env(safe-area-inset-top))',
+      // Below the sticky top bar, so the network button and RoleChip stay usable (§3.5).
+      top: 'calc(var(--topbar) + var(--s-2) + env(safe-area-inset-top))',
       right: 'var(--gutter-mobile)',
       bottom: 'var(--gutter-mobile)',
       left: 'var(--gutter-mobile)',

@@ -89,7 +89,7 @@ outline, 2 px offset), aria-disabled, pending. Height 32 px, 40 px under a coars
     {@render children()}
   </span>
   <span class="face busy" class:gone={!spinning} aria-hidden={speakPending ? undefined : 'true'}>
-    <Spinner />
+    {#if spinning}<Spinner />{:else}<span class="spinner-slot"></span>{/if}
     {#if pendingLabel !== undefined}<span>{pendingLabel}</span>{/if}
   </span>
 </button>
@@ -130,6 +130,10 @@ outline, 2 px offset), aria-disabled, pending. Height 32 px, 40 px under a coars
   }
   .gone {
     opacity: 0;
+  }
+  .spinner-slot {
+    width: var(--spinner);
+    height: var(--spinner);
   }
 
   .primary {
@@ -192,6 +196,18 @@ outline, 2 px offset), aria-disabled, pending. Height 32 px, 40 px under a coars
     border-color: transparent;
   }
 
+  /* Touch: the face stays 40 px tall, the hit area reaches 44 px (§11.4). */
+  @media (pointer: coarse) {
+    .btn {
+      position: relative;
+      min-width: var(--target-touch);
+    }
+    .btn::after {
+      content: '';
+      position: absolute;
+      inset: calc((var(--control) - var(--target-touch)) / 2) 0;
+    }
+  }
   @media (forced-colors: active) {
     .btn {
       border-color: ButtonText;

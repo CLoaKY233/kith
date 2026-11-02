@@ -12,6 +12,10 @@ export const DOT = ' · ';
 
 const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 const quoted = (value: string): string => `"${value}"`;
+/** A name quoted in a button label, cut so the button never outgrows a phone. */
+const LABEL_NAME_MAX = 24;
+const quotedShort = (value: string): string =>
+  quoted(value.length > LABEL_NAME_MAX ? `${value.slice(0, LABEL_NAME_MAX - 1)}…` : value);
 const andList = (names: readonly string[]): string =>
   names.length <= 1
     ? (names[0] ?? '')
@@ -579,7 +583,7 @@ export const copy = {
       `Devices will be reachable as ${device}.${network}.kith.internal`,
     spaces: 'Spaces become hyphens.',
     taken: (network: string): string => `You already have a network called ${network}.`,
-    submit: (network: string): string => `Create ${quoted(network)}`,
+    submit: (network: string): string => `Create ${quotedShort(network)}`,
     pending: 'Creating…',
     ready: (network: string): string => `${network} is ready. You're its admin.`,
     next: 'Add your next device:',
@@ -836,6 +840,7 @@ export const copy = {
     placeholder: 'Search devices and actions',
     label: 'Command palette',
     empty: 'No matches.',
+    results: 'Results',
     groups: { devices: 'Devices', actions: 'Actions', goTo: 'Go to', networks: 'Networks' },
     addDevice: 'Add device',
     addPhone: 'Add a phone',

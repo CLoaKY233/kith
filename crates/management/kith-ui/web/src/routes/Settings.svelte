@@ -121,6 +121,7 @@ Props:
   // Leave (tier 3, §13).
   let leaving = $state(false);
   let typed = $state('');
+  let confirmInput: HTMLInputElement | null = $state(null);
   let leave = $state<ActionHandle<Outcome> | null>(null);
   const lastAdmin = $derived(admin && (self?.admins.length ?? 0) <= 1);
   const leaveError = $derived(leave?.state === 'failed' ? failureText(leave.error) : null);
@@ -136,7 +137,7 @@ Props:
   }
 
   async function confirmLeave(): Promise<void> {
-    if (!network || typed !== network.name || frozen) return;
+    if (!network || typed !== network.name || frozen || waitingForOs) return;
     const name = network.name;
     const handle = actions.leave(network.id);
     leave = handle;
@@ -300,15 +301,24 @@ Props:
       confirmLabel={copyScreens.settings.leaveSubmit(network.name)}
       confirmDisabled={typed !== network.name || frozen}
       pending={waitingForOs}
+      status={waitingForOs ? copy.tier3.waiting : undefined}
+      initialFocus={confirmInput}
       onConfirm={() => void confirmLeave()}
     >
       <p>{copy.remove.comeBack}</p>
-      <Field label={copy.settings.typeToConfirm(network.name)} error={leaveError}>
-        {#snippet children(control)}
-          <Input kind="name" bind:value={typed} {...control} />
-        {/snippet}
-      </Field>
-      {#if waitingForOs}<p class="quiet" role="status">{copy.tier3.waiting}</p>{/if}
+      <!-- Enter submits only once the name matches; confirmLeave checks it (tier 3). -->
+      <form
+        onsubmit={(event) => {
+          event.preventDefault();
+          void confirmLeave();
+        }}
+      >
+        <Field label={copy.settings.typeToConfirm(network.name)} error={leaveError}>
+          {#snippet children(control)}
+            <Input kind="name" bind:value={typed} bind:ref={confirmInput} {...control} />
+          {/snippet}
+        </Field>
+      </form>
     </AlertDialog>
   {/if}
 </section>

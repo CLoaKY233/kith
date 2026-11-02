@@ -220,6 +220,10 @@ Props:
     display: grid;
   }
   .more {
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    min-height: var(--target-fine);
     color: var(--ink-2);
     border-radius: var(--r-1);
     cursor: pointer;
@@ -230,6 +234,11 @@ Props:
     text-decoration: underline;
     text-decoration-thickness: var(--hairline);
     text-underline-offset: var(--s-1);
+  }
+  @media (pointer: coarse) {
+    .more {
+      min-height: var(--target-touch);
+    }
   }
   @media (max-width: 40rem) {
     .overview {

@@ -34,6 +34,21 @@ const layers = new Map<string, Layer>();
 let next = 0;
 
 /**
+ * While a modal is open the page behind it is inert, so a screen reader's virtual cursor
+ * stays in the modal too. Live regions and the toasts (`data-kith-keep`) stay reachable.
+ */
+function syncBackground(): void {
+  const open = [...layers.values()].some((layer) => layer.open);
+  const root = document.getElementById('app');
+  if (!root) return;
+  for (const child of root.children) {
+    if (!(child instanceof HTMLElement)) continue;
+    if (child.hasAttribute('aria-live') || child.hasAttribute('data-kith-keep')) continue;
+    child.inert = open;
+  }
+}
+
+/**
  * The element focus should return to when a layer opened now closes. A menu item resolves to
  * its menu's trigger, and an element inside a closing modal resolves to that modal's own
  * opener, because both are gone by the time the new layer closes.
@@ -65,9 +80,25 @@ export function firstTabbable(root: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-/** Moves focus back to `target` if it is still on the page. */
+const shown = (el: HTMLElement): boolean => el.isConnected && el.getClientRects().length > 0;
+
+/**
+ * Moves focus back to `target`. When it was re-rendered or hidden meanwhile (a live card),
+ * its replacement carrying the same `data-focus-key` takes focus; failing that, the main
+ * content does, so focus never drops to <body>.
+ */
 export function restoreFocus(target: HTMLElement | null): void {
-  if (target?.isConnected) target.focus();
+  if (!target) return;
+  if (shown(target)) {
+    target.focus();
+    return;
+  }
+  const key = target.dataset['focusKey'];
+  const twin =
+    key === undefined
+      ? undefined
+      : [...document.querySelectorAll<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`)].find(shown);
+  (twin ?? document.getElementById('content'))?.focus();
 }
 
 export type ModalLayer = {
@@ -100,10 +131,12 @@ export function modalLayer(isOpen: () => boolean): ModalLayer {
       layer.opener = opener();
     }
     layer.open = open;
+    syncBackground();
   });
 
   $effect(() => () => {
     layers.delete(id);
+    syncBackground();
   });
 
   return {

@@ -109,6 +109,10 @@ Props:
     white-space: nowrap;
     border-radius: var(--r-1);
   }
+  /* The interactive badge reaches the 24 px fine-pointer target (§11.4). */
+  .badge[role='button'] {
+    min-height: var(--target-fine);
+  }
   .text {
     overflow: hidden;
     text-overflow: ellipsis;

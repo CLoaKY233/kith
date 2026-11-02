@@ -38,9 +38,14 @@ export function parseQuery(raw: string): Query {
 
 const WORD_START = /[\s\-._:/@]/;
 
+/** Letters in order count only for a query this long, so two letters never match noise. */
+const LETTERS_MIN = 3;
+
 /**
  * How well `query` matches `target`, from 0 (no match) to 1 (equal). Prefixes beat word
- * starts, which beat substrings, which beat letters in order.
+ * starts, which beat substrings, which beat letters in order. Letters in order must each
+ * start a word or follow the previous match (`nas` finds `north-america-south`, not
+ * `Rename vps`).
  */
 export function score(target: string, query: string): number {
   const t = target.toLowerCase();
@@ -50,10 +55,19 @@ export function score(target: string, query: string): number {
   if (t.startsWith(q)) return 0.9;
   const at = t.indexOf(q);
   if (at > 0) return WORD_START.test(t.charAt(at - 1)) ? 0.8 : 0.6;
+  if (q.length < LETTERS_MIN) return 0;
   let from = 0;
+  let last = -2;
   for (const char of q) {
-    const found = t.indexOf(char, from);
+    let found = -1;
+    for (let i = t.indexOf(char, from); i >= 0; i = t.indexOf(char, i + 1)) {
+      if (i === last + 1 || i === 0 || WORD_START.test(t.charAt(i - 1))) {
+        found = i;
+        break;
+      }
+    }
     if (found < 0) return 0;
+    last = found;
     from = found + 1;
   }
   return 0.3 * (q.length / t.length);
@@ -64,11 +78,27 @@ export type Rankable = { readonly id: string; readonly label: string; readonly k
 /** A keyword match counts slightly less than the same match on the label. */
 const KEYWORD_WEIGHT = 0.95;
 
+export type Ranked<T> = { readonly item: T; readonly index: number; readonly best: number; readonly seen: number };
+
+/** Recent first (most recent first), then better matches, then the caller's order. */
+export function compareRanked<T>(a: Ranked<T>, b: Ranked<T>): number {
+  return a.seen - b.seen || b.best - a.best || a.index - b.index;
+}
+
 /**
  * The items that match `text`: recently picked ones first (most recent first), then the
  * rest by match quality, ties kept in the caller's order.
  */
 export function rank<T extends Rankable>(items: readonly T[], text: string, recent: readonly string[]): T[] {
+  return rankScored(items, text, recent).map((entry) => entry.item);
+}
+
+/** `rank`, keeping each item's score and recency so groups can be ordered by their best. */
+export function rankScored<T extends Rankable>(
+  items: readonly T[],
+  text: string,
+  recent: readonly string[],
+): Ranked<T>[] {
   const scored = items
     .map((item, index) => {
       const best = Math.max(
@@ -79,8 +109,7 @@ export function rank<T extends Rankable>(items: readonly T[], text: string, rece
       return { item, index, best, seen: seen < 0 ? Number.POSITIVE_INFINITY : seen };
     })
     .filter((entry) => entry.best > 0);
-  scored.sort((a, b) => a.seen - b.seen || b.best - a.best || a.index - b.index);
-  return scored.map((entry) => entry.item);
+  return scored.sort(compareRanked);
 }
 
 /** Puts `id` at the front of the recency list, keeping at most `max` ids. */

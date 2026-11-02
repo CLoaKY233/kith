@@ -80,6 +80,9 @@ appears.
   .error {
     font: var(--t-small);
     max-width: var(--measure);
+    overflow-wrap: anywhere;
+    /* Names like phone-2.home: tabular figures would widen the hyphen. */
+    font-variant-numeric: slashed-zero;
   }
   .helper {
     color: var(--ink-3);

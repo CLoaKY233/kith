@@ -46,8 +46,8 @@ const WASHES = ['attn-wash', 'danger-wash'];
 const TEXT: [string, string[]][] = [
   ['ink-1', [...FILLS, ...WASHES, 'line']],
   ['ink-2', [...FILLS, ...WASHES]],
-  // Meta and offline text. Never on `--sunken` or a wash, where it falls under 4.5:1.
-  ['ink-3', PAGES],
+  // Meta and offline text, also on selected and hovered rows and on the amber wash.
+  ['ink-3', [...FILLS, 'attn-wash']],
   ['accent', FILLS],
   ['attn-text', [...PAGES, 'attn-wash']],
   ['danger', [...FILLS, 'danger-wash']],
@@ -59,7 +59,8 @@ const TEXT: [string, string[]][] = [
 
 /** Marks that identify a control or a state: borders, dots, rings, the focus ring. */
 const NON_TEXT: [string, string[]][] = [
-  // Input, toggle and outline-chip borders against the page they sit on.
+  // Input, toggle and outline-chip borders against the page they sit on, and the selected
+  // segment's border against its own --surface fill.
   ['line-strong', PAGES],
   ['accent', [...FILLS, 'attn-wash']],
   ['ink-1', [...FILLS, 'attn-wash']],

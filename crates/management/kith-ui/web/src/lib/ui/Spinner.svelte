@@ -2,7 +2,7 @@
 @component
 Spinner (spec §5 Button pending): a 12 px ring in the current text colour. Only inside a
 pending Button; never a loading state for a screen (no skeletons or loaders on localhost,
-§14). Under reduced motion it stays still: a ring with a gap.
+§14). Under reduced motion it stays still: an ellipsis in the same 12 px slot.
 Props:
   - label?: string (from copy.ts), for screen readers when the spinner stands alone.
     Without it the spinner is decorative.
@@ -34,9 +34,17 @@ Props:
       transform: rotate(1turn);
     }
   }
+  /* Still, a broken ring reads as a glitch: show a static ellipsis in the same slot. */
   @media (prefers-reduced-motion: reduce) {
     .spinner {
+      display: inline-grid;
+      place-items: center;
+      border: 0;
       animation: none;
+      line-height: 1;
+    }
+    .spinner::after {
+      content: '…';
     }
   }
 </style>

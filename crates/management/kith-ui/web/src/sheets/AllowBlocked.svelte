@@ -82,7 +82,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
 </script>
 
 <script lang="ts">
-  import { untrack, type Snippet } from 'svelte';
+  import { tick, untrack, type Snippet } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { announce } from '../lib/announce';
   import { copy, DOT } from '../lib/copy';
@@ -217,6 +217,21 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   function close(): void {
     open = false;
   }
+
+  // Cancel first: safe to land on, and Add rule is one Tab away (tier 1, §11.7).
+  let cancelButton: HTMLButtonElement | null = $state(null);
+  let closeButton: HTMLButtonElement | null = $state(null);
+
+  /** Once Add rule gives way to Close, focus moves there instead of dropping to the sheet. */
+  $effect(() => {
+    if (!open || !settled) return;
+    void tick().then(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body || active.matches('[role="dialog"]')) {
+        closeButton?.focus();
+      }
+    });
+  });
 </script>
 
 {#snippet body()}
@@ -258,9 +273,9 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
 
 {#snippet buttons()}
   {#if !group || !admin || settled}
-    <Button onclick={close}>{copy.action.close}</Button>
+    <Button bind:ref={closeButton} onclick={close}>{copy.action.close}</Button>
   {:else}
-    <Button onclick={close}>{copy.action.cancel}</Button>
+    <Button bind:ref={cancelButton} onclick={close}>{copy.action.cancel}</Button>
     <Button
       variant="primary"
       disabled={stale}
@@ -287,6 +302,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
     bind:open
     title={admin || !group ? copy.blocked.allowThis : copy.askAdmin.title}
     closeLabel={copy.action.close}
+    initialFocus={() => cancelButton ?? closeButton}
   >
     {@render body()}
     {#snippet footer()}{@render buttons()}{/snippet}

@@ -68,6 +68,7 @@ Props:
       customAnchor={anchor}
       class="kith-float kith-pop {width} {modal ? 'in-modal' : ''}"
       data-flush={flush ? '' : undefined}
+      role="dialog"
       aria-label={label}
     >
       {@render children()}
