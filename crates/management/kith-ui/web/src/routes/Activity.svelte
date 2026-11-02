@@ -28,10 +28,11 @@ Props:
   import VirtualList from '../lib/kith/VirtualList.svelte';
   import { live, notifications } from '../lib/live/store.svelte';
   import { SORT_FREEZE_MS, TINT_MS } from '../lib/live/timing';
-  import { wasHiddenAt } from '../lib/prefs.svelte';
   import { readPx } from '../lib/tokens';
   import type { Entry } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
+  import Combobox from '../lib/ui/Combobox.svelte';
+  import { toast } from '../lib/ui/Toast.svelte';
   import Input from '../lib/ui/Input.svelte';
   import Segmented from '../lib/ui/Segmented.svelte';
 
@@ -52,11 +53,23 @@ Props:
 
   const devices = $derived(network ? devicesByName(live.peers, network.id) : []);
   const self = $derived(network ? membershipOf(live.status, network.id) : null);
-  /** The device filter as the select shows it: by name, even when the URL holds an id. */
+  /** The device filter as the combobox shows it: by name, even when the URL holds an id. */
   const deviceName = $derived(devices.find((p) => p.node === device)?.name ?? device ?? '');
   const deviceKnown = $derived(
     deviceName === '' || deviceName === self?.name || devices.some((p) => p.name === deviceName),
   );
+
+  const ANY = '*';
+  const deviceOptions = $derived([
+    { value: ANY, label: copy.activity.anyDevice },
+    ...(self ? [{ value: self.name, label: self.name }] : []),
+    ...devices.map((p) => ({ value: p.name, label: p.name })),
+    ...(deviceKnown ? [] : [{ value: deviceName, label: deviceName }]),
+  ]);
+
+  function pickDevice(value: string): void {
+    setQuery({ device: value === ANY ? null : value }, { replace: true });
+  }
 
   const kindOptions = [
     { value: 'all', label: copy.activity.kinds.all },
@@ -70,7 +83,7 @@ Props:
   // §8.7 and §3.5: the feed stops taking new entries once scrolled more than 48 px from
   // the top, and while the pointer or focus is in it, so no row moves under either.
   let pausePx = 0;
-  let away = false;
+  let away = $state(false);
   let held = false;
   let release: ReturnType<typeof setTimeout> | null = null;
   let cutoff = $state<number | null>(null);
@@ -117,8 +130,7 @@ Props:
 
   /** Day labels follow the server clock; this changes once a day. */
   const today = $derived(startOfDay(live.lastTickMs || live.now()));
-  const gaps = $derived(live.gaps.map((g) => ({ from: g.from, to: g.to, at_ms: g.toMs ?? g.fromMs })));
-  const rows = $derived(buildFeed(live.journal, shown, filter, ctx, gaps, today));
+  const rows = $derived(buildFeed(live.journal, shown, filter, ctx, live.gaps, today));
 
   // Rows expanded by the person, kept here because virtualised rows unmount.
   const open = new SvelteSet<string>();
@@ -134,42 +146,37 @@ Props:
     cutoff = held ? latestSeq : null;
   }
 
-  // §7.12: offer notifications after something that would have notified arrived while
-  // the tab was hidden.
-  let askDismissed = $state(false);
-  function recentlyUsed(network: string, node: string): boolean {
-    const columns = live.traffic.get(`${network}/${node}`);
-    if (!columns || columns.length < 2) return false;
-    return (columns.rx[columns.length - 1] ?? 0) > (columns.rx[0] ?? 0);
+  // §7.12: the card shows once something that would have notified arrived while the tab
+  // was hidden; delivery decides that with the same rules it notifies by.
+  const ask = $derived(notifications.prompt);
+  let toolbar = $state<HTMLElement | null>(null);
+
+  /** The card is going away under the focused button: move focus to the toolbar. */
+  function refocus(): void {
+    const candidates = toolbar?.querySelectorAll<HTMLElement>('[data-state="on"], select, input');
+    const target = [...(candidates ?? [])].find((el) => el.offsetParent !== null);
+    target?.focus();
   }
-  const wouldHaveNotified = $derived(
-    live.journal.some((e) => {
-      if (!wasHiddenAt(e.at_ms - live.serverOffset)) return false;
-      if (e.kind === 'join_requested') {
-        return membershipOf(live.status, e.network)?.role === 'admin';
-      }
-      return e.kind === 'peer_offline' && recentlyUsed(e.network, e.node);
-    }),
-  );
-  const ask = $derived(
-    !askDismissed && notifications.offerable && (notifications.missed || wouldHaveNotified),
-  );
 
   async function turnOn(): Promise<void> {
-    await notifications.turnOn();
-    askDismissed = true;
+    const ok = await notifications.turnOn();
+    refocus();
+    if (ok) toast.done(copyScreens.activity.notifyTurnedOn);
+    else if (notifications.permission === 'denied') toast.failed(copyScreens.activity.notifyBlocked);
   }
 
   function notNow(): void {
     notifications.notNow();
-    askDismissed = true;
+    refocus();
   }
 
   const emptyText = $derived(
     search.trim() !== ''
       ? copyScreens.activity.noMatch(search.trim())
-      : kind !== null || device !== null
-        ? copyScreens.activity.noneOfKind
+      : !deviceKnown && network
+        ? copyScreens.activity.unknownDevice(deviceName, network.name)
+        : kind !== null || device !== null
+          ? copyScreens.activity.noneOfKind
         : copy.activity.empty,
   );
   const hasEntries = $derived(rows.some((r) => r.type === 'entry' || r.type === 'group'));
@@ -181,21 +188,19 @@ Props:
   const rowKey = (row: FeedRow): string => row.key;
 </script>
 
-<section class="screen">
-  <h1 class="t-title">{copy.nav.activity}</h1>
-
+<section class="screen" aria-label={copy.nav.activity}>
   {#if ask}
-    <div class="ask">
-      <h2 class="t-heading">{copy.activity.notifyCardTitle}</h2>
+    <section class="ask" aria-labelledby="notify-ask-title">
+      <h2 class="t-heading" id="notify-ask-title">{copy.activity.notifyCardTitle}</h2>
       <p class="ask-body">{copy.activity.notifyCardBody}</p>
       <div class="ask-actions">
         <Button variant="primary" onclick={turnOn}>{copy.activity.notifyOn}</Button>
         <Button variant="ghost" onclick={notNow}>{copy.activity.notifyNotNow}</Button>
       </div>
-    </div>
+    </section>
   {/if}
 
-  <div class="toolbar">
+  <div class="toolbar" bind:this={toolbar}>
     <div class="kinds-wide">
       <Segmented
         value={kind ?? 'all'}
@@ -212,23 +217,19 @@ Props:
         {/each}
       </select>
     </label>
-    <label class="select">
-      <span class="sr-only">{copy.activity.device}</span>
-      <select
-        value={deviceName}
-        onchange={(e) => setQuery({ device: e.currentTarget.value || null }, { replace: true })}
-      >
-        <option value="">{copy.activity.anyDevice}</option>
-        {#if self}<option value={self.name}>{self.name}</option>{/if}
-        {#each devices as peer (peer.node)}
-          <option value={peer.name}>{peer.name}</option>
-        {/each}
-        {#if !deviceKnown}<option value={deviceName}>{deviceName}</option>{/if}
-      </select>
-    </label>
+    <div class="device">
+      <Combobox
+        value={deviceName || ANY}
+        options={deviceOptions}
+        label={copy.activity.device}
+        empty={copyScreens.activity.noDevice}
+        onValueChange={pickDevice}
+      />
+    </div>
     <div class="search">
       <Input
         kind="search"
+        icon="search"
         value={search}
         placeholder={copy.activity.search}
         aria-label={copy.activity.search}
@@ -247,7 +248,7 @@ Props:
     onfocusin={hold}
     onfocusout={letGo}
   >
-    {#if newer > 0}
+    {#if newer > 0 && away}
       <div class="pill-slot">
         <button
           type="button"
@@ -339,7 +340,10 @@ Props:
   }
   .search {
     flex: 1 1 calc(var(--s-8) * 4);
-    max-width: calc(var(--s-8) * 5);
+  }
+  .device {
+    flex: 0 1 calc(var(--s-8) * 3);
+    min-width: 0;
   }
   .select {
     position: relative;
@@ -363,6 +367,7 @@ Props:
 
   .feed {
     position: relative;
+    max-width: calc(var(--measure) + var(--s-8) * 4);
   }
   .pill-slot {
     position: sticky;
@@ -410,12 +415,12 @@ Props:
     font: var(--t-small);
   }
   .empty {
-    padding: var(--s-5) var(--s-3);
+    padding: var(--s-5) 0;
     color: var(--ink-2);
     max-width: var(--measure);
   }
 
-  @media (width < 40rem) {
+  @media (max-width: 40rem) {
     .screen {
       padding: var(--s-4) var(--gutter-mobile);
     }
@@ -425,7 +430,8 @@ Props:
     .select.kinds-narrow {
       display: inline-flex;
     }
-    .toolbar .select {
+    .toolbar .select,
+    .toolbar .device {
       flex: 1 1 0;
       min-width: 0;
     }

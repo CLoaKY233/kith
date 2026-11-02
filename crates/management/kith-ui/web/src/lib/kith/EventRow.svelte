@@ -3,8 +3,10 @@
 EventRow (spec §5 EventRow, §6.5, §12.3): `56px time · 16px glyph · sentence · actor`.
 The glyph shows only for blocked connections, warnings and signed changes. The actor is
 `reported by laptop`, or `signed by laptop` followed by the seal. A row about a device
-links to it with `?at=&range=` so the moment is in view. Grouped rows (blocked
-connections, path flaps) and log lines expand on click. Log lines are mono 12 px on one
+links to it with `?at=&range=` so the moment is in view (`range=1h` past the last hour).
+Grouped rows (blocked connections, path flaps) and log lines expand on click. Every row
+ends in a ⋯ menu (§11.4): `Open device`, `Copy line`, and `Allow this…` for a blocked
+connection that is still pending (§7.5). Log lines are mono 12 px on one
 line with an `INF` / `WRN` / `ERR` tag; `ERR` is in `--danger`.
 Props:
   - entry: Entry. For a group, its newest entry.
@@ -12,20 +14,24 @@ Props:
   - expanded?: boolean, bindable. Whether a group or log line shows in full.
   - onToggle?: (expanded: boolean) => void, called when the person expands or collapses it.
   - link?: boolean (default true). False keeps the row from linking to the device.
-  - fresh?: boolean. Arrived just now: fades in and carries the 4 s change tint (§8.4).
+  - fresh?: boolean. Arrived just now: grows in and carries the 4 s change tint (§8.4).
 -->
 <script lang="ts">
-  import { go, href } from '../../router';
+  import { go, href, openOverlay } from '../../router';
   import { copy, copyScreens } from '../copy';
-  import { clock } from '../format';
+  import { absolute, clock } from '../format';
   import Icon from '../icons/Icon.svelte';
   import { live } from '../live/store.svelte';
   import type { Entry } from '../types.gen';
+  import DropdownMenu, { type MenuItem } from '../ui/DropdownMenu.svelte';
+  import IconButton from '../ui/IconButton.svelte';
+  import { toast } from '../ui/Toast.svelte';
   import {
     describe,
     describeGroup,
     devicesOf,
     logLevel,
+    logLine,
     rangeFor,
     type Glyph,
   } from './activity';
@@ -66,9 +72,66 @@ Props:
     const network = live.status?.networks.find((n) => n.id === device.network);
     if (!peer || !network) return null;
     const path = href({ name: 'device', net: network.name, dev: peer.name });
-    const range = rangeFor(entry.at_ms, live.now());
-    return range ? `${path}?at=${entry.at_ms}&range=${range}` : path;
+    const range = rangeFor(entry.at_ms, live.now()) ?? '1h';
+    return `${path}?at=${entry.at_ms}&range=${range}`;
   });
+
+  /** The device the ⋯ menu opens: the row's link, or for a group its newest entry's. */
+  const deviceHref = $derived.by(() => {
+    if (target) return target;
+    if (isLog || entry.kind === 'device_removed' || entry.kind === 'join_requested') return null;
+    const device = devicesOf(entry)[0];
+    if (!device) return null;
+    const peer = live.peers[device.network]?.[device.node];
+    const network = live.status?.networks.find((n) => n.id === device.network);
+    return peer && network ? href({ name: 'device', net: network.name, dev: peer.name }) : null;
+  });
+
+  /** §7.5: the pending blocked group this row is about, if it still needs someone. */
+  const pendingBlocked = $derived.by(() => {
+    if (entry.kind !== 'blocked') return null;
+    const e = entry;
+    return (
+      live.pending.blocked.find(
+        (g) =>
+          g.network === e.network &&
+          g.from === e.from &&
+          g.to === e.to &&
+          g.port === e.port &&
+          g.protocol === e.protocol,
+      ) ?? null
+    );
+  });
+
+  function lineText(): string {
+    const log = logLine(entry);
+    if (log) return log;
+    return [clock(entry.at_ms), said.sentence, said.actor].filter(Boolean).join(' ');
+  }
+
+  async function copyLine(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(lineText());
+      toast.done(copyScreens.activity.lineCopied);
+    } catch {
+      toast.failed(copyScreens.activity.copyFailed);
+    }
+  }
+
+  const menu: MenuItem[] = $derived([
+    ...(deviceHref
+      ? [{ label: copyScreens.activity.openDevice, onSelect: () => go(deviceHref) }]
+      : []),
+    { label: copyScreens.activity.copyLine, onSelect: () => void copyLine() },
+    ...(pendingBlocked
+      ? [
+          {
+            label: copy.blocked.allowThis,
+            onSelect: () => openOverlay('need', pendingBlocked.id),
+          },
+        ]
+      : []),
+  ]);
 
   const glyphLabel: Record<Glyph, string> = {
     ban: copyScreens.activity.glyphs.blocked,
@@ -77,7 +140,6 @@ Props:
   };
 
   const iso = (ms: number): string => new Date(ms).toISOString();
-  const full = (ms: number): string => new Date(ms).toLocaleString();
 
   function toggle(): void {
     expanded = !expanded;
@@ -94,7 +156,7 @@ Props:
 </script>
 
 {#snippet time(ms: number)}
-  <time class="time" datetime={iso(ms)} title={full(ms)}>{clock(ms)}</time>
+  <time class="time" datetime={iso(ms)} title={absolute(ms)}>{clock(ms)}</time>
 {/snippet}
 
 {#snippet body()}
@@ -116,49 +178,111 @@ Props:
   {/if}
 {/snippet}
 
+{#snippet more()}
+  <span class="more">
+    <DropdownMenu items={menu} label={copyScreens.activity.rowMore}>
+      {#snippet trigger(props)}
+        <IconButton icon="ellipsis" label={copyScreens.activity.rowMore} triggerProps={props} />
+      {/snippet}
+    </DropdownMenu>
+  </span>
+{/snippet}
+
 <div class="event" class:fresh class:log={isLog}>
-  {#if isLog && level}
-    <button type="button" class="line log-line" aria-expanded={expanded} onclick={toggle}>
-      {@render time(entry.at_ms)}
-      <span class="tag" class:err={level === 'error'}>{copy.activity.levels[level]}</span>
-      <span class="message" class:open={expanded}>
-        {said.sentence}
-        {#if expanded && entry.kind === 'log'}<span class="source">{entry.target}</span>{/if}
-      </span>
-    </button>
-  {:else if grouped && group}
-    <button type="button" class="line" aria-expanded={expanded} onclick={toggle}>
-      {@render body()}
-    </button>
-    {#if expanded}
-      <ol class="children">
-        {#each group as child (child.seq)}
-          <li><EventRow entry={child} {link} /></li>
-        {/each}
-      </ol>
+  <div class="inner">
+    {#if isLog && level}
+      <div class="row">
+        <button type="button" class="line log-line" aria-expanded={expanded} onclick={toggle}>
+          {@render time(entry.at_ms)}
+          <span class="tag" class:err={level === 'error'}>{copy.activity.levels[level]}</span>
+          <span class="message" class:open={expanded}>
+            {said.sentence}
+            {#if expanded && entry.kind === 'log'}<span class="source">{entry.target}</span>{/if}
+          </span>
+        </button>
+        {@render more()}
+      </div>
+    {:else if grouped && group}
+      <div class="row">
+        <button type="button" class="line" aria-expanded={expanded} onclick={toggle}>
+          {@render body()}
+        </button>
+        {@render more()}
+      </div>
+      {#if expanded}
+        <ol class="children">
+          {#each group as child (child.seq)}
+            <li><EventRow entry={child} {link} /></li>
+          {/each}
+        </ol>
+      {/if}
+    {:else if target}
+      <div class="row">
+        <a class="line" href={target} onclick={open}>{@render body()}</a>
+        {@render more()}
+      </div>
+    {:else}
+      <div class="row">
+        <div class="line">{@render body()}</div>
+        {@render more()}
+      </div>
     {/if}
-  {:else if target}
-    <a class="line" href={target} onclick={open}>{@render body()}</a>
-  {:else}
-    <div class="line">{@render body()}</div>
-  {/if}
+  </div>
 </div>
 
 <style>
-  .event.fresh {
-    animation:
-      event-in var(--d-row) var(--e-linear),
-      event-tint var(--d-tint) var(--e-linear);
+  /* §3.5: a new row grows in (height plus fade) and carries the change tint, which fades
+     by opacity on a layer of its own so reduced motion keeps it. */
+  .event {
+    position: relative;
+    display: grid;
+    grid-template-rows: 1fr;
+    border-radius: var(--r-2);
   }
-  @keyframes event-in {
+  .inner {
+    min-height: 0;
+  }
+  .event.fresh {
+    animation: event-grow var(--d-row) var(--e-linear);
+  }
+  .event.fresh > .inner {
+    overflow: hidden;
+  }
+  .event.fresh::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--changed);
+    opacity: 0;
+    pointer-events: none;
+    animation: event-tint var(--d-tint) var(--e-linear);
+  }
+  @keyframes event-grow {
     from {
+      grid-template-rows: 0fr;
       opacity: 0;
     }
   }
   @keyframes event-tint {
     from {
-      background: var(--changed);
+      opacity: 1;
     }
+  }
+
+  .row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-1);
+  }
+  .row > .line {
+    flex: 1;
+    min-width: 0;
+  }
+  .more {
+    display: inline-flex;
+    flex: none;
+    padding-top: calc((var(--row) - var(--control)) / 2);
   }
 
   .line {

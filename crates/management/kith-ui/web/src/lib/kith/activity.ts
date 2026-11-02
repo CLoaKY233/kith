@@ -4,7 +4,8 @@
 // inputs, so Overview, Device detail and This device reuse them and tests run without a page.
 
 import { copy, copyScreens } from '../copy';
-import { clock, day } from '../format';
+import { clock, day, weekdayClock } from '../format';
+import type { JournalGap } from '../live/core.svelte';
 import {
   BLOCKED_GROUP_MS,
   FLAP_COUNT,
@@ -322,13 +323,6 @@ export type FeedRow =
     }
   | { readonly type: 'cap'; readonly key: string; readonly text: string };
 
-/** A missing seq range, as the stream reported it (§2.6 `gap`). */
-export interface Gap {
-  readonly from: number;
-  readonly to: number;
-  readonly at_ms: number;
-}
-
 function dayKey(ms: number): string {
   const d = new Date(ms);
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
@@ -401,14 +395,22 @@ function anchor(unit: Unit): Entry | undefined {
   return unit.entries[unit.entries.length - 1];
 }
 
-function gapText(gap: Gap, journal: readonly Entry[]): string {
-  let before: Entry | undefined;
-  let after: Entry | undefined;
-  for (const entry of journal) {
-    if (entry.seq < gap.from) before = entry;
-    else if (entry.seq > gap.to && !after) after = entry;
-  }
-  return copy.activity.gap(clock(before?.at_ms ?? gap.at_ms), clock(after?.at_ms ?? gap.at_ms));
+/**
+ * The gap divider. The ends come from the store (`fromMs`, `toMs`); an end with no entry
+ * kept on its side is unknown, and the text says only the other one. Ends on different
+ * days carry the weekday.
+ */
+export function gapText(gap: JournalGap, journal: readonly Entry[]): string {
+  const knownBefore = journal.some((entry) => entry.seq < gap.from);
+  const after = journal.find((entry) => entry.seq > gap.to);
+  const fromMs = knownBefore ? gap.fromMs : null;
+  const toMs = gap.toMs ?? after?.at_ms ?? null;
+  const twoDays = fromMs !== null && toMs !== null && dayKey(fromMs) !== dayKey(toMs);
+  const at = twoDays ? weekdayClock : clock;
+  if (fromMs !== null && toMs !== null) return copy.activity.gap(at(fromMs), at(toMs));
+  if (toMs !== null) return copyScreens.activity.gapBefore(clock(toMs));
+  if (fromMs !== null) return copyScreens.activity.gapSince(clock(fromMs));
+  return copyScreens.activity.gapUnknown;
 }
 
 /**
@@ -420,7 +422,7 @@ export function buildFeed(
   shown: readonly Entry[],
   filter: Filter,
   ctx: Context,
-  gaps: readonly Gap[],
+  gaps: readonly JournalGap[],
   nowMs: number,
 ): FeedRow[] {
   const units = group(shown.filter((entry) => matches(entry, filter, ctx)));
