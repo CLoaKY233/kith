@@ -117,7 +117,7 @@ test('add a phone from the command palette', async ({ app }) => {
 
   await keys.tabTo(app.getByRole('button', { name: copy.addPhone.reveal, exact: true }));
   await keys.press('Enter');
-  await expect(app.getByText(copy.addPhone.waiting)).toBeVisible();
+  await expect(app.getByText(copy.addPhone.waiting(name))).toBeVisible();
   expect(revealed).toHaveLength(1);
   expect(keys.count).toBeLessThan(KEY_BUDGET);
 });

@@ -304,7 +304,7 @@ Props:
   let askOpen = $state(false);
   let askRequest = $state('');
   function askAdmin(exit: ExitView): void {
-    askRequest = copy.exits.askCommand(network?.name ?? net, exit.name);
+    askRequest = copy.askAdmin.request.exitAllow(network?.name ?? net, exit.name);
     askOpen = true;
   }
 

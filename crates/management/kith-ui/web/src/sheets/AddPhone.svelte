@@ -331,7 +331,7 @@ Props:
   const status = $derived.by(() => {
     if (connected) return connectedLine;
     if (revealedAt === null) return null;
-    return slowToConnect ? copy.addPhone.notYet(gateway) : copy.addPhone.waiting;
+    return slowToConnect ? copy.addPhone.notYet(gateway) : copy.addPhone.waiting(phone?.name ?? '');
   });
 
   const exitsHref = $derived(href({ name: 'exits', net: networkName }));

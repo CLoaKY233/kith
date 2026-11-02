@@ -8,7 +8,7 @@ copy.ts.
 -->
 <script lang="ts">
   import { Tooltip } from 'bits-ui';
-  import { copy } from '../lib/copy';
+  import { copy, copyScreens } from '../lib/copy';
   import Sprite from '../lib/icons/Sprite.svelte';
   import { TOOLTIP_DELAY_MS } from '../lib/live/timing';
   import type { DotState, Theme } from '../lib/types';
@@ -203,7 +203,7 @@ copy.ts.
     <section>
       <h2>Switch</h2>
       <div class="narrow">
-        <Switch label={copy.settings.notificationsSwitch} bind:checked={notifications} />
+        <Switch label={copyScreens.settings.notifySwitch} bind:checked={notifications} />
         <Switch label={copy.settings.shareLinks(NET)} helper={copy.settings.shareLinksHelp} bind:checked={share} />
         <Switch label={copy.settings.shortcuts} checked disabled />
         <Switch label={copy.settings.compact} disabled />
