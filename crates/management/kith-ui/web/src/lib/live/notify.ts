@@ -11,6 +11,14 @@ import { NOTIFY_COALESCE_COUNT, NOTIFY_COALESCE_WINDOW_MS } from './timing';
 
 export type NoticeKind = 'join' | 'exit_offline' | 'device_offline' | 'daemon_stopped';
 
+/** Where a click on a notice takes the page: a join's Needs-you item, a page of a
+ * network (`network: null` is the page's current or first network), or nowhere. */
+export type NoticeTarget =
+  | { readonly network: string; readonly id: string }
+  | { readonly network: string | null; readonly page: 'exits' | 'activity' }
+  | { readonly network: string; readonly page: 'device'; readonly device: string }
+  | null;
+
 /** One notification the page would show. */
 export type Notice = {
   readonly kind: NoticeKind;
@@ -20,8 +28,8 @@ export type Notice = {
   readonly body: string;
   /** Server time of the event, in ms. */
   readonly atMs: number;
-  /** For a join: the network and the Needs-you id that a click opens at `?need=`. */
-  readonly need: { readonly network: string; readonly id: string } | null;
+  /** What a click opens: for a join, the Needs-you id at `?need=`. */
+  readonly need: NoticeTarget;
 };
 
 /** What the rules read from the store. */
@@ -66,7 +74,7 @@ export function noticeFor(entry: Entry, ctx: NoticeContext): Notice | null {
           title: copy.notify.exitOffline(entry.name),
           body: '',
           atMs: entry.at_ms,
-          need: null,
+          need: { network: entry.network, page: 'exits' },
         };
       }
       if (!ctx.usedRecently(entry.network, entry.node, entry.at_ms)) return null;
@@ -76,7 +84,7 @@ export function noticeFor(entry: Entry, ctx: NoticeContext): Notice | null {
         title: copy.notify.deviceOffline(entry.name),
         body: '',
         atMs: entry.at_ms,
-        need: null,
+        need: { network: entry.network, page: 'device', device: entry.name },
       };
     }
     default:
@@ -92,7 +100,7 @@ export function daemonNotice(atMs: number): Notice {
     title: copy.notify.daemonStopped,
     body: '',
     atMs,
-    need: null,
+    need: { network: null, page: 'activity' },
   };
 }
 
@@ -116,7 +124,7 @@ export interface NotifyEnv {
   permission(): Permission;
   requestPermission(): Promise<Permission>;
   show(notice: Pick<Notice, 'title' | 'body' | 'tag'>, onClick: () => void): Shown | null;
-  /** Brings the page forward, at the Needs-you item when there is one. */
+  /** Brings the page forward, at the notice's target when there is one. */
   open(need: Notice['need']): void;
   load(key: string): string | null;
   save(key: string, value: string): void;
@@ -144,7 +152,10 @@ export class Delivery {
           this.shown.delete(tag);
         }
       }
-      this.put({ title: copy.notify.coalesced(this.recent.length), body: '', tag: COALESCED_TAG }, null);
+      this.put({ title: copy.notify.coalesced(this.recent.length), body: '', tag: COALESCED_TAG }, {
+        network: null,
+        page: 'activity',
+      });
       return;
     }
     this.put(notice, notice.need);
@@ -163,7 +174,13 @@ export class Delivery {
 
 /** The real browser, for the page. `now` is server time; `open` routes inside the app. */
 export function browserEnv(now: () => number, open: (need: Notice['need']) => void): NotifyEnv {
-  const supported = typeof window !== 'undefined' && 'Notification' in window;
+  // Chrome on Android throws on `new Notification()`: only a service worker may show one,
+  // and this page has none, so it reports them unsupported rather than silently off.
+  const workerOnly =
+    typeof navigator !== 'undefined' &&
+    /Android/.test(navigator.userAgent) &&
+    !('serviceWorker' in navigator && navigator.serviceWorker.controller);
+  const supported = typeof window !== 'undefined' && 'Notification' in window && !workerOnly;
   return {
     now,
     hidden: () => typeof document !== 'undefined' && document.visibilityState === 'hidden',

@@ -52,6 +52,14 @@ const about =
   (entry: Entry): boolean =>
     entry.kind === kind && entry.network === network && entry.node === node;
 
+/** Passes a 2xx answer through after starting a background reload that may fail quietly. */
+const afterwards =
+  (reload: () => Promise<void>) =>
+  <T>(value: T): T => {
+    void reload().catch(() => undefined);
+    return value;
+  };
+
 /** Builds `actions` over one store. */
 export function createActions(host: ActionsHost, runner: Runner) {
   const read = <T>(path: string, into: (value: T) => void): ActionHandle<T> =>
@@ -161,10 +169,13 @@ export function createActions(host: ActionsHost, runner: Runner) {
       runner.run<Invite>({
         ledger: true,
         run: () =>
-          api.post<Invite>(networkPath(net, '/invites'), {
-            expires_secs: expiresSecs,
-            uses,
-          } satisfies InviteIn),
+          api
+            .post<Invite>(networkPath(net, '/invites'), {
+              expires_secs: expiresSecs,
+              uses,
+            } satisfies InviteIn)
+            .then(afterwards(() => loadInvites(net))),
+        refresh: () => loadInvites(net),
       }),
     revokeInvite: (net: string, id: string) =>
       runner.run<Outcome>({
@@ -177,7 +188,10 @@ export function createActions(host: ActionsHost, runner: Runner) {
     allowBlocked: (id: string) =>
       runner.run<Outcome>({
         ledger: true,
-        run: () => api.post<Outcome>(`/api/blocked/${enc(id)}/allow`, { preview: false } satisfies AllowIn),
+        run: () =>
+          api
+            .post<Outcome>(`/api/blocked/${enc(id)}/allow`, { preview: false } satisfies AllowIn)
+            .then(afterwards(pending)),
         refresh: pending,
       }),
 

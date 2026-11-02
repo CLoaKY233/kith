@@ -124,7 +124,6 @@ export type Prefs = {
   readonly theme: Theme;
   readonly density: Density;
   readonly shortcuts: boolean;
-  readonly notifications: boolean;
   readonly lastNetwork: string | null;
 };
 

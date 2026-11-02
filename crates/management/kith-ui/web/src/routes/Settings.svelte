@@ -14,7 +14,7 @@ Props:
   import { copy, copyScreens, DOT } from '../lib/copy';
   import { clock, weekdayClock } from '../lib/format';
   import { devicesByName, findNetwork, membershipOf } from '../lib/kith/network';
-  import { actions, live } from '../lib/live/store.svelte';
+  import { actions, live, notifications } from '../lib/live/store.svelte';
   import { prefs, setPref } from '../lib/prefs.svelte';
   import type { ActionHandle, ApiFailure } from '../lib/types';
   import type { Invite, Outcome } from '../lib/types.gen';
@@ -70,19 +70,6 @@ Props:
   let compact = $state(prefs.density === 'compact');
   let shortcuts = $state(prefs.shortcuts);
   let finePointer = $state(false);
-
-  // Notifications: the switch is on only when the browser lets the page notify.
-  const supported = typeof Notification !== 'undefined';
-  const initialPermission: NotificationPermission = supported ? Notification.permission : 'denied';
-  let permission = $state(initialPermission);
-  let notify = $state(prefs.notifications && initialPermission === 'granted');
-
-  async function setNotify(on: boolean): Promise<void> {
-    if (on && permission !== 'granted') permission = await Notification.requestPermission();
-    const granted = on && permission === 'granted';
-    notify = granted;
-    setPref('notifications', granted);
-  }
 
   // Invites.
   let loadInvites = $state<ActionHandle<Invite[]> | null>(null);
@@ -195,14 +182,14 @@ Props:
 
   <section class="group" aria-labelledby="settings-notifications">
     <h2 class="t-heading" id="settings-notifications">{copy.settings.notifications}</h2>
-    {#if supported}
+    {#if notifications.supported}
       <Switch
-        bind:checked={notify}
+        checked={notifications.on}
         label={copyScreens.settings.notifySwitch}
-        helper={permission === 'denied'
+        helper={notifications.permission === 'denied'
           ? copyScreens.settings.notificationsBlocked
           : copy.activity.notifyCardBody}
-        onCheckedChange={(on) => void setNotify(on)}
+        onCheckedChange={(on) => void notifications.setEnabled(on)}
       />
     {:else}
       <p class="quiet">{copyScreens.settings.notificationsUnsupported}</p>

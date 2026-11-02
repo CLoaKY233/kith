@@ -5,6 +5,7 @@ import { JOURNAL_CAP } from '../live/timing';
 import type { Entry, Fixture } from '../types.gen';
 import {
   buildFeed,
+  describeGroup,
   describe as say,
   logLine,
   rangeFor,
@@ -113,6 +114,19 @@ describe('activity feed (spec §6.5)', () => {
     const many = [...few, flap(NOW - 1.5 * MIN)];
     const rows = buildFeed(many, many, all, ctx, [], NOW);
     expect(rows.map((r) => r.type)).toEqual(['day', 'group']);
+  });
+
+  it('groups the fixture dev-box flap, six changes three minutes apart', () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL('../../../fixtures/office.json', import.meta.url), 'utf8'),
+    ) as Fixture;
+    const filter = { ...all, network: fixture.status.networks[0]?.id ?? null, kind: 'paths' as const };
+    const last = fixture.journal[fixture.journal.length - 1]?.at_ms ?? 0;
+    const rows = buildFeed(fixture.journal, fixture.journal, filter, ctx, [], last);
+    const groups = rows.flatMap((r) => (r.type === 'group' ? [r] : []));
+    expect(groups).toHaveLength(1);
+    const sentence = describeGroup(groups[0]?.entries ?? [], ctx)?.sentence ?? '';
+    expect(sentence).toMatch(/^dev-box switched paths 6 times since \d\d:\d\d$/);
   });
 
   it('divides days and marks gaps between the entries around them', () => {

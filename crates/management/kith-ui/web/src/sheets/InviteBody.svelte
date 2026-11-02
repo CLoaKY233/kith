@@ -12,7 +12,7 @@ Props:
 <script lang="ts">
   import { announce } from '../lib/announce';
   import { copy } from '../lib/copy';
-  import { clock } from '../lib/format';
+  import { until } from '../lib/format';
   import QrPanel from '../lib/kith/QrPanel.svelte';
   import { actions, live } from '../lib/live/store.svelte';
   import Button from '../lib/ui/Button.svelte';
@@ -72,7 +72,7 @@ Props:
       const path = pathText(peer.path, deviceName(networkId, numbers?.relay ?? null));
       if (path !== null) return copy.invite.usedBy(peer.name, path);
     }
-    return copy.invite.notUsed(clock(current.expires_at_ms));
+    return copy.invite.notUsed(until(current.expires_at_ms, live.now()));
   });
 
   // A device that joins after the invite was made may have used it: ask the server again.

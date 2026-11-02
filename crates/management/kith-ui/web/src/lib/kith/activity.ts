@@ -8,7 +8,7 @@ import { clock, day } from '../format';
 import {
   BLOCKED_GROUP_MS,
   FLAP_COUNT,
-  FLAP_WINDOW_MS,
+  FLAP_GROUP_MS,
   JOURNAL_CAP,
   RANGE_MS,
 } from '../live/timing';
@@ -355,7 +355,7 @@ type Unit = { entries: Entry[]; grouped: boolean };
 /**
  * Groups entries (oldest first) into rows: blocked connections with the same source,
  * destination and port within BLOCKED_GROUP_MS of the group's first, and runs of more
- * than FLAP_COUNT path changes of one device each within FLAP_WINDOW_MS of the last.
+ * than FLAP_COUNT path changes of one device, each within FLAP_GROUP_MS of the one before.
  */
 function group(entries: readonly Entry[]): Unit[] {
   const units: Unit[] = [];
@@ -377,7 +377,7 @@ function group(entries: readonly Entry[]): Unit[] {
       const key = `${entry.network}|${entry.node}`;
       const run = runs.get(key);
       const last = run?.entries[run.entries.length - 1];
-      if (run && last && entry.at_ms - last.at_ms <= FLAP_WINDOW_MS) run.entries.push(entry);
+      if (run && last && entry.at_ms - last.at_ms <= FLAP_GROUP_MS) run.entries.push(entry);
       else {
         const unit = { entries: [entry], grouped: true };
         units.push(unit);

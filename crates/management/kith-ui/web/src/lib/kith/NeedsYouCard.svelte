@@ -139,7 +139,7 @@ Props:
     approval = handle;
     void handle.done.then((h) => {
       if (h.state === 'failed' && h.error) {
-        failure = explain(h.error, join.claimed.name);
+        failure = explain(h.error, join.claimed.name, copy.error.nameChars);
         approval = null;
         needs.release(need.id);
       }

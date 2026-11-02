@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { THIN } from './copy';
-import { ago, bytes, checkCode, clock, dayLabel, rate, rateParts, relative, rtt } from './format';
+import { ago, bytes, checkCode, clock, dayLabel, rate, rateParts, relative, rtt, until } from './format';
 
 const at = (y: number, mo: number, d: number, h: number, mi: number, s = 0): number =>
   new Date(y, mo - 1, d, h, mi, s).getTime();
@@ -35,13 +35,19 @@ describe('times (spec §5 RelativeTime, §6.5)', () => {
   const now = at(2026, 11, 3, 15, 30);
 
   it('steps from now through seconds and minutes to a clock, a weekday and a date', () => {
-    expect(relative(now - 2_000, now)).toBe('now');
-    expect(relative(now + 5_000, now)).toBe('now');
+    expect(relative(now - 2_000, now)).toBe('just now');
+    expect(relative(now + 5_000, now)).toBe('just now');
     expect(relative(now - 12_500, now)).toBe(u('12', 's ago'));
     expect(relative(now - 4 * 60_000 - 59_000, now)).toBe(u('4', 'min ago'));
     expect(relative(at(2026, 11, 3, 14, 2), now)).toBe('14:02');
     expect(relative(at(2026, 11, 2, 23, 50), now)).toBe('Mon 23:50');
     expect(relative(at(2026, 10, 20, 9, 5), now)).toBe('20 Oct 09:05');
+  });
+
+  it('dates expiries past today', () => {
+    expect(until(at(2026, 11, 3, 16, 0), now)).toBe('16:00');
+    expect(until(at(2026, 11, 4, 15, 30), now)).toBe('Wed 15:30');
+    expect(until(at(2026, 11, 10, 15, 30), now)).toBe('Tue 10 Nov 15:30');
   });
 
   it('writes 24-hour clocks without the 24:xx quirk', () => {
@@ -55,7 +61,7 @@ describe('times (spec §5 RelativeTime, §6.5)', () => {
   });
 
   it('writes ages for seen-ago text', () => {
-    expect(ago(3)).toBe('now');
+    expect(ago(3)).toBe('just now');
     expect(ago(3 * 3600 + 5)).toBe(u('3', 'h ago'));
     expect(ago(3 * 86_400)).toBe('3 days ago');
   });

@@ -66,3 +66,14 @@ export class Columns implements TrafficColumns {
     return (this.rx[i] ?? 0) > (this.rx[i - 1] ?? 0);
   }
 }
+
+/** `older` samples (oldest first) in front of `current`'s, keeping the newest capacity. */
+export function merged(older: readonly { at_ms: number; rx_bytes: number; tx_bytes: number }[], current: Columns): Columns {
+  const out = new Columns(current.capacity);
+  const first = current.length > 0 ? (current.at[0] ?? 0) : Number.POSITIVE_INFINITY;
+  for (const sample of older) {
+    if (sample.at_ms <= first - SAME_SAMPLE_MS) out.record(sample.at_ms, sample.rx_bytes, sample.tx_bytes);
+  }
+  for (let i = 0; i < current.length; i += 1) out.record(current.at[i] ?? 0, current.rx[i] ?? 0, current.tx[i] ?? 0);
+  return out;
+}

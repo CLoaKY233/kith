@@ -146,6 +146,14 @@ export function relative(atMs: number, nowMs: number): string {
   return `${shortDate(atMs)} ${clock(atMs)}`;
 }
 
+/** A future moment, as precise as needed: `14:02` today, `Tue 14:02` within a week,
+ * `Mon 31 Oct 14:02` beyond. */
+export function until(atMs: number, nowMs: number): string {
+  if (startOfDay(atMs) === startOfDay(nowMs)) return clock(atMs);
+  if (atMs - nowMs < RELATIVE_TIME_DATE_AFTER_MS) return weekdayClock(atMs);
+  return `${day(atMs)} ${clock(atMs)}`;
+}
+
 /** §6.5 day dividers: `Today`, `Yesterday`, `Mon 31 Oct`. */
 export function dayLabel(atMs: number, nowMs: number): string {
   const today = startOfDay(nowMs);

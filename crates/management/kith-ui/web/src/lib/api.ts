@@ -110,7 +110,10 @@ async function request<T>(
     if (isErrorBody(parsed)) {
       throw new ApiError(parsed.code, response.status, parsed.message, parsed.conflict ?? null);
     }
-    throw new ApiError(STATUS_CODES[response.status] ?? 'internal', response.status, text, null);
+    // A proxy page or a body this page does not know: never put it in a sentence.
+    if (text !== '') console.warn(`kith-ui: ${method} ${path} answered ${response.status}`, text);
+    const message = response.statusText || `HTTP ${response.status}`;
+    throw new ApiError(STATUS_CODES[response.status] ?? 'internal', response.status, message, null);
   }
   return parsed as T;
 }
@@ -145,13 +148,13 @@ export function errorText(failure: ApiFailure, context: ErrorContext = {}): stri
     case 'permission_denied':
       return copy.error.permissionDenied;
     case 'not_found':
-      return context.subject ? copy.error.notFound(context.subject) : copy.error.internal(failure.message);
+      return context.subject ? copy.error.notFound(context.subject) : copy.error.notFoundPlain;
     case 'conflict':
       return failure.conflict
         ? copy.error.conflict(failure.conflict.resolved_by)
-        : copy.error.internal(failure.message);
+        : copy.error.conflictPlain;
     case 'invalid_argument':
-      return context.invalid ?? failure.message;
+      return context.invalid ?? copy.error.invalid(failure.message);
     case 'daemon_down':
       return copy.conn.staleActions;
     case 'os_auth_denied':
@@ -159,9 +162,11 @@ export function errorText(failure: ApiFailure, context: ErrorContext = {}): stri
     case 'not_implemented':
       return copy.error.notImplemented;
     case 'unauthorized':
-    case 'session_used':
-    case 'session_expired':
       return copy.conn.unauth;
+    case 'session_used':
+      return copy.gate.authUsed;
+    case 'session_expired':
+      return copy.gate.authExpired;
     case 'forbidden':
       return copy.gate.authTitle;
     case 'not_in_group':

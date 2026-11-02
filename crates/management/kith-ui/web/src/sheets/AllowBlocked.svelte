@@ -178,7 +178,11 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
       return failureText(signing.error, group.to_name);
     }
     if (signing.state === 'pending') return null;
+    // Done when every device has it, when the server confirmed it without counts, or when
+    // the group has left Needs you (the rule is in force here).
     if (fullySeen(signing)) return done;
+    if (signing.state === 'seen' && signing.seen === null) return done;
+    if (signing.state === 'accepted' && current === null) return done;
     return progressText(signing, copy.blocked.spreading);
   });
 

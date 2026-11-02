@@ -7,6 +7,18 @@ import { NOTIFY_PROMPT_SNOOZE_MS, NOTIFY_REPLAY_CUTOFF_MS } from './timing';
 
 const ENABLED_KEY = 'kith.notifications';
 const SNOOZE_KEY = 'kith.notifications.prompt-snoozed-until';
+// Where earlier versions of the page kept the switch and the snooze; read once.
+const OLD_PREFS_KEY = 'kith.prefs';
+const OLD_SNOOZE_KEY = 'kith.notify-prompt-until';
+
+function oldSwitch(raw: string | null): boolean {
+  try {
+    const prefs: unknown = raw ? JSON.parse(raw) : null;
+    return typeof prefs === 'object' && prefs !== null && (prefs as Record<string, unknown>)['notifications'] === true;
+  } catch {
+    return false;
+  }
+}
 
 /** The opt-in state and delivery. Settings binds `on`; Activity shows `prompt`. */
 export class Notifications {
@@ -24,8 +36,15 @@ export class Notifications {
   constructor(env: NotifyEnv) {
     this.env = env;
     this.delivery = new Delivery(env);
-    this.enabled = env.load(ENABLED_KEY) === 'on';
-    this.snoozedUntil = Number(env.load(SNOOZE_KEY) ?? 0) || 0;
+    const stored = env.load(ENABLED_KEY);
+    this.enabled = stored === null ? oldSwitch(env.load(OLD_PREFS_KEY)) : stored === 'on';
+    if (stored === null && this.enabled) env.save(ENABLED_KEY, 'on');
+    let snooze = env.load(SNOOZE_KEY);
+    if (snooze === null) {
+      snooze = env.load(OLD_SNOOZE_KEY);
+      if (snooze !== null) env.save(SNOOZE_KEY, snooze);
+    }
+    this.snoozedUntil = Number(snooze ?? 0) || 0;
     this.permission = env.permission();
   }
 
@@ -39,15 +58,19 @@ export class Notifications {
     return this.permission !== 'unsupported';
   }
 
-  /** §7.12: show the `Get told when something needs you?` card in Activity. */
-  get prompt(): boolean {
+  /** The card may be offered: off, the browser could still allow it, not snoozed. */
+  get offerable(): boolean {
     return (
-      this.missed &&
       !this.on &&
       this.permission !== 'denied' &&
       this.permission !== 'unsupported' &&
       this.env.now() >= this.snoozedUntil
     );
+  }
+
+  /** §7.12: show the `Get told when something needs you?` card in Activity. */
+  get prompt(): boolean {
+    return this.missed && this.offerable;
   }
 
   /** Turns notifications on or off. Turning on asks the browser; false if it refused. */

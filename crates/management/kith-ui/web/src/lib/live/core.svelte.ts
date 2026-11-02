@@ -26,6 +26,7 @@ import type {
   RecordView,
   StatusView,
   Tick,
+  TrafficSeries,
   Versions,
 } from '../types.gen';
 import type { ApiFailure, ConnState, GateReason, PeerLive, TrafficColumns } from '../types';
@@ -34,12 +35,13 @@ import { noEffects, omit, reduce, type Effects, type ReducerState } from './redu
 import { Paths, type ShownPath } from './stability.svelte';
 import type { StreamControl, StreamHandlers } from './stream';
 import { Tints } from './tint.svelte';
-import { Columns } from './traffic';
+import { Columns, merged } from './traffic';
 import {
   BANNER_DELAY_MS,
   CATCHING_UP_QUIET_MS,
   DAEMON_POLL_MS,
   JOURNAL_CAP,
+  RECONNECT_BACKOFF_MS,
   RTT_TINT_FACTOR,
   RTT_TINT_TICKS,
   STALE_MS,
@@ -99,6 +101,15 @@ function gateFor(code: ApiFailure['code']): GateReason | null {
     default:
       return null;
   }
+}
+
+/** §2.12 `op_seen {op, seen_by, of}`, which the generated Entry type does not list yet. */
+function opSeen(entry: Entry): { op: string; seen_by: number; of: number } | null {
+  const e = entry as unknown as Record<string, unknown>;
+  if (e['kind'] !== 'op_seen') return null;
+  const { op, seen_by, of } = e;
+  if (typeof op !== 'string' || typeof seen_by !== 'number' || typeof of !== 'number') return null;
+  return { op, seen_by, of };
 }
 
 /** Runs `task` once at a time; a call while it runs makes it run once more after. */
@@ -163,6 +174,9 @@ export class Store implements ReducerState {
   /** Columnar counters per `net/node`. Read `trafficVersion` to react to new samples. */
   traffic = new Map<string, Columns>();
   trafficVersion = $state(0);
+  /** The server's hour of samples (GET /api/traffic) is in `traffic`, not only the boot
+   * snapshot's last 5 minutes; until then charts show the older part as loading. */
+  trafficLoaded = $state(false);
   /** Server time of the last tick, in ms. */
   lastTickMs = $state(0);
   /** Server time the data shown was last known true: `as of 14:02` (§8.5). */
@@ -180,6 +194,9 @@ export class Store implements ReducerState {
   #receivedSeq = 0;
   /** Seq of the newest entry in the journal, for dropping duplicates. */
   #journalSeq = 0;
+  /** The first snapshot's seq: entries up to it are history, replayed into the journal
+   * only (§8.2: they change no state, notify no one and mark no gap). */
+  #historySeq = 0;
   /** Entries and gap reports in arrival order, applied in the next frame. */
   #queue: ({ entry: Entry } | { gap: Gap })[] = [];
   #ticks: Tick[] = [];
@@ -187,8 +204,10 @@ export class Store implements ReducerState {
   #syncing = false;
   #buffer: Entry[] = [];
   #listeners = new Set<(entry: Entry) => void>();
+  #ackListeners = new Set<(op: string, by: number, of: number) => void>();
   #rtt = new Map<string, { base: number; over: number }>();
   #staleTimer: ReturnType<typeof setTimeout> | null = null;
+  #staleRetries = 0;
   #shownTimer: ReturnType<typeof setTimeout> | null = null;
   #pollTimer: ReturnType<typeof setTimeout> | null = null;
   #probing = false;
@@ -219,6 +238,13 @@ export class Store implements ReducerState {
   onEntry(listener: (entry: Entry) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /** Calls `listener` with each propagation ack (§2.12 `op_seen`): `by` of `of` devices
+   * have `op`. Acks are not journal entries the page shows. */
+  onAck(listener: (op: string, by: number, of: number) => void): () => void {
+    this.#ackListeners.add(listener);
+    return () => this.#ackListeners.delete(listener);
   }
 
   /** Hydrates from `inline` (or GET /api/boot without one) and opens the stream. */
@@ -260,6 +286,24 @@ export class Store implements ReducerState {
     }
   });
 
+  /** Loads the server's kept samples (§9.1: an hour per device) in front of the boot
+   * snapshot's tail, so the 15m and 1h ranges are full from the first view. */
+  readonly loadTraffic = coalesced(async () => {
+    let history: TrafficSeries[];
+    try {
+      history = await this.#deps.get<TrafficSeries[]>('/api/traffic');
+    } catch {
+      return;
+    }
+    for (const series of history) {
+      const key = deviceKey(series.network, series.node);
+      if (!this.#knows(key)) continue;
+      this.traffic.set(key, merged(series.samples, this.traffic.get(key) ?? new Columns()));
+    }
+    this.trafficLoaded = true;
+    this.trafficVersion += 1;
+  });
+
   /** Refetches /api/status: exit state, warnings and problems only the server knows. */
   readonly refreshStatus = coalesced(async () => {
     try {
@@ -299,6 +343,7 @@ export class Store implements ReducerState {
       this.#poll();
       return;
     }
+    if (!this.trafficLoaded) this.loadTraffic();
     this.#setConn('live');
     this.#armStale();
     this.#openStream();
@@ -327,9 +372,17 @@ export class Store implements ReducerState {
     this.boot = snapshot.boot;
     this.seq = snapshot.seq;
     this.serverOffset = snapshot.server_time_ms - Date.now();
-    if (mode !== 'resync') {
+    if (first) {
+      // The first connect asks for the server's ring, so Activity and Recent have the
+      // history from the start; the state stays the snapshot's.
+      const floor = Math.max(0, snapshot.seq - JOURNAL_CAP);
+      this.#receivedSeq = floor;
+      this.#journalSeq = floor;
+      this.#historySeq = snapshot.seq;
+    } else if (mode !== 'resync') {
       this.#receivedSeq = snapshot.seq;
       this.#journalSeq = snapshot.seq;
+      this.#historySeq = 0;
     }
     this.#setStatus(snapshot.status);
     this.versions = snapshot.versions;
@@ -452,7 +505,7 @@ export class Store implements ReducerState {
       open: () => {
         if (this.conn === 'ui_gone') this.#setConn('catching_up');
         // Ticks must follow within STALE_MS of opening, as of any other moment.
-        this.#armStale();
+        this.#waitForTick();
       },
       error: () => {
         if (this.conn === 'live') this.#setConn('catching_up');
@@ -463,12 +516,18 @@ export class Store implements ReducerState {
 
   #receive(entry: Entry): void {
     if (entry.seq > this.#receivedSeq) this.#receivedSeq = entry.seq;
+    const ack = opSeen(entry);
+    if (ack) {
+      for (const listener of this.#ackListeners) listener(ack.op, ack.seen_by, ack.of);
+      return;
+    }
     this.#queue.push({ entry });
     this.#schedule();
   }
 
   #receiveTick(tick: Tick): void {
-    this.#setConn('live');
+    // kith-ui keeps ticking while the daemon is away; only `daemon_up` ends that state.
+    if (this.conn !== 'daemon_down') this.#setConn('live');
     this.#armStale();
     this.#ticks.push(tick);
     this.#schedule();
@@ -540,15 +599,26 @@ export class Store implements ReducerState {
     }
   }
 
+  /** Waits STALE_MS for a tick; without one, reconnects, and keeps reconnecting on the
+   * §8.5 backoff while the stream stays silent (a reopened stream can be dead too). */
   #armStale(): void {
+    this.#staleRetries = 0;
+    this.#waitForTick();
+  }
+
+  #waitForTick(): void {
     if (this.#staleTimer !== null) clearTimeout(this.#staleTimer);
+    const steps = RECONNECT_BACKOFF_MS;
+    const backoff = this.#staleRetries === 0 ? 0 : (steps[Math.min(this.#staleRetries, steps.length) - 1] ?? 0);
     this.#staleTimer = setTimeout(() => {
       this.#staleTimer = null;
-      if (this.conn !== 'live' && this.conn !== 'catching_up') return;
-      this.#setConn('stale');
+      if (this.conn === 'live' || this.conn === 'catching_up') this.#setConn('stale');
+      else if (this.conn !== 'stale') return;
       // The tick is the heartbeat: without one the connection may be dead but open.
+      this.#staleRetries += 1;
       this.#stream?.reconnect();
-    }, STALE_MS);
+      this.#waitForTick();
+    }, STALE_MS + backoff);
   }
 
   #setConn(next: ConnState): void {
@@ -603,6 +673,8 @@ export class Store implements ReducerState {
     const fx = noEffects();
     for (const item of queue) {
       if ('gap' in item) {
+        // History older than the ring holds is not a gap in what this page saw.
+        if (item.gap.missed_to <= this.#historySeq) continue;
         const last = added.at(-1) ?? this.journal.at(-1);
         gaps = [
           ...gaps,
@@ -632,6 +704,7 @@ export class Store implements ReducerState {
     ticks.forEach((tick, i) => this.#commitTick(tick, i === ticks.length - 1));
     this.#effects(fx);
     for (const entry of added) {
+      if (entry.seq <= this.#historySeq) continue;
       for (const listener of this.#listeners) {
         try {
           listener(entry);
@@ -779,6 +852,7 @@ export interface Live {
   readonly numbers: Readonly<Record<string, PeerLive>>;
   readonly traffic: ReadonlyMap<string, TrafficColumns>;
   readonly trafficVersion: number;
+  readonly trafficLoaded: boolean;
   readonly lastTickMs: number;
   readonly asOfMs: number;
   readonly restartedAtMs: number | null;
@@ -816,6 +890,7 @@ export function viewOf(store: Store): Live {
     get numbers() { return store.numbers; },
     get traffic() { return store.traffic; },
     get trafficVersion() { return store.trafficVersion; },
+    get trafficLoaded() { return store.trafficLoaded; },
     get lastTickMs() { return store.lastTickMs; },
     get asOfMs() { return store.asOfMs; },
     get restartedAtMs() { return store.restartedAtMs; },

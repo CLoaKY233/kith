@@ -89,6 +89,8 @@ export const IDLE_BYTES_PER_SEC = 1000;
 /** §6.5 Activity. */
 export const BLOCKED_GROUP_MS = 10 * MINUTE;
 export const BLOCKED_ANNOUNCE_MS = 5 * MINUTE;
+/** Path changes of one device this close together form one run in Activity. */
+export const FLAP_GROUP_MS = 10 * MINUTE;
 
 /** §7 flows. */
 export const SPACES_HINT_MS = SECOND;
