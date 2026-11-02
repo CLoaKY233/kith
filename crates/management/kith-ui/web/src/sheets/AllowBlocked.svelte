@@ -4,8 +4,8 @@ AllowBlocked (spec §7.5, tier 1): `Allow this…` on a blocked-connection card.
 one rule that will be signed and what else it opens, then signs it on `Add rule`. Never
 one click (§0 ruling 5). A member gets the Ask-an-admin body instead (§7.10).
 
-Opens as a popover anchored to the card's button on desktop when `trigger` is given, and as
-a sheet otherwise (mobile, `?need=`, the device verdict's `Allow this…`).
+Opens as a popover anchored to the card's button on desktop (≥ 640 px, fine pointer) when
+`trigger` is given, and as a sheet otherwise (mobile, `?need=`, the device verdict's `Allow this…`).
 
 Props:
   - open?: boolean, bindable. The screen maps it to the URL query (Back closes it).
@@ -14,61 +14,15 @@ Props:
     the props on it. On mobile it still renders and opens the sheet.
   - onOpenChange?: (open: boolean) => void.
 
-Module exports, for the card (NeedsYouCard, kind `blocked`):
-  - ignoreBlocked(id, nowMs): `Ignore`. Hides the group for a day and says so, with Undo.
-  - isBlockedIgnored(id, nowMs): whether the card should stay hidden.
+Module exports:
   - allowRequest(group, network): the request a member sends an admin.
+`Ignore` lives on the card (NeedsYouCard), through prefs.ignore and prefs.unignore.
+After signing the footer is empty: the header × closes the sheet, and Undo (§7.5 step 3)
+has no API yet. `Edit policy` is plain text until policy editing ships (v1.1).
 -->
 <script lang="ts" module>
-  import { SvelteMap } from 'svelte/reactivity';
   import { copy as text } from '../lib/copy';
-  import { IGNORE_BLOCKED_MS, UNDO_MS } from '../lib/live/timing';
   import type { BlockedGroup } from '../lib/types.gen';
-  import { toast } from '../lib/ui/Toast.svelte';
-
-  const IGNORED_KEY = 'kith.blocked.ignored';
-
-  function readIgnored(): [string, number][] {
-    try {
-      const raw = localStorage.getItem(IGNORED_KEY);
-      const parsed: unknown = raw ? JSON.parse(raw) : null;
-      if (!parsed || typeof parsed !== 'object') return [];
-      const now = Date.now();
-      return Object.entries(parsed).filter(
-        (pair): pair is [string, number] => typeof pair[1] === 'number' && pair[1] > now,
-      );
-    } catch {
-      return [];
-    }
-  }
-
-  /** Ignored group ids and when each comes back, in this viewer's browser only. */
-  const ignored = new SvelteMap<string, number>(readIgnored());
-
-  function saveIgnored(): void {
-    try {
-      localStorage.setItem(IGNORED_KEY, JSON.stringify(Object.fromEntries(ignored)));
-    } catch {
-      // Private window or blocked storage: it stays hidden for this visit only.
-    }
-  }
-
-  export function ignoreBlocked(id: string, nowMs: number): void {
-    ignored.set(id, nowMs + IGNORE_BLOCKED_MS);
-    saveIgnored();
-    toast.done(text.blocked.ignored, {
-      undoMs: UNDO_MS,
-      undo: () => {
-        ignored.delete(id);
-        saveIgnored();
-      },
-    });
-  }
-
-  export function isBlockedIgnored(id: string, nowMs: number): boolean {
-    const until = ignored.get(id);
-    return until !== undefined && until > nowMs;
-  }
 
   export function allowRequest(group: BlockedGroup, network: string): string {
     return text.askAdmin.request.allow(
@@ -82,8 +36,10 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
 </script>
 
 <script lang="ts">
-  import { tick, untrack, type Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import { MediaQuery } from 'svelte/reactivity';
+  import { connection } from '../frame/conn.svelte';
+  import { deviceName } from '../frame/net';
   import { announce } from '../lib/announce';
   import { copy, DOT } from '../lib/copy';
   import AskAdminSheet from '../lib/kith/AskAdminSheet.svelte';
@@ -94,7 +50,6 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   import Popover from '../lib/ui/Popover.svelte';
   import Sheet from '../lib/ui/Sheet.svelte';
   import {
-    cannotAct,
     failureText,
     fullySeen,
     networkContext,
@@ -113,8 +68,9 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
     onOpenChange?: (open: boolean) => void;
   } = $props();
 
-  const narrow = new MediaQuery('(width < 40rem)');
-  const asPopover = $derived(trigger !== undefined && !narrow.current);
+  const narrow = new MediaQuery('(max-width: 40rem)');
+  const fine = new MediaQuery('(pointer: fine)');
+  const asPopover = $derived(trigger !== undefined && !narrow.current && fine.current);
 
   const current = $derived(live.pending.blocked.find((g) => g.id === id) ?? null);
   /** Kept once seen, so the outcome still reads after the group leaves Needs you. */
@@ -126,7 +82,8 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
 
   const network = $derived(group ? networkContext(live.status, group.network) : null);
   const admin = $derived(network?.admin ?? false);
-  const stale = $derived(cannotAct(live.conn));
+  const stale = $derived(connection.frozen);
+  const ids = $props.id();
 
   let preview = $state.raw<ActionHandle<AllowPreview> | null>(null);
   let signing = $state.raw<ActionHandle<Outcome> | null>(null);
@@ -160,6 +117,19 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
       : copy.blocked.opens(result.new_paths.length, result.new_paths.join(DOT));
   });
 
+  /** The preview has to be on screen before the rule can be signed (§0 ruling 5). */
+  const previewReady = $derived(preview?.result != null);
+  const previewFailure = $derived.by(() => {
+    if (!preview?.error || !group) return null;
+    return preview.error.code === 'not_found'
+      ? copy.blocked.gone
+      : failureText(preview.error, group.to_name);
+  });
+
+  const title = $derived(
+    group ? copy.blocked.title(group.from_name, group.to_name, group.port) : copy.blocked.titleAny,
+  );
+
   const done = $derived(
     group === null
       ? ''
@@ -172,17 +142,12 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   const outcome = $derived.by(() => {
     if (!signing || !group) return null;
     if (signing.state === 'conflict' && signing.conflict) {
-      return copy.error.conflict(signing.conflict.resolved_by);
+      return copy.error.conflict(deviceName(group.network, signing.conflict.resolved_by));
     }
     if (signing.state === 'failed' && signing.error) {
       return failureText(signing.error, group.to_name);
     }
-    if (signing.state === 'pending') return null;
-    // Done when every device has it, when the server confirmed it without counts, or when
-    // the group has left Needs you (the rule is in force here).
-    if (fullySeen(signing)) return done;
-    if (signing.state === 'seen' && signing.seen === null) return done;
-    if (signing.state === 'accepted' && current === null) return done;
+    if (signing.state !== 'pending' && fullySeen(signing)) return done;
     return progressText(signing, copy.blocked.spreading);
   });
 
@@ -192,13 +157,25 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   /** Signed here, or by another admin first (a 409 shows their result, not an error). */
   const settled = $derived(signed || signing?.state === 'conflict');
 
-  /** Announces the first result and the final one, not every count in between (§11.1). */
-  let announced = $state<'none' | 'signed' | 'done'>('none');
+  const failed = $derived(signing?.state === 'failed' || signing?.state === 'conflict');
+
+  /**
+   * Announces the first result and the final one, not every count in between, and a
+   * failure once (§11.1).
+   */
+  let announced: 'none' | 'failed' | 'signed' | 'done' = 'none';
   $effect(() => {
-    if (!signed || !outcome) {
-      if (!signing) announced = 'none';
+    if (!signing) {
+      announced = 'none';
       return;
     }
+    if (!outcome) return;
+    if (failed) {
+      if (announced !== 'failed') announce(outcome);
+      announced = 'failed';
+      return;
+    }
+    if (!signed) return;
     const final = outcome === done;
     if (announced === 'done' || (announced === 'signed' && !final)) return;
     announce(outcome);
@@ -214,33 +191,19 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   });
 
   function addRule(): void {
-    if (stale || !group) return;
+    if (stale || !group || !previewReady || signing?.state === 'pending') return;
+    announced = 'none';
     signing = actions.allowBlocked(id);
   }
 
-  /** The layer's name: what is being decided, not the button that opened it. */
-  const title = $derived(
-    !group ? copy.blocked.allowThis : admin ? copy.blocked.allowTitle(group.from_name, group.to_name) : copy.askAdmin.title,
+  const describedBy = $derived(
+    [stale ? `${ids}-stale` : '', failed ? `${ids}-outcome` : ''].filter(Boolean).join(' ') ||
+      undefined,
   );
 
   function close(): void {
     open = false;
   }
-
-  // Cancel first: safe to land on, and Add rule is one Tab away (tier 1, §11.7).
-  let cancelButton: HTMLButtonElement | null = $state(null);
-  let closeButton: HTMLButtonElement | null = $state(null);
-
-  /** Once Add rule gives way to Close, focus moves there instead of dropping to the sheet. */
-  $effect(() => {
-    if (!open || !settled) return;
-    void tick().then(() => {
-      const active = document.activeElement;
-      if (!active || active === document.body || active.matches('[role="dialog"]')) {
-        closeButton?.focus();
-      }
-    });
-  });
 </script>
 
 {#snippet body()}
@@ -259,36 +222,46 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
           {copy.blocked.card(
             group.from_name,
             group.to_name,
-            group.port === null ? '' : copy.blocked.port(group.port, copy.services[group.port] ?? null),
+            group.port === null
+              ? ''
+              : copy.blocked.port(group.port, copy.services[group.port] ?? null),
             group.count,
           )}
         </p>
       {/if}
       <p class="rule">{rule ?? ''}</p>
-      {#if preview?.error}
-        <p class="fail">{failureText(preview.error, group.to_name)}</p>
+      {#if previewFailure}
+        <p class="fail" role="alert">{previewFailure}</p>
       {:else}
         <p class="paths">{paths ?? ''}</p>
+        <p class="note">
+          {copy.blocked.broader}
+          <span class="later">{copy.blocked.editPolicy}</span>
+        </p>
       {/if}
       {#if outcome}
-        <p class="outcome" class:fail={signing?.state === 'failed'}>{outcome}</p>
+        <p id="{ids}-outcome" class="outcome" class:fail={failed}>{outcome}</p>
       {/if}
       {#if stale}
-        <p class="note">{copy.conn.staleActions}</p>
+        <p id="{ids}-stale" class="note">{copy.conn.staleActions}</p>
       {/if}
     </div>
   {/if}
 {/snippet}
 
 {#snippet buttons()}
-  {#if !group || !admin || settled}
-    <Button bind:ref={closeButton} onclick={close}>{copy.action.close}</Button>
+  {#if settled}
+    <!-- The sheet's × closes it; a popover has no ×, so it keeps one. -->
+    {#if asPopover}<Button onclick={close}>{copy.action.close}</Button>{/if}
+  {:else if !group || !admin || previewFailure}
+    <Button onclick={close}>{copy.action.close}</Button>
   {:else}
-    <Button bind:ref={cancelButton} onclick={close}>{copy.action.cancel}</Button>
+    <Button disabled={signing?.state === 'pending'} onclick={close}>{copy.action.cancel}</Button>
     <Button
       variant="primary"
-      disabled={stale}
+      disabled={stale || !previewReady}
       pending={signing?.state === 'pending'}
+      aria-describedby={describedBy}
       onclick={addRule}
     >
       {copy.blocked.addRule}
@@ -297,7 +270,7 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
 {/snippet}
 
 {#if asPopover && trigger}
-  <Popover bind:open {trigger} width="card" label={title}>
+  <Popover bind:open {trigger} width="card" label={admin ? title : copy.askAdmin.title}>
     <div class="pop">
       {@render body()}
       <div class="pop-buttons">{@render buttons()}</div>
@@ -309,9 +282,8 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   {/if}
   <Sheet
     bind:open
-    {title}
+    title={admin || !group ? title : copy.askAdmin.title}
     closeLabel={copy.action.close}
-    initialFocus={() => cancelButton ?? closeButton}
   >
     {@render body()}
     {#snippet footer()}{@render buttons()}{/snippet}
@@ -343,6 +315,9 @@ Module exports, for the card (NeedsYouCard, kind `blocked`):
   }
   .fail {
     color: var(--danger);
+  }
+  .later {
+    color: var(--ink-3);
   }
   .pop {
     display: grid;

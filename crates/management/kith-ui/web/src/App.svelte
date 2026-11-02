@@ -246,7 +246,7 @@ title and the live regions. Screens receive the network id as `net`.
           </Frame>
 
           <AddDevice bind:open={() => add === 'device', closeAdd} {net} />
-          <AddPhone bind:open={() => add === 'phone', closeAdd} {net} />
+          <AddPhone bind:open={() => add === 'phone', closeAdd} {net} node={query.get('node') ?? undefined} />
           <Invite bind:open={() => add === 'invite', closeAdd} {net} />
           <NeedSheet {net} id={need} />
           <NeedSheet {net} id={null} list />

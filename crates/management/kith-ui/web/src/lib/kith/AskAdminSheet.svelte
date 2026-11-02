@@ -33,6 +33,7 @@ Props:
   } = $props();
 
   const network = $derived(networkContext(live.status, net));
+  const sendId = $props.id();
 
   /**
    * `desk (online), nas (offline)`, in the order the network lists its admins. This device
@@ -59,8 +60,8 @@ Props:
       <p class="lede">{copy.askAdmin.onlyAdmins(network.name, admins)}</p>
     {/if}
     <div class="send">
-      <p class="label">{copy.askAdmin.sendThis}</p>
-      <CopyField value={request} label={copy.askAdmin.sendThis} />
+      <p id={sendId} class="label">{copy.askAdmin.sendThis}</p>
+      <CopyField value={request} labelledby={sendId} />
     </div>
   </div>
 {/snippet}
