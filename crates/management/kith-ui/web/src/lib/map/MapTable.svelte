@@ -38,32 +38,34 @@ Props:
   const rows = $derived(model ? tableRows(model, stale) : []);
 </script>
 
-<table class="map-table" class:sr-only={!visible} aria-label={copy.devices.map}>
-  <thead>
-    <tr>
-      <th scope="col">{copy.map.from}</th>
-      <th scope="col">{copy.map.to}</th>
-      <th scope="col">{copy.map.path}</th>
-      <th scope="col" class="num">{copy.map.latency}</th>
-    </tr>
-  </thead>
-  <tbody>
-    {#each rows as row (row.key)}
+<div class:sr-only={!visible}>
+  <table class="map-table" aria-label={copy.map.tableLabel}>
+    <thead>
       <tr>
-        <td>{row.from}</td>
-        <td>
-          {#if visible && onSelect}
-            <button type="button" class="open" onclick={() => onSelect(row.toId)}>{row.to}</button>
-          {:else}
-            {row.to}
-          {/if}
-        </td>
-        <td>{row.path}</td>
-        <td class="num">{row.latency}</td>
+        <th scope="col">{copy.map.from}</th>
+        <th scope="col">{copy.map.to}</th>
+        <th scope="col">{copy.map.path}</th>
+        <th scope="col" class="num">{copy.map.latency}</th>
       </tr>
-    {/each}
-  </tbody>
-</table>
+    </thead>
+    <tbody>
+      {#each rows as row (row.key)}
+        <tr>
+          <td>{row.from}</td>
+          <td>
+            {#if visible && onSelect}
+              <button type="button" class="open" onclick={() => onSelect(row.toId)}>{row.to}</button>
+            {:else}
+              {row.to}
+            {/if}
+          </td>
+          <td>{row.path}</td>
+          <td class="num">{row.latency}</td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+</div>
 
 <style>
   .map-table {

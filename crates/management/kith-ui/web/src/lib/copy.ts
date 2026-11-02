@@ -213,12 +213,15 @@ export const copy = {
     hideData: 'Hide data',
     sparkTip: (time: string, rate: string, peak: string): string =>
       `${time}${DOT}↓ ${rate}${DOT}peak ${peak}`,
-    readout: (time: string, down: string, up: string, path: string): string =>
-      `${time}${DOT}↓ ${down} ↑ ${up}${DOT}${path}`,
+    readout: (time: string, down: string, up: string, path: string | null): string =>
+      `${time}${DOT}↓ ${down} ↑ ${up}${path ? `${DOT}${path}` : ''}`,
+    window: { '1m': 'the last minute', '15m': 'the last 15 minutes', '1h': 'the last hour' } as const,
+    empty: (window: string): string => `No traffic in ${window}`,
+    emptySummary: (device: string, window: string): string => `No traffic for ${device} in ${window}.`,
     windowTotals: (down: string, up: string): string =>
       `↓ ${down} ↑ ${up} in the last hour`,
-    summary: (device: string, peak: string, now: string): string =>
-      `Traffic for ${device}. Peak ${peak}, now ${now}.`,
+    summary: (device: string, window: string, relay: string | null, peak: string, now: string): string =>
+      `Traffic for ${device} in ${window}${relay ? `, relayed through ${relay}` : ''}. Peak ${peak}, now ${now}.`,
     tableTime: 'Minute',
     tableReceived: 'Received',
     tableSent: 'Sent',
@@ -310,6 +313,18 @@ export const copy = {
     path: 'Path',
     latency: 'Latency',
     nodeLabel: (parts: readonly string[]): string => parts.filter(Boolean).join(', '),
+    tableLabel: 'Links between devices',
+    slow: 'slow',
+    unreachable: 'not answering',
+    legend: {
+      direct: 'Direct',
+      relayed: 'Via relay',
+      gateway: 'Through gateway',
+      relay: 'Relay',
+      offline: 'Offline',
+      slow: 'Slow',
+      unreachable: 'Not answering',
+    },
   },
 
   /** §6.4 Device detail. */

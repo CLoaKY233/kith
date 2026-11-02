@@ -2,7 +2,7 @@
 // network, the layout input, the edges with their style, node labels and the MapTable
 // rows. Pure functions, so Map.svelte only renders and animates.
 
-import { copy } from '../copy';
+import { copy, DOT } from '../copy';
 import { ago, rtt } from '../format';
 import { IDLE_BYTES_PER_SEC, QUIET_HANDSHAKE_MS } from '../live/timing';
 import type { ConnState } from '../types';
@@ -264,6 +264,17 @@ export function edges(model: MapModel, options: { showAll: boolean; focus: strin
     const key = edgeKey(s.kind, s.a, s.b, s.via);
     if (!chosen.has(key)) chosen.set(key, { link, ...s });
   }
+  // A relayed edge draws its far leg (relay to peer) dashed; a direct report of that leg
+  // would sit on top of the dashes and hide the relaying. This device's own link to the
+  // relay stays: it is a real link with its own width.
+  const legs = new Set<string>();
+  for (const e of chosen.values()) {
+    if (e.kind !== 'relayed' || !e.via) continue;
+    for (const end of [e.a, e.b]) {
+      if (end !== model.self) legs.add(edgeKey('direct', end, e.via, null));
+    }
+  }
+  for (const key of legs) chosen.delete(key);
   for (const d of model.devices.values()) {
     if (!d.gateway || !model.devices.has(d.gateway)) continue;
     const key = edgeKey('gateway', d.gateway, d.id, null);
@@ -324,6 +335,20 @@ export function report(model: MapModel, id: string): LinkTick | null {
   );
 }
 
+/** The path in words for a peer: through its gateway, or this device's reported path. */
+export function devicePath(model: MapModel, device: MapDevice): string {
+  const gateway = device.gateway ? model.devices.get(device.gateway) : null;
+  if (gateway) return copy.path.via(gateway.self ? copy.device.thisDevice : gateway.name);
+  const link = ownLink(model, device.id);
+  const relay = link?.relay ? (model.devices.get(link.relay)?.name ?? null) : null;
+  return pathText(link?.path ?? device.peer?.path ?? null, relay);
+}
+
+/** The word that carries an edge's colour (§11.5), or '' when neutral. */
+export function toneWord(tone: Tone): string {
+  return tone === 'attn' ? copy.map.slow : tone === 'danger' ? copy.map.unreachable : '';
+}
+
 /** The node's accessible name: "laptop, online, direct, 23 milliseconds". */
 export function nodeName(model: MapModel, device: MapDevice, stale: boolean): string {
   if (device.self) return copy.map.nodeLabel([device.name, copy.device.thisDevice]);
@@ -331,13 +356,13 @@ export function nodeName(model: MapModel, device: MapDevice, stale: boolean): st
     return copy.map.nodeLabel([device.name, copy.status.offline, copy.device.seenAgo(seen(device.peer))]);
   }
   const link = ownLink(model, device.id);
-  const relay = link?.relay ? (model.devices.get(link.relay)?.name ?? null) : null;
   const ms = stale ? null : (link?.rtt_ms ?? null);
   return copy.map.nodeLabel([
     device.name,
     stale ? copy.status.stale : copy.status.online,
-    pathText(link?.path ?? device.peer?.path ?? null, relay),
+    devicePath(model, device),
     ms === null ? '' : copy.spoken.milliseconds(Math.round(ms)),
+    stale ? '' : toneWord(edgeTone(link, model)),
   ]);
 }
 
@@ -373,7 +398,9 @@ export function tableRows(model: MapModel, stale: boolean): TableRow[] {
       to: name(l.to),
       toId: l.to,
       path: pathText(l.path, l.relay ? name(l.relay) : null),
-      latency: rtt(stale ? null : l.rtt_ms),
+      latency: [rtt(stale ? null : l.rtt_ms), stale ? '' : toneWord(edgeTone(l, model))]
+        .filter(Boolean)
+        .join(DOT),
     });
   }
   const self = name(model.self);

@@ -128,7 +128,7 @@ describe('map model on the office fixture', () => {
     expect(nodeLabel(self, false)).toBe('this device');
     const workLaptop = model.devices.get(idOf(model, 'work-laptop'));
     if (!workLaptop) throw new Error('fixture changed');
-    expect(nodeName(model, workLaptop, false)).toBe('work-laptop, online, direct, 162 milliseconds');
+    expect(nodeName(model, workLaptop, false)).toBe('work-laptop, online, direct, 162 milliseconds, slow');
     expect(nodeName(model, workLaptop, true)).toBe('work-laptop, last known, direct');
   });
 
