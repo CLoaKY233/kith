@@ -291,7 +291,7 @@ Props:
   {#if network && self}
     <section class="group" aria-labelledby="settings-privacy">
       <h2 class="t-heading" id="settings-privacy">{copy.settings.privacy}</h2>
-      <div class="setting fixed">
+      <div class="setting readonly">
         <div class="text">
           <span>{copy.settings.shareLinks(network.name)}</span>
           <p class="quiet">{copy.settings.shareLinksHelp}</p>
@@ -518,7 +518,7 @@ Props:
     gap: var(--s-4);
     min-height: var(--row);
   }
-  .setting.fixed {
+  .setting.readonly {
     flex-wrap: nowrap;
   }
   .text {
