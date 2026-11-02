@@ -396,7 +396,7 @@ All components live in `lib/ui` or `lib/kith`. All strings come from `copy.ts`.
 - Flapping (more than 3 changes in 60 s) adds the badge `flapping` in `--ink-3`.
 - A style change waits for 5 s of stability before applying.
 
-**Rate:** a fixed `7ch` slot, right aligned.
+**Rate:** a fixed `9ch` slot, right aligned, so `1.24 MB/s` fits.
 - Bytes, SI (1000), 3 significant figures: `824 kB/s`, `1.24 MB/s`.
 - Below 1 kB/s it reads `idle` in `--ink-3`.
 - Stale shows `—`.
@@ -413,7 +413,7 @@ All components live in `lib/ui` or `lib/kith`. All strings come from `copy.ts`.
 |---|---|
 | Desktop grid | `20px dot · 1fr name + mono address(--ink-3, 12.5) · 150px PathBadge · 64px Rtt · 120px Spark · 84px Rate · 96px last seen · 32px ⋯` |
 | Tablet | drops address and last seen |
-| Mobile | two lines, 64 px: line 1 is dot, name, PathBadge on the right; line 2 is `100.64.0.7 · 34 ms · ↓ 1.2 MB/s` in `--ink-2` |
+| Mobile | two lines, 64 px: line 1 is dot, name, PathBadge on the right; line 2 is `100.64.0.7 · 34 ms · ↓ 1.2 MB/s` in `--ink-2`, then the spark |
 
 - This device is pinned first with the tag `you`.
 - **States:**
@@ -424,7 +424,7 @@ All components live in `lib/ui` or `lib/kith`. All strings come from `copy.ts`.
   - Never seen: `not connected yet`, plus `added by laptop 2 min ago`.
   - Waiting phone: a dashed 1 px outline on the dot and `waiting for first connection`.
   - Changed: 4 s tint.
-  - Needs you: a 2 px `--attn` leading bar plus `--attn-wash`.
+  - Needs you: a 2 px `--attn` leading bar plus `--attn-wash`, and the cause in words after the name in `--attn-text` (`blocked connection`, `waiting too long`).
   - Removing: `Removing…` in place, then "Removed" for 1.5 s, then a 160 ms collapse.
 - **Accessibility:** the list is a `role="grid"` with roving tabindex.
   - ↑/↓ move between rows, Enter opens the detail, `.` opens the ⋯ menu, typeahead jumps by name.
@@ -432,7 +432,7 @@ All components live in `lib/ui` or `lib/kith`. All strings come from `copy.ts`.
   - Number cells are `aria-live=off`.
 
 **Spark:**
-- Size 120×24 on desktop; on mobile it fills the row width.
+- Size 120×24 on desktop; on mobile 64×24 at the end of line 2, the same width on every row so the time scales compare.
 - One shared canvas painter per list, redrawn in the tick's rAF.
 - Draws the rx area at 12% `--ink-1` with a 1.25 px `--ink-1` line. tx is not drawn; it appears as text in Rate.
 - Own y-scale per row. Rescale only when the new max is above 1.25× or below 0.5× the current scale, easing over 300 ms.

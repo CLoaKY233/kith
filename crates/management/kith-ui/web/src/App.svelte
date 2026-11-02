@@ -7,12 +7,12 @@ title and the live regions. Screens receive the network id as `net`.
 -->
 <script lang="ts">
   import { Tooltip } from 'bits-ui';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { fade } from 'svelte/transition';
   import { connection } from './frame/conn.svelte';
   import Frame from './frame/Frame.svelte';
   import { layers } from './frame/layers.svelte';
-  import { deviceName, membership, networkName } from './frame/net';
+  import { isAdmin, membership, networkName } from './frame/net';
   import { section, title } from './frame/nav';
   import NeedSheet from './frame/NeedSheet.svelte';
   import { needs } from './frame/needs.svelte';
@@ -130,6 +130,35 @@ title and the live regions. Screens receive the network id as `net`.
   const add = $derived(query.get('add'));
   const need = $derived(query.get('need'));
   const remove = $derived(query.get('remove'));
+  // `?remove=` names the device by name or id. The target is held once resolved, so the
+  // dialog stays mounted when someone else removes the device (§7.9 step 4).
+  let removing = $state<{ node: string; name: string } | null>(null);
+  $effect(() => {
+    const param = remove;
+    if (param === null || !net) {
+      removing = null;
+      return;
+    }
+    const me = membership(net);
+    const selfNode = live.status?.node ?? null;
+    let found: { node: string; name: string } | null = null;
+    if (selfNode !== null && me && (param === selfNode || param === me.name)) {
+      found = { node: selfNode, name: me.name };
+    } else {
+      const peer = Object.values(live.peers[net] ?? {}).find(
+        (p) => p.node === param || p.name === param,
+      );
+      if (peer) found = { node: peer.node, name: peer.name };
+    }
+    if (found === null) return;
+    // Members cannot remove other devices (§6.4, §7.10): the row offers `Ask an admin…`.
+    if (found.node !== selfNode && live.status && !isAdmin(net)) {
+      closeOverlay('remove');
+      return;
+    }
+    const held = untrack(() => removing);
+    if (held?.node !== found.node || held.name !== found.name) removing = found;
+  });
   const closeAdd = (open: boolean): void => {
     if (!open) closeOverlay('add');
   };
@@ -221,12 +250,12 @@ title and the live regions. Screens receive the network id as `net`.
           <Invite bind:open={() => add === 'invite', closeAdd} {net} />
           <NeedSheet {net} id={need} />
           <NeedSheet {net} id={null} list />
-          {#if remove}
+          {#if removing}
             <RemoveDevice
               bind:open={() => remove !== null, (open) => !open && closeOverlay('remove')}
               {net}
-              node={remove}
-              name={deviceName(net, remove)}
+              node={removing.node}
+              name={removing.name}
               network={networkName(net)}
             />
           {/if}

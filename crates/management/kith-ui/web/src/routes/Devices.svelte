@@ -8,7 +8,7 @@ Re-sort` when frozen by traffic), and `List | Map` on the right; admins also get
 With a device open (`/n/:net/devices/:dev`) the detail is a 440 px split panel from
 1280 px (the list stays interactive and ↑/↓ follow), an overlay drawer from 640 px, and a
 full page with a back arrow below that, whose Back restores the list's scroll. Esc closes it.
-`?remove=<dev>` opens the RemoveDevice dialog over either.
+`?remove=<dev>` opens the RemoveDevice dialog over either; App mounts it.
 Props:
   - net: string, the network as the URL names it.
   - query: URLSearchParams.
@@ -16,12 +16,21 @@ Props:
 -->
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
+  import { cubicOut } from 'svelte/easing';
   import { MediaQuery } from 'svelte/reactivity';
+  import { fly } from 'svelte/transition';
+  import { connection } from '../frame/conn.svelte';
   import { copy, DOT } from '../lib/copy';
   import { clock } from '../lib/format';
   import DeviceDetail from '../lib/kith/DeviceDetail.svelte';
   import DeviceList from '../lib/kith/DeviceList.svelte';
-  import { deviceSort, listScroll, openedFromList } from '../lib/kith/deviceState.svelte';
+  import {
+    deviceSort,
+    lastOpened,
+    listScroll,
+    openedFromList,
+    renameRequest,
+  } from '../lib/kith/deviceState.svelte';
   import {
     countDevices,
     deviceItems,
@@ -35,7 +44,8 @@ Props:
     type DeviceItem,
   } from '../lib/kith/devices';
   import { actions, live } from '../lib/live/store.svelte';
-  import { BANNER_DELAY_MS } from '../lib/live/timing';
+  import Icon from '../lib/icons/Icon.svelte';
+  import { MOTION } from '../lib/live/timing';
   import Map from '../lib/map/Map.svelte';
   import type { DevicesFilter, Range } from '../lib/types';
   import Button from '../lib/ui/Button.svelte';
@@ -43,11 +53,11 @@ Props:
   import Input from '../lib/ui/Input.svelte';
   import Segmented from '../lib/ui/Segmented.svelte';
   import { go, href, setQuery } from '../router';
-  import RemoveDevice from '../sheets/RemoveDevice.svelte';
 
   let { net, query, dev = null }: { net: string; query: URLSearchParams; dev?: string | null } =
     $props();
 
+  const reducedMotion = new MediaQuery('prefers-reduced-motion: reduce');
   const wide = new MediaQuery('min-width: 80rem');
   const narrow = new MediaQuery('(width < 40rem)');
   const mode = $derived(narrow.current ? 'page' : wide.current ? 'split' : 'drawer');
@@ -68,16 +78,8 @@ Props:
   const exitNodes = $derived(new Set((live.exits[netId] ?? []).map((e) => e.node)));
   const counts = $derived(countDevices(items, exitNodes));
 
-  // §8.5: stale values show after BANNER_DELAY_MS more.
-  let staleShown = $state(false);
-  $effect(() => {
-    if (live.conn !== 'stale' && live.conn !== 'daemon_down') {
-      staleShown = false;
-      return;
-    }
-    const timer = setTimeout(() => (staleShown = true), BANNER_DELAY_MS);
-    return () => clearTimeout(timer);
-  });
+  // §8.5: the frame's connection already waits its delay and covers ui_gone.
+  const staleShown = $derived(connection.stale);
 
   // Toolbar state, from the URL.
   const view = $derived(query.get('view') === 'map' ? 'map' : 'list');
@@ -154,6 +156,12 @@ Props:
       }
     }
   });
+  /** `?at=` from an Activity entry: the chart's cursor parks there (§6.5). */
+  const at = $derived.by(() => {
+    const raw = query.get('at');
+    const ms = raw === null ? NaN : Number(raw);
+    return Number.isFinite(ms) ? ms : null;
+  });
   const range: Range = $derived.by(() => {
     const r = query.get('range');
     return r === '1m' || r === '15m' ? r : '1h';
@@ -177,6 +185,7 @@ Props:
       listScroll.set(netId, window.scrollY);
       window.scrollTo(0, 0);
     }
+    lastOpened.set(netId, item.peer.name);
     openedFromList.value = true;
     go(`${deviceHref(item.peer.name)}${listSearch()}`, {
       replace: options.replace ?? dev !== null,
@@ -205,23 +214,41 @@ Props:
     }
   }
 
+  function rowOf(name: string): HTMLElement | null {
+    return document.querySelector<HTMLElement>(`[role='row'][data-name='${CSS.escape(name)}']`);
+  }
+
   onMount(() => {
     // The route changed from the list to a device, so this screen is new: keep the focus
-    // on the row that opened the split detail, as if the list had never moved.
-    if (dev !== null && mode === 'split' && openedFromList.value) {
+    // on the row that opened the split detail, as if the list had never moved. A rename
+    // from the row's menu keeps its field focused instead.
+    if (dev !== null && mode === 'split' && openedFromList.value && renameRequest.key === null) {
       const name = dev;
-      requestAnimationFrame(() =>
-        document
-          .querySelector<HTMLElement>(`[role='row'][data-name='${CSS.escape(name)}']`)
-          ?.focus({ preventScroll: true }),
-      );
+      requestAnimationFrame(() => rowOf(name)?.focus({ preventScroll: true }));
     }
     if (dev !== null || !netId) return;
+    // Back from the full-page detail: the list's scroll, then the row that opened it (§4.4).
     const y = listScroll.get(netId);
-    if (y === undefined) return;
+    const name = lastOpened.get(netId);
     listScroll.delete(netId);
-    requestAnimationFrame(() => window.scrollTo(0, y));
+    if (y === undefined && name === undefined) return;
+    void tick().then(() =>
+      requestAnimationFrame(() => {
+        if (y !== undefined) window.scrollTo(0, y);
+        if (name !== undefined && mode === 'page') rowOf(name)?.focus({ preventScroll: true });
+      }),
+    );
   });
+
+  /** The drawer slides both ways (§3.5); the split and the page do not move. */
+  function slide(node: Element, { drawer }: { drawer: boolean }) {
+    return fly(node, {
+      x: node.clientWidth || 440,
+      opacity: 1,
+      duration: drawer && !reducedMotion.current ? MOTION.sheet : 0,
+      easing: cubicOut,
+    });
+  }
 
   function editable(target: EventTarget | null): boolean {
     return (
@@ -251,12 +278,6 @@ Props:
       void close();
     }
   }
-
-  // ?remove=<dev>
-  const removing = $derived.by(() => {
-    const name = query.get('remove');
-    return name === null ? null : resolveDevice(items, name);
-  });
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -283,14 +304,14 @@ Props:
           />
         </div>
       {/if}
+      {#if admin}
+        <div class="add">
+          <Button disabled={connection.frozen} onclick={() => setQuery({ add: 'device' })}>
+            {copy.deviceView.addDeviceMobile}
+          </Button>
+        </div>
+      {/if}
       <div class="end">
-        {#if admin}
-          <span class="mobile-add">
-            <Button onclick={() => setQuery({ add: 'device' })}>
-              {copy.deviceView.addDeviceMobile}
-            </Button>
-          </span>
-        {/if}
         <Segmented
           value={view}
           label={copy.deviceView.viewLabel}
@@ -312,18 +333,27 @@ Props:
         <div class="sort">
           <DropdownMenu
             items={[
-              { label: copy.devices.sortName, onSelect: () => deviceSort.set(netId, { by: 'name' }) },
-              { label: copy.devices.sortTraffic, onSelect: freezeByTraffic },
+              {
+                choice: {
+                  value: sort.by,
+                  options: [
+                    { value: 'name', label: copy.devices.sortName },
+                    { value: 'traffic', label: copy.devices.sortTraffic },
+                  ],
+                  onChange: (next) =>
+                    next === 'name' ? deviceSort.set(netId, { by: 'name' }) : freezeByTraffic(),
+                },
+              },
             ]}
           >
             {#snippet trigger(props)}
               <Button variant="ghost" {...props}>
-                {sort.by === 'traffic'
-                  ? copy.devices.sortedAt(clock(sort.at))
-                  : copy.deviceView.sortBy(copy.devices.sortName)}<span
-                  class="caret"
-                  aria-hidden="true">{copy.deviceView.caret}</span
-                >
+                <span class="sort-label">
+                  {sort.by === 'traffic'
+                    ? copy.devices.sortedAt(clock(sort.at))
+                    : copy.deviceView.sortBy(copy.devices.sortName)}
+                  <span class="caret" aria-hidden="true"><Icon name="chevron-down" /></span>
+                </span>
               </Button>
             {/snippet}
           </DropdownMenu>
@@ -366,13 +396,18 @@ Props:
 
   {#if dev !== null}
     {#key selected?.peer.node ?? dev}
-      <aside class="detail {mode}" aria-label={copy.deviceView.detailLabel(selected?.peer.name ?? dev)}>
+      <aside
+        class="detail {mode}"
+        aria-label={copy.deviceView.detailLabel(selected?.peer.name ?? dev)}
+        transition:slide={{ drawer: mode === 'drawer' }}
+      >
         <DeviceDetail
           net={netId}
           node={selected?.peer.node ?? ''}
           name={dev}
           {mode}
           {range}
+          {at}
           stale={staleShown}
           autofocus={mode !== 'split'}
           onClose={() => void close()}
@@ -382,28 +417,15 @@ Props:
   {/if}
 </div>
 
-{#if removing}
-  <RemoveDevice
-    bind:open={
-      () => removing !== null,
-      (next) => {
-        if (!next) setQuery({ remove: null });
-      }
-    }
-    net={netId}
-    node={removing.peer.node}
-    name={removing.peer.name}
-    network={networkName}
-  />
-{/if}
 
 <style>
+  /* Left-aligned under the header's title, like every other screen (§4.2). */
   .screen {
     --sticky-top: var(--header);
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .list {
@@ -436,14 +458,7 @@ Props:
     grid-area: chips;
     min-width: 0;
   }
-  .chips :global(.track) {
-    flex-wrap: wrap;
-    height: auto;
-    min-height: var(--control);
-  }
-  .chips :global(.segment) {
-    min-height: calc(var(--control) - var(--s-1));
-  }
+  /* The chips stay one 32 px row; a narrow list scrolls them inside their own box. */
   .sort {
     grid-area: sort;
     display: flex;
@@ -454,11 +469,17 @@ Props:
   .sep {
     color: var(--ink-3);
   }
+  .sort-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+  }
   .caret {
-    margin-left: var(--s-1);
+    display: inline-flex;
     color: var(--ink-3);
   }
-  .mobile-add {
+  .add {
+    grid-area: add;
     display: none;
   }
   .empty {
@@ -485,10 +506,14 @@ Props:
   }
 
   /* ≥1280 px: a 440 px split panel; the list stays interactive. */
+  /* The panel sits flush against the window's edge; the list keeps its column. */
   .split {
-    max-width: calc(var(--content-max) + var(--detail));
+    max-width: none;
     grid-template-columns: minmax(0, 1fr) var(--detail);
     padding-right: 0;
+  }
+  .split .list {
+    max-width: calc(var(--content-max) - 2 * var(--content-pad));
   }
   .detail.split {
     position: sticky;
@@ -502,23 +527,17 @@ Props:
   }
 
   /* 640–1279 px: an overlay drawer from the right; the list behind it does not move. */
+  /* Below the header, so its actions stay reachable; some list always shows (§4.3). */
   .detail.drawer {
     position: fixed;
-    top: 0;
+    top: var(--header);
     right: 0;
     bottom: 0;
     z-index: var(--z-drawer);
-    width: var(--detail);
-    max-width: 100vw;
+    width: min(var(--detail), calc(100vw - var(--rail) - var(--s-8)));
     overflow-y: auto;
     border-left: var(--hairline) solid var(--line);
     box-shadow: var(--shadow-pop);
-    animation: drawer-in var(--d-sheet) var(--e-sheet);
-  }
-  @keyframes drawer-in {
-    from {
-      transform: translateX(100%);
-    }
   }
 
   /* <640 px: the detail is a full page with a back arrow. */
@@ -538,15 +557,15 @@ Props:
     .toolbar {
       grid-template-columns: minmax(0, 1fr) auto;
       grid-template-areas:
-        'search search'
+        'search add'
         'chips chips'
         'sort end';
     }
     .search {
       max-width: none;
     }
-    .mobile-add {
-      display: inline-flex;
+    .add {
+      display: flex;
     }
     .end {
       justify-self: end;

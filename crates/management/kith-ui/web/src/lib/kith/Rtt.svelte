@@ -8,11 +8,14 @@ Props:
   - stale?: boolean, shows `—` (§8.5).
 -->
 <script lang="ts">
-  import { rtt } from '../format';
+  import { rttParts } from '../format';
   import { live } from '../live/store.svelte';
   import { RTT_TINT_FACTOR, RTT_TINT_TICKS } from '../live/timing';
 
   let { ms, stale = false }: { ms: number | null; stale?: boolean } = $props();
+
+  /** §3.3: the unit after a thin space in ink-3, so the number reads first. */
+  const parts = $derived(rttParts(stale ? null : ms));
 
   let baseline: number | null = null;
   let over = 0;
@@ -48,7 +51,9 @@ Props:
 </script>
 
 {#key tints}
-  <span class="rtt" class:tinted={tints > 0} aria-live="off">{rtt(stale ? null : ms)}</span>
+  <span class="rtt" class:tinted={tints > 0} aria-live="off"
+    >{parts.value}{#if parts.unit}&thinsp;<span class="unit">{parts.unit}</span>{/if}</span
+  >
 {/key}
 
 <style>
@@ -58,6 +63,9 @@ Props:
     text-align: right;
     white-space: nowrap;
     border-radius: var(--r-1);
+  }
+  .unit {
+    color: var(--ink-3);
   }
   .tinted {
     animation: rtt-tint var(--d-tint) var(--e-linear);

@@ -13,7 +13,8 @@ Props:
   - endpoint?: string | null, the WireGuard endpoint, for the card.
   - mtu?: number | null, the path MTU when smaller than the tunnel's, for the card.
   - reason?: string | null, the daemon's `path_reason`, for the card.
-  - focusable?: boolean (default true). Rows of a grid pass false: the row holds focus.
+  - focusable?: boolean (default true). Rows of a grid pass false: the row holds focus,
+    and the badge is plain text with no button role.
 -->
 <script lang="ts">
   import { LinkPreview } from 'bits-ui';
@@ -23,6 +24,7 @@ Props:
   import type { IconName } from '../icons/names';
   import { HOVERCARD_DELAY_MS, PATH_HYSTERESIS_MS } from '../live/timing';
   import type { PathKind } from '../types.gen';
+  import '../ui/overlay.css';
   import { pathText, sentence } from './devices';
 
   let {
@@ -66,7 +68,11 @@ Props:
 
   const coarse =
     typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
-  const hasCard = $derived(!coarse && (endpoint !== null || mtu !== null || reason !== null));
+  /** The daemon sends `relay` as a placeholder; only a real host:port is mono. */
+  const address = $derived(endpoint !== null && /[:.]\d/.test(endpoint) ? endpoint : null);
+  const hasCard = $derived(
+    !coarse && focusable && (address !== null || mtu !== null || reason !== null),
+  );
 </script>
 
 {#snippet content(path: PathKind)}
@@ -79,15 +85,21 @@ Props:
   <LinkPreview.Root openDelay={HOVERCARD_DELAY_MS}>
     <LinkPreview.Trigger>
       {#snippet child({ props })}
-        <span class="badge" {...props} role="button" tabindex={focusable ? 0 : -1}>
+        <span class="badge" {...props} role="button" tabindex="0">
           {@render content(shown.path ?? 'direct')}
         </span>
       {/snippet}
     </LinkPreview.Trigger>
     <LinkPreview.Portal>
-      <LinkPreview.Content class="kith-pop path-card" side="bottom" align="start" sideOffset={8}>
+      <LinkPreview.Content
+        class="kith-float kith-pop path-card"
+        side="bottom"
+        align="start"
+        sideOffset={8}
+      >
         <div class="facts">
-          {#if endpoint}<p class="mono">{endpoint}</p>{/if}
+          {#if address}<p class="mono">{address}</p>
+          {:else if shown.relay && shown.path !== 'direct'}<p>{pathText(shown.path ?? 'relay', shown.relay)}</p>{/if}
           {#if mtu !== null}<p>{copy.path.mtu(mtu)}</p>{/if}
           {#if reason}<p class="reason">{sentence(reason)}</p>{/if}
         </div>
@@ -95,7 +107,7 @@ Props:
     </LinkPreview.Portal>
   </LinkPreview.Root>
 {:else if shown.path}
-  <span class="badge">{@render content(shown.path)}</span>
+  <span class="badge" title={reason ? sentence(reason) : undefined}>{@render content(shown.path)}</span>
 {/if}
 
 <style>
@@ -132,14 +144,6 @@ Props:
     background: var(--surface);
     color: var(--ink-1);
     box-shadow: var(--shadow-pop);
-  }
-  :global(.path-card[data-state='open']) {
-    animation: path-card-in var(--d-pop-in) var(--e-pop);
-  }
-  @keyframes -global-path-card-in {
-    from {
-      opacity: 0;
-    }
   }
   .facts {
     display: grid;

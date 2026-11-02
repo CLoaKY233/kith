@@ -19,13 +19,20 @@ Props:
   - mode?: 'split' | 'drawer' | 'page' (default 'split'): `page` shows a back arrow,
     the others a close button.
   - range?: Range (default '1h'), from `?range=`.
+  - at?: number | null, server ms from `?at=`: the chart's cursor parks there (§6.5).
   - stale?: boolean, values are last known (§8.5).
   - autofocus?: boolean, focus the name when mounted (drawer and page).
   - onClose?: () => void.
 -->
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
+  import { MediaQuery } from 'svelte/reactivity';
+  import { connection } from '../../frame/conn.svelte';
   import { go, href, setQuery } from '../../router';
+  import { fullySeen } from '../../sheets/act';
+  import AllowBlocked from '../../sheets/AllowBlocked.svelte';
+  import { removalLine, removalOf } from '../../sheets/RemoveDevice.svelte';
+  import { announce } from '../announce';
   import Series from '../charts/Series.svelte';
   import { copy } from '../copy';
   import { bytes, rtt as formatRtt } from '../format';
@@ -44,12 +51,13 @@ Props:
   import Button from '../ui/Button.svelte';
   import DropdownMenu, { type MenuItem } from '../ui/DropdownMenu.svelte';
   import IconButton from '../ui/IconButton.svelte';
+  import Field from '../ui/Field.svelte';
   import Input from '../ui/Input.svelte';
   import Segmented from '../ui/Segmented.svelte';
   import StatusDot from '../ui/StatusDot.svelte';
   import { toast } from '../ui/Toast.svelte';
   import AskAdminSheet from './AskAdminSheet.svelte';
-  import { renameRequest, snapshotSeenAt } from './deviceState.svelte';
+  import { askRequest as rowAsk, renameRequest, snapshotSeenAt } from './deviceState.svelte';
   import {
     agoMs,
     blockedTo,
@@ -79,6 +87,7 @@ Props:
     name = '',
     mode = 'split',
     range = '1h',
+    at = null,
     stale,
     autofocus = false,
     onClose,
@@ -88,11 +97,13 @@ Props:
     name?: string;
     mode?: 'split' | 'drawer' | 'page';
     range?: Range;
+    at?: number | null;
     stale?: boolean;
     autofocus?: boolean;
     onClose?: () => void;
   } = $props();
 
+  const reducedMotion = new MediaQuery('prefers-reduced-motion: reduce');
   const HISTORY_LIMIT = 10;
   const titleId = $props.id();
 
@@ -112,9 +123,37 @@ Props:
     isSelf ? selfPeer(live.status, membership) : (live.peers[net]?.[node] ?? null),
   );
   const key = $derived(`${net}/${node}`);
-  const isStale = $derived(stale ?? (live.conn === 'stale' || live.conn === 'daemon_down'));
+  const isStale = $derived(stale ?? connection.stale);
   const numbers = $derived(live.numbers[key] ?? null);
   const relay = $derived(relayName(live.peers[net], numbers?.relay ?? null));
+  /** The device it connects through (a phone's gateway), with this device in words. */
+  const gatewayName = $derived(
+    peer?.gateway == null
+      ? null
+      : peer.gateway === membership?.name
+        ? copy.device.thisDevice
+        : peer.gateway,
+  );
+  /** Whether the URL's name was ever in this network, for `no longer` versus `no device`. */
+  const seenBefore = $derived(
+    live.journal.some(
+      (e) =>
+        (e.kind === 'device_removed' || e.kind === 'device_joined') &&
+        e.network === net &&
+        e.name === name,
+    ),
+  );
+  /** The daemon's reason with this device in words: `Connects through this device.` */
+  function pathReason(text: string): string {
+    const me = membership?.name;
+    if (!me) return text;
+    // Device names are lowercase letters, digits and hyphens: nothing to escape.
+    return text.replace(new RegExp(`\\b${me}\\b`, 'g'), copy.device.thisDevice);
+  }
+  /** This device in words when it is the one reporting or relaying (§12.1, §12.2). */
+  function who(name: string): string {
+    return name === membership?.name ? copy.device.thisDevice : name;
+  }
   const seenAt = $derived(
     peer ? lastSeenAt(live.journal, net, peer, snapshotSeenAt(key, peer.last_seen_secs, now)) : null,
   );
@@ -126,11 +165,12 @@ Props:
       : null,
   );
   const online = $derived(presence?.kind === 'online');
-  const changed = $derived(live.changed.has(key));
+  /** The tint's stamp: a second change inside 4 s restarts the fade (§8.4). */
+  const stamp = $derived(live.changed.get(key) ?? null);
   const exitName = $derived(peer ? `${networkName}/${peer.name}` : '');
 
   // §12.4 verdict.
-  const blocked = $derived(blockedTo(live.pending.blocked, net, selfNode, node));
+  const blocked = $derived(blockedTo(live.pending.blocked, net, node));
   const verdict = $derived.by(() => {
     if (!peer || isSelf) return null;
     const seenAgoMs = !peer.online
@@ -143,7 +183,14 @@ Props:
           (numbers?.rx ?? 0) > 0
           ? 0
           : peer.last_seen_secs * 1000;
-    return verdictOf({ peer, relay, rttMs: numbers?.rttMs ?? null, seenAgoMs, blocked });
+    return verdictOf({
+      peer,
+      relay,
+      gateway: gatewayName,
+      rttMs: numbers?.rttMs ?? null,
+      seenAgoMs,
+      blocked,
+    });
   });
   let whyOpen = $state(false);
 
@@ -156,7 +203,7 @@ Props:
   );
   const reporter: { link: LinkTick; who: string } | null = $derived.by(() => {
     if (reverseLink && peer) return { link: reverseLink, who: peer.name };
-    if (ownLink && membership) return { link: ownLink, who: membership.name };
+    if (ownLink && membership) return { link: ownLink, who: copy.device.thisDevice };
     return null;
   });
   const selfLabel = $derived(
@@ -182,12 +229,35 @@ Props:
     return [{ label: peer.name, style: 'direct' }];
   });
   const rttMs = $derived(online ? (numbers?.rttMs ?? null) : null);
+  /** The daemon sends `relay` as a placeholder; only a real host:port shows, in mono. */
+  const endpoint = $derived.by(() => {
+    if (peer?.endpoint && /:\d+$/.test(peer.endpoint)) return { via: null, at: peer.endpoint };
+    const relayNode = numbers?.relay ?? null;
+    const relayed = relayNode ? (live.peers[net]?.[relayNode]?.endpoint ?? null) : null;
+    if (relay && relayed && /:\d+$/.test(relayed)) return { via: relay, at: relayed };
+    return null;
+  });
+  /** §6.4 header: kind and OS as text, when known. Peers carry neither yet. */
+  const osText = $derived(isSelf ? (live.status?.host.os ?? null) : null);
+  /** A removal in flight, in words (§7.9 step 2). */
+  const removal = $derived(removalOf(net, node));
 
   // §6.4 Traffic.
   const ranges: readonly Range[] = ['1m', '15m', '1h'];
   const totals = $derived.by(() => {
     void live.trafficVersion;
     return windowTotals(live.traffic.get(key), RANGE_MS[range], live.lastTickMs || now);
+  });
+  /** Whether the window holds any samples: an empty one reads as one line, not a chart. */
+  const sampled = $derived.by(() => {
+    void live.trafficVersion;
+    const columns = live.traffic.get(key);
+    if (!columns) return false;
+    const from = (live.lastTickMs || now) - RANGE_MS[range];
+    for (let i = 0; i < columns.length; i += 1) {
+      if ((columns.at[i] ?? 0) > from) return true;
+    }
+    return false;
   });
   const events = $derived(eventsOf(live.journal, net, node, exitName));
 
@@ -270,10 +340,17 @@ Props:
   let heading: HTMLElement | null = $state(null);
   let spacesTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const renameProgress = $derived(progressText(renameShown));
+  const renameProgress = $derived(
+    renameShown && !fullySeen(renameShown) ? progressText(renameShown) : null,
+  );
+  const renaming = $derived(rename?.state === 'pending' || rename?.state === 'awaiting_os_auth');
+  /** Where the edit started (the pencil, the Actions button, the heading), for Esc. */
+  let editOrigin: HTMLElement | null = null;
 
   async function startEdit(): Promise<void> {
     if (!peer || !admin || isStale) return;
+    const active = document.activeElement;
+    editOrigin = active instanceof HTMLElement && active !== document.body ? active : null;
     editing = true;
     draft = peer.name;
     editFrom = peer.name;
@@ -283,7 +360,13 @@ Props:
     conflictFrom = null;
     basedOn = null;
     await tick();
+    nameInput?.focus();
     nameInput?.select();
+    // The Actions button sits below the fold; the field is in the header (§7.11).
+    nameInput?.scrollIntoView({
+      block: 'nearest',
+      behavior: reducedMotion.current ? 'auto' : 'smooth',
+    });
   }
 
   function stopEdit(): void {
@@ -291,13 +374,27 @@ Props:
     nameError = null;
     suggestion = null;
     conflictFrom = null;
-    void tick().then(() => heading?.focus());
+    const origin = editOrigin;
+    editOrigin = null;
+    void tick().then(() => {
+      if (origin?.isConnected) origin.focus();
+      else (pencilButton ?? heading)?.focus();
+    });
   }
+
+  let pencilButton: HTMLButtonElement | null = $state(null);
 
   $effect(() => {
     if (renameRequest.key !== key || !peer) return;
-    renameRequest.key = null;
-    untrack(() => void startEdit());
+    // After the screen's own focus move, so the new field keeps the focus.
+    untrack(() =>
+      void tick().then(() =>
+        requestAnimationFrame(() => {
+          renameRequest.key = null;
+          void startEdit();
+        }),
+      ),
+    );
   });
 
   function input(event: Event & { currentTarget: HTMLInputElement }): void {
@@ -354,12 +451,15 @@ Props:
   }
 
   async function save(): Promise<void> {
-    if (!peer) return;
+    if (!peer || renaming || isStale) return;
     if (draft === peer.name && conflictFrom === null) {
       stopEdit();
       return;
     }
-    if (!(await check())) return;
+    if (!(await check())) {
+      if (nameError) announce(nameError);
+      return;
+    }
     const from = peer.name;
     const to = draft;
     const handle = actions.renameDevice(net, node, to, basedOn);
@@ -374,6 +474,7 @@ Props:
     }
     if (handle.state === 'failed') {
       nameError = failureText(handle.error);
+      announce(nameError);
       return;
     }
     rename = null;
@@ -396,11 +497,9 @@ Props:
     }
   }
 
+  /** §7.11: Enter saves and Esc reverts; leaving the field only checks it. */
   function blurName(): void {
-    if (peer && draft === peer.name && conflictFrom === null) {
-      stopEdit();
-      return;
-    }
+    if (peer && draft === peer.name) return;
     void check();
   }
 
@@ -447,18 +546,33 @@ Props:
 
   // §7.10 Ask an admin.
   let askRequest = $state<string | null>(null);
+  let askOpen = $state(false);
+  function askAdmin(request: string): void {
+    askRequest = request;
+    askOpen = true;
+  }
+  // A member's ask from the row's ⋯ menu opens here.
+  $effect(() => {
+    if (rowAsk.key !== key || rowAsk.request === null) return;
+    const request = rowAsk.request;
+    rowAsk.key = null;
+    rowAsk.request = null;
+    untrack(() => askAdmin(request));
+  });
+  let allowBlockedOpen = $state(false);
+  const portText = $derived(blocked?.port === null || !blocked ? '' : String(blocked.port));
   const askItems: MenuItem[] = $derived.by(() => {
     if (!peer) return [];
     const items: MenuItem[] = [
       {
         label: copy.deviceView.askRemove(peer.name, networkName),
-        onSelect: () => (askRequest = copy.askAdmin.request.remove(networkName, peer.name)),
+        onSelect: () => askAdmin(copy.deviceView.removeCommand(networkName, peer.name)),
       },
     ];
     if (!exitView && !isPhone(peer)) {
       items.push({
         label: copy.deviceView.askAllowExit(peer.name),
-        onSelect: () => (askRequest = copy.askAdmin.request.exitAllow(networkName, peer.name)),
+        onSelect: () => askAdmin(copy.deviceView.allowExitCommand(networkName, peer.name)),
       });
     }
     return items;
@@ -468,21 +582,22 @@ Props:
     if (!verdict?.action || !peer) return;
     if (verdict.action === 'remove') {
       if (admin) setQuery({ remove: peer.name });
-      else askRequest = copy.askAdmin.request.remove(networkName, peer.name);
+      else askAdmin(copy.deviceView.removeCommand(networkName, peer.name));
       return;
     }
     if (!blocked) return;
     if (admin) {
-      setQuery({ need: blocked.id });
+      // Straight to the rule preview, never a sheet from a sheet (§5, §12.4).
+      allowBlockedOpen = true;
       return;
     }
-    askRequest = copy.askAdmin.request.allow(
+    askAdmin(copy.deviceView.allowCommand(
       networkName,
       blocked.from_name,
       blocked.to_name,
       blocked.protocol,
-      blocked.port,
-    );
+      portText,
+    ));
   }
 
   const verdictActionLabel = $derived.by(() => {
@@ -528,34 +643,55 @@ Props:
   </button>
 {/snippet}
 
+{#snippet back()}
+  <IconButton icon="arrow-left" label={copy.nav.back} onclick={() => onClose?.()} />
+{/snippet}
+
 <article class="detail" aria-labelledby={titleId}>
-  <div class="bar" class:corner={mode !== 'page'}>
-    {#if mode === 'page'}
-      <IconButton icon="arrow-left" label={copy.nav.back} onclick={() => onClose?.()} />
-    {:else}
+  {#if mode !== 'page'}
+    <div class="bar corner">
       <IconButton icon="x" label={copy.detail.close} onclick={() => onClose?.()} />
-    {/if}
-  </div>
+    </div>
+  {/if}
 
   {#if !peer || !presence}
-    <p class="gone" id={titleId}>{copy.error.notFound(name)}</p>
+    <div class="title-row">
+      {#if mode === 'page'}{@render back()}{/if}
+      <p class="gone" id={titleId}>
+        {seenBefore ? copy.error.notFound(name) : copy.error.noDevice(name, networkName)}
+      </p>
+    </div>
   {:else}
-    <header class="head" class:changed>
+    <header class="head">
+      {#key stamp}
+        {#if stamp !== null}<span class="tint" aria-hidden="true"></span>{/if}
+      {/key}
       {#if editing}
         <h2 class="sr-only" id={titleId}>{peer.display_name}</h2>
         <div class="rename">
-          <Input
-            bind:ref={nameInput}
-            kind="name"
-            value={draft}
-            aria-label={copy.deviceView.nameLabel}
-            aria-invalid={nameError ? 'true' : undefined}
-            aria-describedby={`${titleId}-dns ${nameError ? `${titleId}-err` : ''}`.trim()}
-            oninput={input}
-            onkeydown={keydownName}
-            onblur={blurName}
-          />
-          <p class="helper" id={`${titleId}-dns`}>{fqdn(draft || peer.name, networkName)}</p>
+          <Field label={copy.deviceView.nameLabel}>
+            {#snippet children(control)}
+              <Input
+                {...control}
+                bind:ref={nameInput}
+                kind="name"
+                value={draft}
+                readonly={renaming}
+                aria-invalid={nameError ? 'true' : undefined}
+                aria-describedby={`${titleId}-dns ${nameError ? `${titleId}-err` : ''}`.trim()}
+                oninput={input}
+                onkeydown={keydownName}
+                onblur={blurName}
+              />
+            {/snippet}
+          </Field>
+          {#if nameError === null}
+            <p class="helper" id={`${titleId}-dns`}>
+              {copy.rename.preview(draft || peer.name, networkName)}
+            </p>
+          {/if}
+          {#if renaming}<p class="helper" role="status">{copy.action.signing}</p>{/if}
+          {#if isStale}<p class="helper">{copy.conn.staleActions}</p>{/if}
           {#if spacesHint}<p class="helper">{copy.createNetwork.spaces}</p>{/if}
           {#if names.length > 0}
             <p class="helper">{copy.rename.follow(names.length, peer.name)}</p>
@@ -587,14 +723,17 @@ Props:
                 )}
               </p>
               <div class="band-actions">
-                <Button onclick={stopEdit}>{copy.rename.useTheirs}</Button>
-                <Button onclick={() => void save()}>{copy.rename.keepMine}</Button>
+                <Button disabled={renaming} onclick={stopEdit}>{copy.rename.useTheirs}</Button>
+                <Button pending={renaming} disabled={isStale} onclick={() => void save()}>
+                  {copy.rename.keepMine}
+                </Button>
               </div>
             </div>
           {/if}
         </div>
       {:else}
         <div class="title-row">
+          {#if mode === 'page'}{@render back()}{/if}
           {#if admin && !isStale}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
             <h2
@@ -607,7 +746,12 @@ Props:
               {peer.display_name}
             </h2>
             <span class="pencil">
-              <IconButton icon="pencil" label={copy.detail.editName} onclick={() => void startEdit()} />
+              <IconButton
+                bind:ref={pencilButton}
+                icon="pencil"
+                label={copy.palette.rename(peer.name)}
+                onclick={() => void startEdit()}
+              />
             </span>
           {:else}
             <h2 class="t-title name" id={titleId} tabindex="-1" bind:this={heading}>
@@ -617,7 +761,9 @@ Props:
           {#if isSelf}<Badge>{copy.device.you}</Badge>{/if}
         </div>
       {/if}
+      {#if osText}<p class="meta">{osText}</p>{/if}
       {#if renameProgress && !editing}<p class="progress" role="status">{renameProgress}</p>{/if}
+      {#if removal}<p class="progress" role="status">{removalLine(removal)}</p>{/if}
       <p class="status">
         <StatusDot
           state={presence.kind === 'waiting'
@@ -631,8 +777,8 @@ Props:
         <span>{online ? (isStale ? copy.status.stale : copy.status.online) : copy.status.offline}</span>
         {#if online && !isSelf}
           <PathBadge
-            path={peer.path}
-            {relay}
+            path={gatewayName !== null ? 'relay' : peer.path}
+            relay={gatewayName ?? relay}
             flapping={isFlapping(live.journal, net, node, now)}
             endpoint={peer.endpoint}
             mtu={peer.path_mtu}
@@ -653,18 +799,19 @@ Props:
     </header>
 
     {#if verdict}
-      <div class="verdict">
+      <div class="verdict" class:attention={verdict.attention}>
         <p class="t-heading verdict-text">{verdict.text}</p>
         {#if verdict.reason}
           <button
             type="button"
             class="link"
             aria-expanded={whyOpen}
+            aria-controls={`${titleId}-why`}
             onclick={() => (whyOpen = !whyOpen)}
           >
             {copy.path.learnWhy}
           </button>
-          {#if whyOpen}<p class="reason">{verdict.reason}</p>{/if}
+          <p class="reason" id={`${titleId}-why`} hidden={!whyOpen}>{verdict.reason}</p>
         {/if}
         {#if verdictActionLabel}
           <div>
@@ -685,6 +832,7 @@ Props:
         <h3 class="t-heading">{copy.detail.path}</h3>
         <div
           class="diagram"
+          class:with-rtt={rttMs !== null}
           role="img"
           aria-label={copy.deviceView.pathLabel(
             [selfLabel, ...hops.map((h) => h.label)],
@@ -693,23 +841,29 @@ Props:
         >
           <span class="node"><span class="pin"></span>{selfLabel}</span>
           {#each hops as hop, i (i)}
-            <span class="edge {hop.style}"></span>
-            <span class="node"><span class="pin"></span>{hop.label}</span>
+            <!-- The end-to-end latency sits on the first edge, where the path starts. -->
+            <span class="edge {hop.style}">
+              {#if i === 0 && rttMs !== null}
+                <span class="edge-rtt">{formatRtt(isStale ? null : rttMs)}</span>
+              {/if}
+            </span>
+            <span class="node"><span class="pin"></span>{who(hop.label)}</span>
           {/each}
-          {#if rttMs !== null}
-            <span class="edge-rtt">{formatRtt(isStale ? null : rttMs)}</span>
-          {/if}
         </div>
-        {#if peer.endpoint || peer.path_mtu !== null}
+        {#if endpoint || peer.path_mtu !== null}
           <p class="path-facts">
-            {#if peer.endpoint}
+            {#if endpoint}
               <span class="label">{copy.deviceView.endpoint}</span>
-              <code>{peer.endpoint}</code>
+              {#if endpoint.via}<span>{endpoint.via}</span>{/if}
+              <code>{endpoint.at}</code>
             {/if}
             {#if peer.path_mtu !== null}<span>{copy.path.mtu(peer.path_mtu)}</span>{/if}
           </p>
         {/if}
-        {#if peer.path_reason}<p class="reason">{sentence(peer.path_reason)}</p>{/if}
+        <!-- `Learn why` already says it for a relayed path. -->
+        {#if peer.path_reason && !verdict?.reason}
+          <p class="reason">{sentence(pathReason(peer.path_reason))}</p>
+        {/if}
         {#if reporter}
           <p class="meta">
             {copy.path.reportedBy(reporter.who, agoMs(reporter.link.age_secs * 1000))}
@@ -725,12 +879,21 @@ Props:
           <Segmented
             value={range}
             label={copy.chart.rangeLabel}
-            options={ranges.map((r) => ({ value: r, label: copy.chart.ranges[r] }))}
+            options={ranges.map((r) => ({
+              value: r,
+              label: copy.chart.ranges[r],
+              ariaLabel: copy.chart.rangeNames[r],
+            }))}
             onValueChange={(next) => setQuery({ range: next === '1h' ? null : next, at: null }, { replace: true })}
           />
         </div>
-        <Series peer={key} {range} {events} />
-        <p class="meta">{copy.deviceView.totals[range](bytes(totals.rx), bytes(totals.tx))}</p>
+        {#if !sampled && !online}
+          <p class="meta">{copy.deviceView.noTraffic[range]}</p>
+        {:else}
+          <!-- The totals sit by the chart, above its `Show data` table. -->
+          <p class="meta">{copy.deviceView.totals[range](bytes(totals.rx), bytes(totals.tx))}</p>
+          <Series peer={key} {range} {events} {at} />
+        {/if}
       </section>
     {/if}
 
@@ -831,7 +994,10 @@ Props:
 <span class="sr-only" aria-live="polite">{copiedKey ? copy.copyField.copied : ''}</span>
 
 {#if askRequest !== null}
-  <AskAdminSheet {net} request={askRequest} />
+  <AskAdminSheet {net} request={askRequest} bind:open={askOpen} />
+{/if}
+{#if admin && blocked}
+  <AllowBlocked bind:open={allowBlockedOpen} id={blocked.id} />
 {/if}
 
 <style>
@@ -844,32 +1010,39 @@ Props:
   .detail {
     position: relative;
   }
-  .bar {
-    display: flex;
-  }
   .bar.corner {
     position: absolute;
     top: var(--s-4);
     right: var(--s-4);
+    z-index: 1;
   }
-  .bar.corner + .head .title-row,
-  .bar.corner + .gone {
-    padding-right: calc(var(--control) + var(--s-2));
+  /* The header's rows, the rename field included, stop short of the close button. */
+  .bar.corner ~ .head .title-row,
+  .bar.corner ~ .head .rename,
+  .bar.corner ~ .title-row {
+    padding-right: var(--s-7);
   }
   .gone {
     color: var(--ink-2);
   }
   .head {
+    position: relative;
     display: grid;
     gap: var(--s-2);
     border-radius: var(--r-2);
   }
-  .head.changed {
+  .tint {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: var(--changed);
+    opacity: 0;
     animation: detail-tint var(--d-tint) var(--e-linear);
   }
   @keyframes detail-tint {
     from {
-      background: var(--changed);
+      opacity: 1;
     }
   }
   .title-row {
@@ -983,11 +1156,29 @@ Props:
   .verdict-text {
     max-width: var(--measure);
   }
+  /* A fault the person can act on carries the Needs-you treatment, like its row. */
+  .verdict.attention {
+    position: relative;
+    padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4);
+    border-radius: var(--r-2);
+    background: var(--attn-wash);
+  }
+  .verdict.attention::before {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: var(--lead-bar);
+    background: var(--attn);
+  }
   .reason {
     max-width: var(--measure);
     color: var(--ink-2);
   }
   .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--s-5);
     justify-self: start;
     color: var(--ink-1);
     text-decoration: underline;
@@ -998,6 +1189,11 @@ Props:
   }
   .link:hover {
     text-decoration-color: currentColor;
+  }
+  @media (pointer: coarse) {
+    .link {
+      min-height: var(--target-touch);
+    }
   }
   .section {
     display: grid;
@@ -1019,6 +1215,8 @@ Props:
     position: relative;
     display: flex;
     align-items: flex-start;
+  }
+  .diagram.with-rtt {
     padding-top: var(--s-5);
   }
   .node {
@@ -1053,9 +1251,9 @@ Props:
   }
   .edge-rtt {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
+    bottom: calc(100% + var(--s-1));
+    left: 50%;
+    translate: -50% 0;
     text-align: center;
     font: var(--t-small);
     color: var(--ink-1);
@@ -1092,7 +1290,7 @@ Props:
   .danger-row {
     margin-top: var(--s-5);
   }
-  @media (width < 40rem) {
+  @media (max-width: 40rem) {
     .detail {
       padding-inline: var(--gutter-mobile);
     }
