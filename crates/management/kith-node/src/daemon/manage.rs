@@ -58,6 +58,13 @@ impl Daemon {
             Action::RevokeInvite { network, invite } => self.revoke_invite(network, &invite).await,
             Action::GetPolicy { network } => self.policy_info(network),
             Action::ListRelays { network } => self.list_relays(network),
+            Action::ListExits { network } => Ok(Response::Exits(
+                self.member_map(network)?
+                    .exit_nodes()
+                    .iter()
+                    .copied()
+                    .collect(),
+            )),
             _ => Err(NodeError::InvalidArgument(
                 "not a management action".to_owned(),
             )),

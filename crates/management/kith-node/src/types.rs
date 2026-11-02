@@ -318,6 +318,11 @@ pub(crate) enum Action {
         /// The network.
         network: NetworkId,
     },
+    /// List the devices allowed to be exit nodes.
+    ListExits {
+        /// The network.
+        network: NetworkId,
+    },
 }
 
 /// What the control channel's handler reported to the loop.

@@ -785,7 +785,8 @@ impl Daemon {
             | Action::ListInvites { .. }
             | Action::RevokeInvite { .. }
             | Action::GetPolicy { .. }
-            | Action::ListRelays { .. }) => self.manage(action).await,
+            | Action::ListRelays { .. }
+            | Action::ListExits { .. }) => self.manage(action).await,
         }
     }
 

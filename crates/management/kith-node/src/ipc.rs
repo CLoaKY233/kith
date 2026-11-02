@@ -290,6 +290,7 @@ fn admission_action(request: Request) -> Result<Action, NodeError> {
         },
         Request::GetPolicy { network } => Action::GetPolicy { network },
         Request::ListRelays { network } => Action::ListRelays { network },
+        Request::ListExits { network } => Action::ListExits { network },
         _ => return Err(NodeError::InvalidArgument("unsupported request".to_owned())),
     })
 }
@@ -442,6 +443,7 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::ListInvites { .. }
             | Request::GetPolicy { .. }
             | Request::ListRelays { .. }
+            | Request::ListExits { .. }
     )
 }
 

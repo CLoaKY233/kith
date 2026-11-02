@@ -1,5 +1,5 @@
 //! The only daemon client: every read and change the page makes goes through here, to the
-//! daemon's socket or, under `--fixture`, to a recorded network.
+//! daemon's socket or, under `--fixture`, to the simulator.
 //!
 //! One follower per server keeps [`Live`] current: it subscribes to the daemon's journal,
 //! reads a tick every 2 s, and notices when the daemon stops or restarts. Handlers ask the
@@ -18,8 +18,9 @@ use tokio::time::MissedTickBehavior;
 
 use crate::Source as Config;
 use crate::api::ApiError;
+use crate::sim::Sim;
 use crate::stream::Live;
-use crate::wire::{ApiErrorCode, Boot, Fixture, LinkTick, Tick, TrafficTick};
+use crate::wire::{ApiErrorCode, Boot, LinkTick, Tick, TrafficTick};
 use crate::{Shared, api, fixture, json, now_ms};
 
 /// How often numbers are read.
@@ -44,14 +45,14 @@ pub(crate) struct Daemon {
 #[derive(Debug)]
 pub(crate) enum Source {
     Daemon(Daemon),
-    Fixture(Box<Fixture>),
+    Fixture(Box<Sim>),
 }
 
 impl Source {
     pub(crate) fn new(config: Config) -> Self {
         match config {
             Config::Daemon(socket) => Self::Daemon(Daemon { socket }),
-            Config::Fixture(fixture) => Self::Fixture(fixture),
+            Config::Fixture(fixture) => Self::Fixture(Box::new(Sim::new(*fixture))),
         }
     }
 }
@@ -106,7 +107,7 @@ pub(crate) fn follow(source: &Source, live: Arc<Live>) -> io::Result<Follower> {
         .map_err(|_| io::Error::other("the kith-ui router must be built inside a tokio runtime"))?;
     let task = match source {
         Source::Daemon(daemon) => runtime.spawn(follow_daemon(daemon.socket.clone(), live)),
-        Source::Fixture(recorded) => runtime.spawn(fixture::replay((**recorded).clone(), live)),
+        Source::Fixture(sim) => runtime.spawn(fixture::replay(sim.read().clone(), live)),
     };
     Ok(Follower(task.abort_handle()))
 }

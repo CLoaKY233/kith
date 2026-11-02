@@ -532,6 +532,7 @@ fn request_index(request: &Request) -> u8 {
         Request::RevokeInvite { .. } => 32,
         Request::GetPolicy { .. } => 33,
         Request::ListRelays { .. } => 34,
+        Request::ListExits { .. } => 35,
     }
 }
 
@@ -574,6 +575,7 @@ fn response_index(response: &Response) -> u8 {
         Response::InviteRevoked => 34,
         Response::Policy(_) => 35,
         Response::Relays(_) => 36,
+        Response::Exits(_) => 37,
     }
 }
 
@@ -607,6 +609,7 @@ fn entry_index(kind: &EntryKind) -> u8 {
 const NET: NetworkId = NetworkId::from_bytes([0xab; 32]);
 const NODE: NodeId = NodeId::from_bytes([0x11; 32]);
 
+#[expect(clippy::too_many_lines, reason = "one sample per request variant")]
 fn requests() -> Vec<Request> {
     let s = |text: &str| text.to_owned();
     vec![
@@ -718,6 +721,7 @@ fn requests() -> Vec<Request> {
         },
         Request::GetPolicy { network: NET },
         Request::ListRelays { network: NET },
+        Request::ListExits { network: NET },
     ]
 }
 
@@ -881,6 +885,7 @@ fn responses() -> Vec<Response> {
             address: s("relay:443"),
             node: NODE,
         }]),
+        Response::Exits(vec![NODE]),
     ]
 }
 
@@ -990,7 +995,7 @@ fn entry_kinds() -> Vec<EntryKind> {
         EntryKind::DeviceRenamed {
             network: NET,
             node: NODE,
-            from: s("tv"),
+            old_name: s("tv"),
             name: s("lounge"),
         },
     ]
@@ -1060,7 +1065,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (13, 0x5d91_d5f6_cd4a_392b),
+        (13, 0x1029_4cff_040e_e84e),
         "the wire format changed"
     );
 }

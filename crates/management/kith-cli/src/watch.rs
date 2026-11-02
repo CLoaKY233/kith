@@ -277,10 +277,10 @@ pub(crate) fn describe(kind: &EntryKind, names: &NetworkNames) -> String {
         }
         EntryKind::DeviceRenamed {
             network,
-            from,
+            old_name,
             name,
             ..
-        } => format!("{} renamed to {name}", who(network, from)),
+        } => format!("{} renamed to {name}", who(network, old_name)),
         _ => "something the daemon knows and this kith does not; update kith".to_owned(),
     }
 }

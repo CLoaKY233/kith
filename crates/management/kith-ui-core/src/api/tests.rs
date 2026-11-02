@@ -10,17 +10,19 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request as Http, StatusCode, header};
 use http_body_util::BodyExt as _;
+use kith_identity::InviteToken;
 use kith_ipc::{
-    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, IpcServer, LinkInfo, LinkReport,
-    NetworkSummary, PathKind, PeerInfo, PendingJoin, RecordInfo, Request as Ipc, Response as Reply,
-    Status,
+    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, InviteInfo, IpcServer, LinkInfo,
+    LinkReport, NetworkSummary, PathKind, PeerInfo, PendingJoin, PolicyInfo, RecordInfo, RelayInfo,
+    Request as Ipc, Response as Reply, Status,
 };
-use kith_types::{NetworkId, NodeId};
+use kith_types::{NetworkId, NodeId, Timestamp};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tower::ServiceExt as _;
@@ -40,6 +42,7 @@ const PHONE: NodeId = NodeId::from_bytes([3; 32]);
 const PIXEL: NodeId = NodeId::from_bytes([4; 32]);
 const TV: NodeId = NodeId::from_bytes([5; 32]);
 const OLD: NodeId = NodeId::from_bytes([6; 32]);
+const IMPORTED: NetworkId = NetworkId::from_bytes([0xef; 32]);
 
 fn peer(node: NodeId, name: &str, address: &str, online: bool) -> PeerInfo {
     PeerInfo {
@@ -84,6 +87,8 @@ struct World {
     admin: bool,
     pending: Vec<NodeId>,
     journal: Vec<Entry>,
+    /// Invites the fake made, shared by every connection.
+    invites: Arc<Mutex<Vec<InviteInfo>>>,
 }
 
 impl World {
@@ -92,6 +97,47 @@ impl World {
             admin,
             pending: vec![PIXEL],
             journal: Vec::new(),
+            invites: Arc::default(),
+        }
+    }
+
+    fn invite(&self) -> Reply {
+        let Ok(token) = InviteToken::generate(
+            NET,
+            ME,
+            Vec::new(),
+            Timestamp::from_millis(9_000_000),
+            "home".into(),
+        ) else {
+            return Self::refuse(ErrorCode::Internal, "no randomness");
+        };
+        let Ok(link) = token.to_link() else {
+            return Self::refuse(ErrorCode::Internal, "no link");
+        };
+        let id = crate::sim::hex(&token.invite_public_key().to_bytes());
+        if let Ok(mut invites) = self.invites.lock() {
+            invites.push(InviteInfo {
+                id,
+                expires_at_ms: 9_000_000,
+                uses_left: Some(2),
+                created_at_ms: 1_000,
+            });
+        }
+        Reply::Invite {
+            invite_link: link.to_string(),
+        }
+    }
+
+    fn revoke(&self, id: &str) -> Reply {
+        let Ok(mut invites) = self.invites.lock() else {
+            return Self::refuse(ErrorCode::Internal, "poisoned");
+        };
+        let before = invites.len();
+        invites.retain(|invite| invite.id != id);
+        if invites.len() == before {
+            Self::refuse(ErrorCode::NotFound, "no such invite")
+        } else {
+            Reply::InviteRevoked
         }
     }
 
@@ -166,7 +212,8 @@ impl World {
 
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "the fake answers only what the tests send"
+        clippy::too_many_lines,
+        reason = "the fake answers only what the tests send, one arm each"
     )]
     fn answer(&self, request: &Ipc) -> Reply {
         let admin_only = || Self::refuse(ErrorCode::InvalidArgument, "only an admin can do this");
@@ -175,6 +222,7 @@ impl World {
             Ipc::Peers { .. } => Reply::Peers(Self::peers()),
             Ipc::Records { .. } => Reply::Records(Self::records()),
             Ipc::Topology { .. } => Reply::Topology(Self::topology()),
+            Ipc::ListExits { .. } => Reply::Exits(vec![NAS]),
             Ipc::Traffic => Reply::Traffic(Vec::new()),
             Ipc::PendingJoins => Reply::PendingJoins(
                 self.pending
@@ -230,9 +278,44 @@ impl World {
                 everything: None,
             },
             Ipc::AllowBlocked { .. } => Reply::BlockedAllowed,
-            Ipc::CreateInvite { .. } => Reply::Invite {
-                invite_link: "kith://join/abc".into(),
+            Ipc::CreateInvite { .. } | Ipc::RevokeInvite { .. } | Ipc::RenameDevice { .. }
+                if !self.admin =>
+            {
+                admin_only()
+            }
+            Ipc::CreateInvite { .. } => self.invite(),
+            Ipc::ListInvites { .. } => {
+                Reply::Invites(self.invites.lock().map(|i| i.clone()).unwrap_or_default())
+            }
+            Ipc::RevokeInvite { invite, .. } => self.revoke(invite),
+            Ipc::RenameDevice { node, .. } => {
+                if Self::peers().iter().any(|peer| peer.node == *node) || *node == PIXEL {
+                    Reply::DeviceRenamed
+                } else {
+                    Self::refuse(ErrorCode::NotFound, "not in this network")
+                }
+            }
+            Ipc::GetPolicy { .. } => Reply::Policy(PolicyInfo {
+                toml: "[[rules]]\nsources = [\"Any\"]\n".into(),
+                rules: Vec::new(),
+            }),
+            Ipc::SetPolicy { policy_toml, .. } if policy_toml.contains('=') => Reply::PolicySet,
+            Ipc::SetPolicy { .. } => Self::refuse(
+                ErrorCode::InvalidArgument,
+                "policy: TOML parse error at line 1, column 8",
+            ),
+            Ipc::ListRelays { .. } => Reply::Relays(vec![RelayInfo {
+                name: "r".into(),
+                address: "relay.example:443".into(),
+                node: NAS,
+            }]),
+            Ipc::AdvertiseRelay { address, .. } => Reply::RelayAdvertised {
+                address: address.clone(),
             },
+            Ipc::RemoveRelay { name, .. } if name == "r" => Reply::RelayRemoved,
+            Ipc::RemoveRelay { .. } => Self::refuse(ErrorCode::NotFound, "relay gone"),
+            Ipc::ServerMode { .. } => Reply::ServerModeSet { notes: Vec::new() },
+            Ipc::ImportWireGuard { .. } => Reply::Imported { network: IMPORTED },
             Ipc::Leave { .. } => Reply::Left,
             Ipc::RequestCode { .. } => Reply::RequestCode {
                 code: "kith://request/abc".into(),
@@ -398,6 +481,10 @@ impl Page {
                     | Ipc::Traffic
                     | Ipc::PendingJoins
                     | Ipc::Blocked { .. }
+                    | Ipc::ListInvites { .. }
+                    | Ipc::GetPolicy { .. }
+                    | Ipc::ListRelays { .. }
+                    | Ipc::ListExits { .. }
             );
             if !read {
                 changes.push(request);
@@ -635,14 +722,66 @@ async fn removing_a_lost_device_drops_its_names_and_a_lost_race_is_a_conflict() 
         .await?;
     assert_eq!(code, StatusCode::CONFLICT);
     assert_eq!(body["conflict"]["at_ms"], 3_000);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_device_is_renamed_only_from_the_name_the_page_saw() -> TestResult {
+    let mut page = Page::open(World::new(true), Gate::System).await?;
+    let rename = net(&format!("/devices/{TV}/rename"));
+    let (code, body) = page
+        .post(
+            &rename,
+            json!({ "name": "telly", "based_on": "television" }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert_eq!(body["conflict"]["op"], "tv");
+    assert_eq!(page.changes(), []);
+
+    let (code, _) = page
+        .post(&rename, json!({ "name": "telly", "based_on": "tv" }))
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        page.changes(),
+        [Ipc::RenameDevice {
+            network: NET,
+            node: TV,
+            name: "telly".into(),
+        }]
+    );
 
     let (code, _) = page
         .post(
-            &net(&format!("/devices/{TV}/rename")),
-            json!({ "name": "telly", "based_on": "tv" }),
+            &net(&format!("/joins/{PIXEL}/approve")),
+            json!({ "name": "lounge" }),
         )
         .await?;
-    assert_eq!(code, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        page.changes(),
+        [
+            Ipc::ApproveJoin {
+                network: NET,
+                node: PIXEL
+            },
+            Ipc::RenameDevice {
+                network: NET,
+                node: PIXEL,
+                name: "lounge".into(),
+            },
+        ]
+    );
+
+    let mut member = Page::open(World::new(false), Gate::System).await?;
+    let (code, body) = member
+        .post(&rename, json!({ "name": "telly", "based_on": null }))
+        .await?;
+    assert_eq!(
+        (code, body["code"].clone()),
+        (StatusCode::FORBIDDEN, json!("permission_denied"))
+    );
     Ok(())
 }
 
@@ -732,14 +871,10 @@ async fn removing_this_device_is_leaving_and_forgets_what_was_held() -> TestResu
         .await?;
     assert_eq!(code, StatusCode::NOT_FOUND);
 
-    page.post(&net("/invites"), json!({ "expires_secs": 600, "uses": 1 }))
-        .await?;
     page.changes();
     let (code, _) = page.post(&remove_me, json!({ "lost": true })).await?;
     assert_eq!(code, StatusCode::OK);
     assert_eq!(page.changes(), [Ipc::Leave { network: NET }]);
-    let (_, invites) = page.get(&net("/invites")).await?;
-    assert_eq!(invites, json!([]));
     Ok(())
 }
 
@@ -761,15 +896,163 @@ async fn invites_are_bounded_before_anything_is_signed() -> TestResult {
         .post(&net("/invites"), json!({ "expires_secs": 600, "uses": 2 }))
         .await?;
     assert_eq!(code, StatusCode::OK);
+    assert!(invite["qr_svg"].is_string());
     let (_, listed) = page
         .get(&format!(
             "/api/networks/{}/invites",
             NET.to_string().to_uppercase()
         ))
         .await?;
-    assert_eq!(listed, json!([invite]));
+    assert_eq!(
+        listed,
+        json!([{ "id": invite["id"], "expires_at_ms": 9_000_000, "uses_left": 2, "created_at_ms": 1_000 }])
+    );
     let (code, _) = page.get("/api/networks/home/invites").await?;
     assert_eq!(code, StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_revoked_invite_leaves_the_list() -> TestResult {
+    let mut page = Page::open(World::new(true), Gate::System).await?;
+    let (_, invite) = page
+        .post(&net("/invites"), json!({ "expires_secs": 600, "uses": 2 }))
+        .await?;
+    let id = invite["id"].as_str().ok_or("no id")?.to_owned();
+    page.changes();
+    let revoke = net(&format!("/invites/{id}/revoke"));
+    let (code, _) = page.post(&revoke, json!({})).await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        page.changes(),
+        [Ipc::RevokeInvite {
+            network: NET,
+            invite: id
+        }]
+    );
+    let (_, listed) = page.get(&net("/invites")).await?;
+    assert_eq!(listed, json!([]));
+    let (code, _) = page.post(&revoke, json!({})).await?;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_policy_reads_and_a_bad_one_says_where_it_broke() -> TestResult {
+    let mut page = Page::open(World::new(true), Gate::System).await?;
+    let (code, policy) = page.get(&net("/policy")).await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(policy["toml"], "[[rules]]\nsources = [\"Any\"]\n");
+    assert_eq!(policy["rules"], json!([]));
+
+    let (code, body) = page
+        .post(&net("/policy"), json!({ "toml": "[[rules" }))
+        .await?;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("line 1, column 8"))
+    );
+    let good = "[[rules]]\nsources = [\"Any\"]";
+    let (code, _) = page.post(&net("/policy"), json!({ "toml": good })).await?;
+    assert_eq!(code, StatusCode::OK);
+    let set: Vec<Ipc> = page
+        .changes()
+        .into_iter()
+        .filter(|change| matches!(change, Ipc::SetPolicy { .. }))
+        .collect();
+    assert_eq!(
+        set.last(),
+        Some(&Ipc::SetPolicy {
+            network: NET,
+            policy_toml: good.into()
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn relays_are_listed_advertised_and_removed() -> TestResult {
+    let mut page = Page::open(World::new(true), Gate::System).await?;
+    let (code, relays) = page.get(&net("/relays")).await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        relays,
+        json!([{ "name": "r", "address": "relay.example:443", "node": NAS.to_string() }])
+    );
+    let (code, _) = page
+        .post(
+            &net("/relays"),
+            json!({ "name": "edge", "address": "edge.example:443", "node": NAS.to_string() }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, _) = page.post(&net("/relays/r/remove"), json!({})).await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, _) = page.post(&net("/relays/gone/remove"), json!({})).await?;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+    assert_eq!(
+        page.changes(),
+        [
+            Ipc::AdvertiseRelay {
+                network: NET,
+                name: "edge".into(),
+                address: "edge.example:443".into(),
+                node: Some(NAS),
+            },
+            Ipc::RemoveRelay {
+                network: NET,
+                name: "r".into(),
+            },
+            Ipc::RemoveRelay {
+                network: NET,
+                name: "gone".into(),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn server_mode_and_imports_wait_for_the_os() -> TestResult {
+    let mut refused = Page::open(World::new(true), Gate::Fixed(Err(OsAuthError::Denied))).await?;
+    let (code, server) = refused.get("/api/server").await?;
+    assert_eq!(
+        (code, server),
+        (StatusCode::OK, json!({ "exit": false, "relay": false }))
+    );
+    let on = json!({ "exit": true, "relay": true });
+    let (code, _) = refused.post("/api/server", on.clone()).await?;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    let import = json!({ "name": "office", "conf_text": "[Interface]" });
+    let (code, _) = refused
+        .post("/api/wireguard/import", import.clone())
+        .await?;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    assert_eq!(refused.changes(), []);
+
+    let mut page = Page::open(World::new(true), Gate::Fixed(Ok(()))).await?;
+    let (code, _) = page.post("/api/server", on).await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, imported) = page.post("/api/wireguard/import", import).await?;
+    assert_eq!(
+        (code, imported),
+        (StatusCode::OK, json!({ "network": IMPORTED.to_string() }))
+    );
+    assert_eq!(
+        page.changes(),
+        [
+            Ipc::ServerMode {
+                exit: true,
+                relay: true
+            },
+            Ipc::ImportWireGuard {
+                name: "office".into(),
+                conf_text: "[Interface]".into(),
+            },
+        ]
+    );
     Ok(())
 }
 
@@ -834,7 +1117,15 @@ async fn reads_refuse_bad_ids_and_unknown_networks_alike_live_and_recorded() -> 
     let mut live = Page::open(World::new(true), Gate::System).await?;
     let mut recorded = Page::recorded().await?;
     for page in [&mut live, &mut recorded] {
-        for list in ["peers", "records", "exits", "invites", "request-code"] {
+        for list in [
+            "peers",
+            "records",
+            "exits",
+            "invites",
+            "request-code",
+            "policy",
+            "relays",
+        ] {
             let (code, body) = page.get(&format!("/api/networks/not-an-id/{list}")).await?;
             assert_eq!(code, StatusCode::BAD_REQUEST, "{list}");
             assert_eq!(body["code"], "invalid_argument", "{list}");
@@ -850,7 +1141,15 @@ async fn reads_refuse_bad_ids_and_unknown_networks_alike_live_and_recorded() -> 
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert_eq!(body["code"], "invalid_argument");
     }
-    for list in ["peers", "records", "exits", "invites", "request-code"] {
+    for list in [
+        "peers",
+        "records",
+        "exits",
+        "invites",
+        "request-code",
+        "policy",
+        "relays",
+    ] {
         let (code, body) = recorded
             .get(&format!("/api/networks/{unknown}/{list}"))
             .await?;

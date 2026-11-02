@@ -17,6 +17,7 @@ mod ipc;
 pub mod json;
 pub mod osauth;
 mod session;
+mod sim;
 mod stream;
 pub mod traffic;
 #[cfg(feature = "ts")]
@@ -134,7 +135,10 @@ fn build(config: Config, gate: osauth::Gate) -> io::Result<Router> {
         .route("/request-code", get(api::joins::request_code))
         .route("/devices/{node}/rename", post(api::devices::rename))
         .route("/devices/{node}/remove", post(api::devices::remove))
-        .route("/leave", post(api::devices::leave));
+        .route("/leave", post(api::devices::leave))
+        .route("/policy", get(api::policy::get).post(api::policy::set))
+        .route("/relays", get(api::relays::list).post(api::relays::add))
+        .route("/relays/{name}/remove", post(api::relays::remove));
     let routes = Router::new()
         .route("/api/session", post(session::start))
         .route("/api/boot", get(api::status::boot))
@@ -148,6 +152,8 @@ fn build(config: Config, gate: osauth::Gate) -> io::Result<Router> {
         .route("/api/join/request", post(api::joins::request))
         .route("/api/blocked/{id}/allow", post(api::blocked::allow))
         .route("/api/validate/name", get(api::validate::name))
+        .route("/api/server", get(api::server::get).post(api::server::set))
+        .route("/api/wireguard/import", post(api::server::import))
         .nest("/api/networks/{net}", networks)
         .fallback(assets::serve);
     Ok(routes

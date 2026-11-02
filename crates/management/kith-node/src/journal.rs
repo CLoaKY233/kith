@@ -255,7 +255,7 @@ pub(crate) fn changes(
             kinds.push(EntryKind::DeviceRenamed {
                 network,
                 node,
-                from: old.name.clone(),
+                old_name: old.name.clone(),
                 name: name.clone(),
             });
         }

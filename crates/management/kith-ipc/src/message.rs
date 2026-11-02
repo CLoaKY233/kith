@@ -236,6 +236,11 @@ pub enum Request {
         /// Network to list.
         network: NetworkId,
     },
+    /// Lists the devices an admin allowed to act as exit nodes in a network.
+    ListExits {
+        /// Network to list.
+        network: NetworkId,
+    },
 }
 
 /// An invite that can still admit devices, from [`Request::ListInvites`].
@@ -470,6 +475,8 @@ pub enum Response {
     Policy(PolicyInfo),
     /// Answers [`Request::ListRelays`].
     Relays(Vec<RelayInfo>),
+    /// Answers [`Request::ListExits`].
+    Exits(Vec<NodeId>),
 }
 
 /// One device's report of the peers it reaches, from [`Response::Topology`].
@@ -898,7 +905,7 @@ pub enum EntryKind {
         #[cfg_attr(feature = "ts", ts(type = "string"))]
         node: NodeId,
         /// Its name before.
-        from: String,
+        old_name: String,
         /// Its name now.
         name: String,
     },
