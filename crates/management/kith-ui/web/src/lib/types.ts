@@ -139,3 +139,57 @@ export type Prefs = {
 
 /** Outcome states the server returns, re-exported for screens. */
 export type { OutcomeState };
+
+// Endpoints whose types are not generated yet; the shapes are the server's (§2).
+
+/** An open invite, from `GET /api/networks/:net/invites`. */
+export type OpenInvite = {
+  readonly id: string;
+  readonly expires_at_ms: number;
+  /** Uses still open; `null` is unlimited. */
+  readonly uses_left: number | null;
+  readonly created_at_ms: number;
+};
+
+/** Which devices a policy selector names. */
+export type PolicySelector =
+  | { readonly kind: 'any' }
+  | { readonly kind: 'device'; readonly node: string }
+  | { readonly kind: 'tag'; readonly tag: string };
+
+export type PolicyProtocol = 'any' | 'tcp' | 'udp' | 'icmp';
+
+/** An inclusive port range. */
+export type PortRange = { readonly start: number; readonly end: number };
+
+/** One destination of a rule; `ports` null is every port. */
+export type PolicyTarget = {
+  readonly selector: PolicySelector;
+  readonly protocol: PolicyProtocol;
+  readonly ports: readonly PortRange[] | null;
+};
+
+/** One allow rule: these sources may reach these destinations. */
+export type PolicyRule = {
+  readonly sources: readonly PolicySelector[];
+  readonly destinations: readonly PolicyTarget[];
+};
+
+/** `GET /api/networks/:net/policy`; lib/kith/policy.ts reads `rules` leniently. */
+export type PolicyView = { readonly toml: string; readonly rules: readonly PolicyRule[] };
+
+/** `POST /api/networks/:net/policy`. */
+export type PolicyIn = { readonly toml: string };
+
+/** A relay the network advertises; `node` is the device that runs it, if one does. */
+export type Relay = { readonly name: string; readonly address: string; readonly node: string | null };
+
+/** `GET` and `POST /api/server`: what this device offers its networks. */
+export type ServerMode = { readonly exit: boolean; readonly relay: boolean };
+
+/** `POST /api/wireguard/import`. */
+export type WireguardImportIn = { readonly name: string; readonly conf_text: string };
+export type WireguardImported = { readonly network: string };
+
+/** `POST /api/networks/:net/devices/:node/rename`. */
+export type RenameDeviceIn = { readonly name: string };

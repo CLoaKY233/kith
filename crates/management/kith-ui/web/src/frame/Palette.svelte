@@ -1,7 +1,8 @@
 <!--
 @component
 The ⌘K palette's content (spec §10): Devices (by name, address or full name, this device
-included) · Actions (Add device, Add a phone, New invite, Use exit…, Add name, then Rename
+included) · Actions (Add device, Add a phone, New invite, Use exit…, Add name, Add access rule, Add
+relay, Import a WireGuard config…, Offer this device…, then Rename
 nas and Copy nas address once something is typed) · Go to · Networks. Members see admin
 actions as `Ask an admin to …`, which open the Ask an admin sheet (§7.10); `Ask an admin to
 rename nas…` opens it on the device. `nas:22` opens nas with `?port=22`. `Use exit…` opens
@@ -99,6 +100,20 @@ Props:
               label: copy.palette.askAddName,
               onSelect: () => ask(copy.askAdmin.request.addName(name)),
             },
+      );
+      actions.push(
+        admin
+          ? { id: 'add:rule', label: copy.palette.addRule, onSelect: () => go(netHref(id, 'access', { new: '1' })) }
+          : { id: 'ask:access', label: copy.palette.askAccess, onSelect: () => ask(copy.askAdmin.request.policy(name)) },
+        admin
+          ? { id: 'add:relay', label: copy.palette.addRelay, onSelect: () => go(netHref(id, 'settings', { relay: 'new' })) }
+          : { id: 'ask:relay', label: copy.palette.askRelay, onSelect: () => ask(copy.askAdmin.request.addRelay(name)) },
+        {
+          id: 'import:wireguard',
+          label: copy.palette.importWg,
+          onSelect: () => go(netHref(id, 'exits', { sheet: 'wireguard' })),
+        },
+        { id: 'offer:this', label: copy.palette.offerThis, onSelect: () => go(href({ name: 'this' })) },
       );
       for (const p of others) {
         const device = deviceHref(p.name);

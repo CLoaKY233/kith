@@ -26,11 +26,21 @@ import type {
   RecordType,
   RecordView,
   RemoveIn,
-  RenameIn,
   RequestJoinIn,
   StatusView,
 } from '../types.gen';
-import type { ActionHandle, InvitePreview } from '../types';
+import type {
+  ActionHandle,
+  InvitePreview,
+  OpenInvite,
+  PolicyIn,
+  PolicyView,
+  Relay,
+  RenameDeviceIn,
+  ServerMode,
+  WireguardImported,
+  WireguardImportIn,
+} from '../types';
 import type { Runner, RunnerHost } from './runner';
 import { tintKey } from './keys';
 
@@ -40,7 +50,12 @@ export interface ActionsHost extends RunnerHost {
   peers: Record<string, Record<string, PeerInfo>>;
   records: Record<string, RecordView[]>;
   exits: Record<string, ExitView[]>;
-  invites: Record<string, Invite[]>;
+  invites: Record<string, OpenInvite[]>;
+  policies: Record<string, PolicyView>;
+  relays: Record<string, Relay[]>;
+  server: ServerMode | null;
+  /** Refetches the boot snapshot, for changes the stream does not report. */
+  resync(): void;
   /** Refetches /api/pending in the background; calls while one runs coalesce. */
   refreshPending(): void;
   /** The change tints (§8.4), when the host keeps them. */
@@ -99,7 +114,16 @@ export function createActions(host: ActionsHost, runner: Runner) {
     host.exits[net] = await api.get<ExitView[]>(networkPath(net, '/exits'));
   };
   const loadInvites = async (net: string): Promise<void> => {
-    host.invites[net] = await api.get<Invite[]>(networkPath(net, '/invites'));
+    host.invites[net] = await api.get<OpenInvite[]>(networkPath(net, '/invites'));
+  };
+  const loadPolicy = async (net: string): Promise<void> => {
+    host.policies[net] = await api.get<PolicyView>(networkPath(net, '/policy'));
+  };
+  const loadRelays = async (net: string): Promise<void> => {
+    host.relays[net] = await api.get<Relay[]>(networkPath(net, '/relays'));
+  };
+  const loadServer = async (): Promise<void> => {
+    host.server = await api.get<ServerMode>('/api/server');
   };
   const pending = (): Promise<void> => {
     host.refreshPending();
@@ -113,7 +137,12 @@ export function createActions(host: ActionsHost, runner: Runner) {
     loadExits: (net: string) =>
       read<ExitView[]>(networkPath(net, '/exits'), (v) => (host.exits[net] = v)),
     loadInvites: (net: string) =>
-      read<Invite[]>(networkPath(net, '/invites'), (v) => (host.invites[net] = v)),
+      read<OpenInvite[]>(networkPath(net, '/invites'), (v) => (host.invites[net] = v)),
+    loadPolicy: (net: string) =>
+      read<PolicyView>(networkPath(net, '/policy'), (v) => (host.policies[net] = v)),
+    loadRelays: (net: string) =>
+      read<Relay[]>(networkPath(net, '/relays'), (v) => (host.relays[net] = v)),
+    loadServer: () => read<ServerMode>('/api/server', (v) => (host.server = v)),
     /** §2.14. Only the newest check per field counts: older ones settle as `idle`. */
     validateName: (net: string | null, name: string) =>
       runner.run<NameCheck>({
@@ -204,7 +233,10 @@ export function createActions(host: ActionsHost, runner: Runner) {
     revokeInvite: (net: string, id: string) =>
       runner.run<Outcome>({
         ledger: true,
-        run: () => api.post<Outcome>(networkPath(net, `/invites/${enc(id)}/revoke`)),
+        run: () =>
+          api
+            .post<Outcome>(networkPath(net, `/invites/${enc(id)}/revoke`))
+            .then(afterwards(() => loadInvites(net))),
         refresh: () => loadInvites(net),
       }),
 
@@ -272,14 +304,15 @@ export function createActions(host: ActionsHost, runner: Runner) {
       }),
 
     // Devices (§7.9, §7.11). Removing this device is tier 3.
-    renameDevice: (net: string, node: string, name: string, basedOn: string | null = null) =>
+    renameDevice: (net: string, node: string, name: string) =>
       runner.run<Outcome>({
         ledger: true,
         run: () =>
-          api.post<Outcome>(networkPath(net, `/devices/${enc(node)}/rename`), {
-            name,
-            based_on: basedOn,
-          } satisfies RenameIn),
+          api
+            .post<Outcome>(networkPath(net, `/devices/${enc(node)}/rename`), {
+              name,
+            } satisfies RenameDeviceIn)
+            .then(afterwards(() => loadPeers(net))),
         refresh: () => loadPeers(net),
       }),
     removeDevice: (net: string, node: string, lost: boolean) =>
@@ -290,6 +323,65 @@ export function createActions(host: ActionsHost, runner: Runner) {
           api.post<Outcome>(networkPath(net, `/devices/${enc(node)}/remove`), { lost } satisfies RemoveIn),
         match: about('device_removed', net, node),
         refresh: () => loadPeers(net),
+      }),
+
+    // Access (M1.1). A 400 carries the parser's line and column in its message.
+    setPolicy: (net: string, toml: string) =>
+      runner.run<Outcome>({
+        ledger: true,
+        run: () =>
+          api
+            .post<Outcome>(networkPath(net, '/policy'), { toml } satisfies PolicyIn)
+            .then(afterwards(() => loadPolicy(net))),
+        refresh: () => loadPolicy(net),
+      }),
+
+    // Relays. `node` is the device that runs the relay, or null for none in the network.
+    addRelay: (net: string, name: string, address: string, node: string | null) =>
+      runner.run<Outcome>({
+        ledger: true,
+        run: () =>
+          api
+            .post<Outcome>(networkPath(net, '/relays'), { name, address, node } satisfies Relay)
+            .then(afterwards(() => loadRelays(net))),
+        refresh: () => loadRelays(net),
+      }),
+    removeRelay: (net: string, name: string) =>
+      runner.run<Outcome>({
+        ledger: true,
+        run: () =>
+          api
+            .post<Outcome>(networkPath(net, `/relays/${enc(name)}/remove`))
+            .then(afterwards(() => loadRelays(net))),
+        refresh: () => loadRelays(net),
+      }),
+
+    // This device as an exit or relay for its networks.
+    setServer: (mode: ServerMode) =>
+      runner.run<Outcome>({
+        run: () =>
+          api.post<Outcome>('/api/server', mode satisfies ServerMode).then((value) => {
+            host.server = mode;
+            void loadServer().catch(() => undefined);
+            host.resync();
+            return value;
+          }),
+        refresh: loadServer,
+      }),
+
+    // A wg-quick config becomes a network of its own, whose peer can be the exit.
+    importWireguard: (name: string, confText: string) =>
+      runner.run<WireguardImported>({
+        run: () =>
+          api
+            .post<WireguardImported>('/api/wireguard/import', {
+              name,
+              conf_text: confText,
+            } satisfies WireguardImportIn)
+            .then((value) => {
+              host.resync();
+              return value;
+            }),
       }),
   } as const;
 }

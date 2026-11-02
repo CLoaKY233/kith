@@ -34,6 +34,7 @@ title and the live regions. Screens receive the network id as `net`.
     subscribe,
     type Route,
   } from './router';
+  import Access from './routes/Access.svelte';
   import Activity from './routes/Activity.svelte';
   import Devices from './routes/Devices.svelte';
   import Exits from './routes/Exits.svelte';
@@ -293,9 +294,11 @@ title and the live regions. Screens receive the network id as `net`.
             {:else if route.name === 'names'}
               <Names net={route.net} {query} />
             {:else if route.name === 'exits'}
-              <Exits net={route.net} />
+              <Exits net={route.net} {query} />
+            {:else if route.name === 'access'}
+              <Access net={route.net} {query} />
             {:else if route.name === 'settings'}
-              <Settings net={route.net} />
+              <Settings net={route.net} {query} />
             {/if}
           </Frame>
 

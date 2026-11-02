@@ -34,6 +34,7 @@ export const copy = {
     activity: 'Activity',
     names: 'Names',
     exits: 'Exits',
+    access: 'Access',
     addDevice: 'Add device',
     settings: 'Settings',
     thisDevice: 'This device',
@@ -512,6 +513,138 @@ export const copy = {
     stopSubmit: (exit: string): string => `Stop offering ${exit}`,
   },
 
+  /** M1.1 Access: the policy as sentences, then the editor. */
+  access: {
+    heading: 'Who can reach what',
+    intro: (network: string): string =>
+      `Devices in ${network} reach only what a rule allows. Everything else is blocked.`,
+    none: (network: string): string => `No rules yet. Devices in ${network} can't reach each other.`,
+    everyDevice: 'Every device',
+    /** The same, inside a sentence. */
+    everyDeviceAfter: 'every device',
+    unknownDevice: (short: string): string => `a device no longer here (${short})`,
+    canReach: (who: string, what: string): string => `${who} can reach ${what}.`,
+    byPing: (who: string): string => `${who} by ping`,
+    overProtocol: (who: string, protocol: string): string => `${who} over ${protocol}`,
+    onPorts: (who: string, protocol: string | null, single: boolean, ports: string): string =>
+      `${who} on ${protocol === null ? '' : `${protocol} `}${single ? 'port' : 'ports'} ${ports}`,
+    viewsLabel: 'Edit the policy as',
+    views: { rules: 'Rules', toml: 'TOML' },
+    unreadable: 'kith sent rules this page cannot show as sentences. Edit them as TOML.',
+    addRule: 'Add rule',
+    from: 'From',
+    to: 'To',
+    protocol: 'Protocol',
+    protocols: { any: 'Any', tcp: 'TCP', udp: 'UDP', icmp: 'Ping' },
+    ports: 'Ports',
+    portsHelp: 'Empty for every port. For example 22, or 8000-8080, separated by commas.',
+    portsInvalid: 'Ports are numbers from 1 to 65535, like 22 or 8000-8080.',
+    portsPing: 'Ping has no ports. Leave Ports empty.',
+    tagOption: 'Devices with a tag…',
+    tag: 'Tag',
+    tagInvalid: 'Tags can use a–z, 0–9 and hyphens.',
+    noDevices: 'No devices match.',
+    preview: (sentence: string): string => `Will add: ${sentence}`,
+    duplicate: 'The policy already has this rule.',
+    remove: 'Remove',
+    removeLabel: (sentence: string): string => `Remove the rule: ${sentence}`,
+    keep: 'Keep',
+    keepLabel: (sentence: string): string => `Keep the rule: ${sentence}`,
+    isNew: 'New',
+    goes: 'Removed when saved',
+    unsaved: (n: number): string => `${n} ${plural(n, 'change', 'changes')} not saved yet.`,
+    losesAccess:
+      'Devices lose access a removed rule gave them within seconds of saving.',
+    save: 'Save policy',
+    discard: 'Discard changes',
+    saved: 'Policy saved.',
+    toml: 'Policy as TOML',
+    tomlHelp: 'The policy exactly as kith reads it. Saving replaces every rule.',
+    tomlError: (line: number, column: number, message: string): string =>
+      `Line ${line}, column ${column}: ${message}`,
+    tomlRevert: 'Revert to the saved policy',
+    ask: 'Ask an admin…',
+    memberNote: 'Only admins can change who can reach what.',
+  },
+
+  /** Relays, in Settings › Network. */
+  relays: {
+    heading: 'Relays',
+    intro: "Devices that can't connect directly send their traffic through a relay. It stays encrypted.",
+    none: 'No relays yet. Devices that cannot connect directly cannot reach each other.',
+    name: 'Name',
+    address: 'Address',
+    addressHelp: 'host:port, for example vps.example.com:41642',
+    addressInvalid: 'Use host:port, for example vps.example.com:41642.',
+    runsOn: 'Runs on',
+    runsOnNone: 'A server outside this network',
+    runBy: (device: string): string => `runs on ${device}`,
+    outside: 'outside this network',
+    add: 'Add relay',
+    remove: 'Remove',
+    removeLabel: (relay: string): string => `Remove relay ${relay}`,
+    added: (relay: string): string => `Added relay ${relay}`,
+    removed: (relay: string): string => `Removed relay ${relay}`,
+    taken: (relay: string): string => `There is already a relay called ${relay}.`,
+    ask: 'Ask an admin…',
+  },
+
+  /** This device as an exit or relay for its networks (`kith server`). */
+  server: {
+    heading: 'Offer this device',
+    exit: 'Offer as an exit',
+    exitHelp:
+      'Admins can then let devices send their internet traffic through this one. This device sees which addresses that traffic goes to.',
+    relay: 'Offer as a relay',
+    relayHelp:
+      "Devices that can't connect directly can pass their traffic through this one. It stays encrypted; this device can't read it.",
+    cost: "Both use this device's connection and bandwidth while it's on.",
+    exitOnTitle: (device: string): string => `Offer ${device} as an exit?`,
+    exitOnBody: (device: string): string =>
+      `Devices an admin allows can send all their internet traffic through ${device}. ${device} sees which addresses it goes to.`,
+    exitOnThen: 'An admin then allows it in Exits.',
+    exitOnSubmit: (device: string): string => `Offer ${device} as an exit`,
+    exitOffTitle: (device: string): string => `Stop offering ${device} as an exit?`,
+    exitOffBody: 'Devices using it as their exit will send their internet traffic directly.',
+    exitOffSubmit: (device: string): string => `Stop offering ${device}`,
+    relayOnTitle: (device: string): string => `Offer ${device} as a relay?`,
+    relayOnBody: (device: string): string =>
+      `Devices that can't connect directly can pass their encrypted traffic through ${device}, using its bandwidth.`,
+    relayOnSubmit: (device: string): string => `Offer ${device} as a relay`,
+    relayOffTitle: (device: string): string => `Stop offering ${device} as a relay?`,
+    relayOffBody:
+      'Devices relayed through it move to another relay, or wait until they can connect directly.',
+    relayOffSubmit: (device: string): string => `Stop offering ${device}`,
+    exitOn: (device: string): string => `${device} is offered as an exit.`,
+    exitOff: (device: string): string => `${device} is no longer offered as an exit.`,
+    relayOn: (device: string): string => `${device} is offered as a relay.`,
+    relayOff: (device: string): string => `${device} is no longer offered as a relay.`,
+    notOperator:
+      "This account can't change kith on this device. Sign in as one that can to offer it.",
+    offerExit: 'Offer this device as an exit…',
+  },
+
+  /** Import a wg-quick config as an exit, in Exits. */
+  wgImport: {
+    heading: 'Use a WireGuard server',
+    intro:
+      'A config from a VPN provider or your own WireGuard server becomes a network of its own. Its server is then an exit you can pick.',
+    open: 'Import a WireGuard config…',
+    title: 'Import a WireGuard config',
+    name: 'Name',
+    nameHelp: 'What to call it in kith, like office or mullvad-de.',
+    conf: 'Config',
+    confHelp: 'The whole .conf file, as the provider or server gave it. Its private key stays on this device.',
+    choose: 'Choose a .conf file…',
+    chosen: (file: string): string => `From ${file}`,
+    confEmpty: 'Paste a config or choose a .conf file.',
+    confNotWg: "This isn't a WireGuard config. Paste the whole .conf file, from [Interface] to the end.",
+    fileFailed: "Couldn't read that file. Paste its text instead.",
+    submit: 'Import config',
+    pending: 'Importing…',
+    done: (name: string): string => `Imported ${name}. Pick its exit to send your traffic through it.`,
+  },
+
   /** §6.8 Settings. */
   settings: {
     appearance: 'Appearance',
@@ -903,6 +1036,10 @@ export const copy = {
       /** Phones have no CLI flow; the admin uses Add a phone here. */
       addPhone: (network: string): string => `Add a phone to ${network} (kith-ui › Add a phone)`,
       addName: (network: string): string => `kith dns set ${network} <name> <address>`,
+      policy: (network: string): string => `Change who can reach what in ${network} (kith-ui › Access)`,
+      addRelay: (network: string): string =>
+        `kith relay advertise ${network} <name> <host:port>`,
+      removeRelay: (network: string, relay: string): string => `kith relay remove ${network} ${relay}`,
     },
   },
 
@@ -952,6 +1089,12 @@ export const copy = {
     askAddPhone: 'Ask an admin to add a phone…',
     askInvite: 'Ask an admin for an invite…',
     askAddName: 'Ask an admin to add a name…',
+    addRule: 'Add access rule',
+    askAccess: 'Ask an admin to change access…',
+    addRelay: 'Add relay',
+    askRelay: 'Ask an admin to add a relay…',
+    importWg: 'Import a WireGuard config…',
+    offerThis: 'Offer this device as an exit or relay…',
     copied: (device: string): string => `Copied ${device}'s address`,
     copyFailed: (device: string): string =>
       `Couldn't copy ${device}'s address. Select it on the device page instead.`,
@@ -1127,6 +1270,11 @@ export const copyScreens = {
       'This browser blocks notifications from this page. Allow them in its site settings, then turn this on.',
     notificationsUnsupported: "This browser can't show notifications.",
     noInvites: 'No open invites.',
+    inviteRow: (expires: string, usesLeft: number | null): string =>
+      `Expires ${expires}${DOT}${
+        usesLeft === null ? 'unlimited uses' : `${usesLeft} ${plural(usesLeft, 'use', 'uses')} left`
+      }`,
+    inviteMade: (when: string): string => `Made ${when}`,
     inviteUsedBy: (names: readonly string[]): string => `Used by ${names.join(', ')}`,
     inviteUsesLeft: (n: number): string => `${n} ${plural(n, 'use', 'uses')} left`,
     revokeLabel: (expires: string): string => `Revoke the invite that expires ${expires}`,

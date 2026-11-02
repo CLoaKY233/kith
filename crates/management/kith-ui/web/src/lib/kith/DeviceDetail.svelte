@@ -335,7 +335,6 @@ Props:
   let rename = $state<ActionHandle<Outcome> | null>(null);
   let renameShown = $state<ActionHandle<Outcome> | null>(null);
   let conflictFrom = $state<string | null>(null);
-  let basedOn = $state<string | null>(null);
   let nameInput: HTMLInputElement | null = $state(null);
   let heading: HTMLElement | null = $state(null);
   let spacesTimer: ReturnType<typeof setTimeout> | null = null;
@@ -358,7 +357,6 @@ Props:
     suggestion = null;
     validated = false;
     conflictFrom = null;
-    basedOn = null;
     await tick();
     nameInput?.focus();
     nameInput?.select();
@@ -462,14 +460,13 @@ Props:
     }
     const from = peer.name;
     const to = draft;
-    const handle = actions.renameDevice(net, node, to, basedOn);
+    const handle = actions.renameDevice(net, node, to);
     rename = handle;
     renameShown = handle;
     await handle.done;
     if (rename !== handle) return;
     if (handle.state === 'conflict') {
       conflictFrom = editFrom;
-      basedOn = handle.conflict?.op ?? null;
       return;
     }
     if (handle.state === 'failed') {

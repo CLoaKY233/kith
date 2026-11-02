@@ -18,6 +18,7 @@ export const OBSERVING: readonly NavItem[] = [
 export const SHAPING: readonly NavItem[] = [
   { page: 'names', label: copy.nav.names, icon: 'at-sign' },
   { page: 'exits', label: copy.nav.exits, icon: 'globe' },
+  { page: 'access', label: copy.nav.access, icon: 'key-round' },
 ];
 
 export const SETTINGS: NavItem = { page: 'settings', label: copy.nav.settings, icon: 'settings-2' };
@@ -32,6 +33,7 @@ export function section(route: Route): NavPage | null {
     case 'activity':
     case 'names':
     case 'exits':
+    case 'access':
     case 'settings':
       return route.name;
     default:

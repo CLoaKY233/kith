@@ -42,7 +42,7 @@ fn is_page(path: &str) -> bool {
         | [
             "n",
             net,
-            "devices" | "activity" | "names" | "exits" | "settings",
+            "devices" | "activity" | "names" | "exits" | "access" | "settings",
         ] => !net.is_empty(),
         ["n", net, "devices", device] => !net.is_empty() && !device.is_empty(),
         _ => false,
@@ -205,6 +205,7 @@ mod tests {
             "/n/home/activity",
             "/n/home/names",
             "/n/home/exits",
+            "/n/home/access",
             "/n/home/settings",
         ] {
             assert!(is_page(page), "{page}");

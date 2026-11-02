@@ -47,16 +47,27 @@ Props:
     if (createFailed) announce(createFailed);
   });
 
-  /** The latest copy of this invite the server listed, for who has used it. */
+  /**
+   * The invite as made, with who has used it: the devices that joined this network since
+   * it was made (an invite's uses are the joins), and the uses the server says are left.
+   */
   const current = $derived.by(() => {
     const invite = flow.invite;
     if (invite === null) return null;
-    return live.invites[networkId]?.find((i) => i.link === invite.link) ?? invite;
+    const used_by = live.journal
+      .filter(
+        (e) => e.kind === 'device_joined' && e.network === networkId && e.at_ms >= flow.createdAtMs,
+      )
+      .map((e) => (e.kind === 'device_joined' ? e.name : ''));
+    const listed = live.invites[networkId]?.find((i) => i.id === invite.id);
+    return { ...invite, used_by, uses_left: listed ? listed.uses_left : invite.uses };
   });
 
   /** Every use taken: the QR has nothing left to offer, so it collapses for good. */
   const spent = $derived(
-    current !== null && current.uses !== null && current.used_by.length >= current.uses,
+    current !== null &&
+      current.uses !== null &&
+      (current.uses_left === 0 || current.used_by.length >= current.uses),
   );
 
   /** Set once the invite's time is up; a timer flips it at the expiry instant. */
@@ -86,14 +97,17 @@ Props:
     return pathText(peer.path, deviceName(networkId, numbers?.relay ?? null));
   }
 
-  function statusOf(invite: Invite): string {
+  function statusOf(invite: Invite & { uses_left: number | null }): string {
     const user = invite.used_by.at(-1);
     if (user === undefined) return copy.invite.notUsed(clock(invite.expires_at_ms));
     const path = onlinePath(user);
     if (invite.uses === 1) {
       return path !== null ? copy.invite.usedBy(user, path) : copy.invite.usedOffline(user);
     }
-    const left = invite.uses === null ? null : Math.max(0, invite.uses - invite.used_by.length);
+    const left =
+      invite.uses === null
+        ? null
+        : Math.max(0, Math.min(invite.uses_left ?? 0, invite.uses - invite.used_by.length));
     return copy.invite.usedByMany(
       invite.used_by,
       left,

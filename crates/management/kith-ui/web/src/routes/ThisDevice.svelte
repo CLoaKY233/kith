@@ -1,7 +1,7 @@
 <!--
 @component
 This device (`/this`, spec §6.8): its name, key fingerprints with Copy, its role in each
-network, the versions of kith-ui and kith, and the daemon log (mono, virtualised, newest
+network, whether it offers itself as an exit or relay, the versions of kith-ui and kith, and the daemon log (mono, virtualised, newest
 first). `Copy redacted log` copies the log oldest first with IPs shortened to `81.2.x.x`
 and keys to their first characters.
 Props:
@@ -12,6 +12,7 @@ Props:
   import { copy, copyScreens, DOT } from '../lib/copy';
   import { logLevel, logLine } from '../lib/kith/activity';
   import EventRow from '../lib/kith/EventRow.svelte';
+  import OfferThisDevice from '../lib/kith/OfferThisDevice.svelte';
   import VirtualList from '../lib/kith/VirtualList.svelte';
   import { live } from '../lib/live/store.svelte';
   import { COPIED_MS } from '../lib/live/timing';
@@ -125,6 +126,8 @@ Props:
       </table>
     {/if}
   </section>
+
+  <OfferThisDevice />
 
   <section class="group" aria-labelledby="this-log">
     <div class="log-head">

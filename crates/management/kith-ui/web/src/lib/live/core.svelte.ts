@@ -19,7 +19,6 @@ import type {
   Entry,
   ExitView,
   Gap,
-  Invite,
   LinkTick,
   Pending,
   PeerInfo,
@@ -29,7 +28,17 @@ import type {
   TrafficSeries,
   Versions,
 } from '../types.gen';
-import type { ApiFailure, ConnState, GateReason, PeerLive, TrafficColumns } from '../types';
+import type {
+  ApiFailure,
+  ConnState,
+  GateReason,
+  OpenInvite,
+  PeerLive,
+  PolicyView,
+  Relay,
+  ServerMode,
+  TrafficColumns,
+} from '../types';
 import { deviceKey, tintKey } from './keys';
 import { noEffects, omit, reduce, type Effects, type ReducerState } from './reducers';
 import { Paths, type ShownPath } from './stability.svelte';
@@ -162,7 +171,13 @@ export class Store implements ReducerState {
   /** exits[net], loaded on demand by actions.loadExits. */
   exits = $state<Record<string, ExitView[]>>({});
   /** invites[net], loaded on demand by actions.loadInvites. */
-  invites = $state<Record<string, Invite[]>>({});
+  invites = $state<Record<string, OpenInvite[]>>({});
+  /** policies[net], loaded on demand by actions.loadPolicy. */
+  policies = $state<Record<string, PolicyView>>({});
+  /** relays[net], loaded on demand by actions.loadRelays. */
+  relays = $state<Record<string, Relay[]>>({});
+  /** What this device offers to its networks, loaded on demand by actions.loadServer. */
+  server = $state<ServerMode | null>(null);
   pending = $state<Pending>(noPending());
   /** Oldest first, at most JOURNAL_CAP entries, in seq order within a boot. */
   journal = $state.raw<Entry[]>([]);
@@ -275,6 +290,11 @@ export class Store implements ReducerState {
   /** Applies a snapshot as the first one, with no stream. For tests and the kit page. */
   hydrate(snapshot: Boot): void {
     this.#adopt(snapshot);
+  }
+
+  /** Refetches the snapshot, as after a change the stream does not report (a new network). */
+  resync(): void {
+    this.#resync();
   }
 
   /** Refetches /api/pending, as after an action that settles a request. */
@@ -844,7 +864,10 @@ export interface Live {
   readonly links: Readonly<Record<string, readonly LinkTick[]>>;
   readonly records: Readonly<Record<string, readonly RecordView[]>>;
   readonly exits: Readonly<Record<string, readonly ExitView[]>>;
-  readonly invites: Readonly<Record<string, readonly Invite[]>>;
+  readonly invites: Readonly<Record<string, readonly OpenInvite[]>>;
+  readonly policies: Readonly<Record<string, PolicyView>>;
+  readonly relays: Readonly<Record<string, readonly Relay[]>>;
+  readonly server: ServerMode | null;
   readonly pending: Pending;
   readonly journal: readonly Entry[];
   readonly journalTotal: number;
@@ -883,6 +906,9 @@ export function viewOf(store: Store): Live {
     get records() { return store.records; },
     get exits() { return store.exits; },
     get invites() { return store.invites; },
+    get policies() { return store.policies; },
+    get relays() { return store.relays; },
+    get server() { return store.server; },
     get pending() { return store.pending; },
     get journal() { return store.journal; },
     get journalTotal() { return store.journalTotal; },
