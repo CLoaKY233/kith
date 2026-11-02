@@ -287,6 +287,42 @@ pub(crate) enum Action {
         /// The rule.
         rule: Box<kith_policy::Rule>,
     },
+    /// Rename a device; admins only.
+    RenameDevice {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// Its new name.
+        name: String,
+    },
+    /// List the invites that can still admit devices.
+    ListInvites {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Revoke an invite; admins only.
+    RevokeInvite {
+        /// The network.
+        network: NetworkId,
+        /// The invite's key in hex.
+        invite: String,
+    },
+    /// Read the policy.
+    GetPolicy {
+        /// The network.
+        network: NetworkId,
+    },
+    /// List the advertised relays.
+    ListRelays {
+        /// The network.
+        network: NetworkId,
+    },
+    /// List the devices allowed to be exit nodes.
+    ListExits {
+        /// The network.
+        network: NetworkId,
+    },
 }
 
 /// What the control channel's handler reported to the loop.

@@ -13,13 +13,17 @@ publish.workspace = true
 axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
 futures-core.workspace = true
 kith-crypto = { workspace = true, features = ["getrandom"] }
+kith-config.workspace = true
+kith-identity = { workspace = true, features = ["getrandom"] }
 kith-ipc.workspace = true
+kith-policy.workspace = true
 kith-types.workspace = true
 qrcode = { workspace = true, features = ["svg"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
 subtle = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "net", "process", "rt", "sync", "time"] }
+toml.workspace = true
 ts-rs = { workspace = true, optional = true }
 
 [features]

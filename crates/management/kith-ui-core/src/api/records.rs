@@ -11,9 +11,7 @@ use kith_types::NetworkId;
 use serde_json::json;
 
 use crate::api::status::{recorded_network, suffix};
-use crate::api::{
-    Answer, ApiError, accepted, as_admin, daemon, network_id, settled, status_of, summary,
-};
+use crate::api::{Answer, ApiError, accepted, as_admin, network_id, settled, status_of, summary};
 use crate::ipc::{Daemon, Source};
 use crate::wire::{RecordIn, RecordType, RecordView};
 use crate::{Shared, now_ms};
@@ -85,7 +83,8 @@ fn short(name: &str, suffix: &str) -> String {
 /// `GET /api/networks/:net/records`.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     match &shared.source {
-        Source::Fixture(fixture) => {
+        Source::Fixture(sim) => {
+            let fixture = &*sim.read();
             recorded_network(fixture, &net)?;
             Ok(Json(json!(
                 fixture.records.get(&net).cloned().unwrap_or_default()
@@ -112,7 +111,10 @@ pub(crate) async fn set(
     input: Result<Json<RecordIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let daemon = daemon(&shared)?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.set_record(&net, &input),
+        Source::Daemon(daemon) => daemon,
+    };
     let network = network_id(&net)?;
     let data = record(input.kind, &input.value)?;
     let name = if let Some(based_on) = &input.based_on {
@@ -148,7 +150,10 @@ pub(crate) async fn delete(
     State(shared): State<Arc<Shared>>,
     Path((net, name)): Path<(String, String)>,
 ) -> Answer {
-    let daemon = daemon(&shared)?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.delete_record(&net, &name),
+        Source::Daemon(daemon) => daemon,
+    };
     let network = network_id(&net)?;
     let status = status_of(daemon).await?;
     let suffix = suffix(&summary(&status, network)?.name);

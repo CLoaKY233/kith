@@ -1,54 +1,43 @@
-//! `/api/networks/:net/invites`: invite links.
-//!
-//! The daemon cannot list or revoke invites yet, so the list holds the invites made
-//! through this page since `kith-ui` started, until they lapse.
+//! `/api/networks/:net/invites`: invite links, as the network's ledger holds them.
 
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
+use kith_identity::InviteToken;
 use kith_ipc::{Request, Response};
 use serde_json::json;
 
-use crate::api::status::recorded_network;
-use crate::api::{Answer, ApiError, as_admin, daemon, lock, network_id, qr_svg};
+use crate::Shared;
+use crate::api::{Answer, ApiError, accepted, as_admin, network_id, qr_svg};
 use crate::ipc::Source;
-use crate::session::Token;
-use crate::wire::{Invite, InviteIn};
-use crate::{Shared, now_ms};
+use crate::wire::{Invite, InviteIn, OpenInvite};
 
-/// Hex digits in an invite's id.
-const ID_LEN: usize = 8;
 /// The longest an invite may last: a year.
 const MAX_LIFETIME_SECS: u64 = 365 * 24 * 60 * 60;
-/// The most open invites listed per network; past it the oldest leaves the list, though
-/// it stays valid until it lapses.
-const MAX_LISTED: usize = 256;
 
 /// `GET /api/networks/:net/invites`: open invites, newest first.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
-    let invites = match &shared.source {
-        Source::Fixture(fixture) => {
-            recorded_network(fixture, &net)?;
-            fixture.invites.get(&net).cloned().unwrap_or_default()
-        }
-        Source::Daemon(_) => {
-            let key = network_id(&net)?.to_string();
-            let now = now_ms();
-            let mut made = lock(&shared.api.invites);
-            let Some(open) = made.get_mut(&key) else {
-                return Ok(Json(json!([])));
-            };
-            open.retain(|invite| invite.expires_at_ms > now);
-            let newest_first: Vec<Invite> = open.iter().rev().cloned().collect();
-            if open.is_empty() {
-                made.remove(&key);
-            }
-            newest_first
-        }
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.invites(&net),
+        Source::Daemon(daemon) => daemon,
     };
-    Ok(Json(json!(invites)))
+    let network = network_id(&net)?;
+    let Response::Invites(invites) = daemon.ask(Request::ListInvites { network }).await? else {
+        return Err(ApiError::unexpected());
+    };
+    let mut open: Vec<OpenInvite> = invites
+        .into_iter()
+        .map(|invite| OpenInvite {
+            id: invite.id,
+            expires_at_ms: invite.expires_at_ms,
+            uses_left: invite.uses_left,
+            created_at_ms: invite.created_at_ms,
+        })
+        .collect();
+    open.sort_by_key(|invite| core::cmp::Reverse(invite.created_at_ms));
+    Ok(Json(json!(open)))
 }
 
 /// `POST /api/networks/:net/invites`.
@@ -73,46 +62,46 @@ pub(crate) async fn create(
             u16::MAX
         )));
     }
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.create_invite(&net, &input),
+        Source::Daemon(daemon) => daemon,
+    };
     let request = Request::CreateInvite {
         network,
         expires_in_secs: input.expires_secs,
         max_uses: input.uses,
     };
-    let Response::Invite { invite_link } = as_admin(daemon(&shared)?, network, request).await?
-    else {
+    let Response::Invite { invite_link } = as_admin(daemon, network, request).await? else {
         return Err(ApiError::unexpected());
     };
-    let id = Token::random()
-        .map_err(|_| ApiError::unexpected())?
-        .hex()
-        .get(..ID_LEN)
-        .map(|hex| format!("inv-{hex}"))
-        .unwrap_or_default();
-    let invite = Invite {
+    let token = InviteToken::parse(&invite_link).map_err(|_| ApiError::unexpected())?;
+    let id = crate::sim::hex(&token.invite_public_key().to_bytes());
+    Ok(Json(json!(Invite {
         id,
         qr_svg: qr_svg(&invite_link),
+        expires_at_ms: token.expires().as_millis(),
         link: invite_link,
-        expires_at_ms: now_ms().saturating_add(input.expires_secs.saturating_mul(1000)),
         uses: input.uses,
         used_by: Vec::new(),
-    };
-    let now = now_ms();
-    let mut made = lock(&shared.api.invites);
-    let open = made.entry(network.to_string()).or_default();
-    open.retain(|invite| invite.expires_at_ms > now);
-    open.push(invite.clone());
-    let excess = open.len().saturating_sub(MAX_LISTED);
-    open.drain(..excess);
-    drop(made);
-    Ok(Json(json!(invite)))
+    })))
 }
 
-/// `POST /api/networks/:net/invites/:id/revoke`: the daemon cannot revoke an invite yet,
-/// so this answers 501 and the invite stays valid until it lapses.
+/// `POST /api/networks/:net/invites/:id/revoke`: no device can join with it after this.
 pub(crate) async fn revoke(
     State(shared): State<Arc<Shared>>,
-    Path((_net, _id)): Path<(String, String)>,
+    Path((net, id)): Path<(String, String)>,
 ) -> Answer {
-    daemon(&shared)?;
-    Err(ApiError::not_implemented("revoking an invite"))
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.revoke_invite(&net, &id),
+        Source::Daemon(daemon) => daemon,
+    };
+    let network = network_id(&net)?;
+    let request = Request::RevokeInvite {
+        network,
+        invite: id,
+    };
+    let Response::InviteRevoked = as_admin(daemon, network, request).await? else {
+        return Err(ApiError::unexpected());
+    };
+    Ok(accepted())
 }

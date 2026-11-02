@@ -55,18 +55,9 @@ pub(crate) enum Cmd {
         #[bpaf(positional("NETWORK-NAME"))]
         name: String,
     },
-    /// Print a join link for a network
+    /// Print a join link for a network, or list and revoke open invites
     #[bpaf(command)]
-    Invite {
-        /// How long the link works, like 30m, 24h or 7d
-        #[bpaf(argument::<String>("DURATION"), parse(duration::parse_secs), fallback(DEFAULT_EXPIRY_SECS))]
-        expires: u64,
-        /// How many devices may join, or `unlimited`
-        #[bpaf(argument::<String>("N"), parse(parse_uses), fallback(Some(1)))]
-        uses: Option<u32>,
-        #[bpaf(positional("NETWORK"))]
-        network: String,
-    },
+    Invite(#[bpaf(external(invite_cmd))] InviteCmd),
     /// Join a network with an invite link
     #[bpaf(command)]
     Join {
@@ -86,6 +77,17 @@ pub(crate) enum Cmd {
         /// The device's name or id
         #[bpaf(positional("DEVICE"))]
         device: String,
+    },
+    /// Rename a device in a network (admins only)
+    #[bpaf(command)]
+    Rename {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The device's name or id
+        #[bpaf(positional("DEVICE"))]
+        device: String,
+        #[bpaf(positional("NEW-NAME"))]
+        name: String,
     },
     /// Leave a network
     #[bpaf(command)]
@@ -267,6 +269,37 @@ pub(crate) enum ExitCmd {
 }
 
 /// `kith relay …`.
+/// Making, listing and revoking invites.
+#[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
+pub(crate) enum InviteCmd {
+    /// List a network's open invites
+    #[bpaf(command)]
+    List {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+    },
+    /// Revoke an invite so no one can join with it (admins only)
+    #[bpaf(command)]
+    Revoke {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The invite's id, from `kith invite list`
+        #[bpaf(positional("ID"))]
+        id: String,
+    },
+    /// Print a join link
+    Create {
+        /// How long the link works, like 30m, 24h or 7d
+        #[bpaf(argument::<String>("DURATION"), parse(duration::parse_secs), fallback(DEFAULT_EXPIRY_SECS))]
+        expires: u64,
+        /// How many devices may join, or `unlimited`
+        #[bpaf(argument::<String>("N"), parse(parse_uses), fallback(Some(1)))]
+        uses: Option<u32>,
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 pub(crate) enum RelayCmd {
     /// Advertise a relay to a network's members (admins only)

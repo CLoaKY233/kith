@@ -205,6 +205,113 @@ pub enum Request {
         /// The destination port, for TCP and UDP.
         port: Option<u16>,
     },
+    /// Renames a device in a network; admins only.
+    RenameDevice {
+        /// Network to change.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// Its new name.
+        name: String,
+    },
+    /// Lists a network's invites that can still admit devices.
+    ListInvites {
+        /// Network to list.
+        network: NetworkId,
+    },
+    /// Revokes an invite for good; admins only.
+    RevokeInvite {
+        /// Network owning the invite.
+        network: NetworkId,
+        /// The invite's id, as [`InviteInfo::id`] gives it.
+        invite: String,
+    },
+    /// Reads a network's policy.
+    GetPolicy {
+        /// Network to read.
+        network: NetworkId,
+    },
+    /// Lists the relays advertised in a network.
+    ListRelays {
+        /// Network to list.
+        network: NetworkId,
+    },
+    /// Lists the devices an admin allowed to act as exit nodes in a network.
+    ListExits {
+        /// Network to list.
+        network: NetworkId,
+    },
+}
+
+/// An invite that can still admit devices, from [`Request::ListInvites`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct InviteInfo {
+    /// The invite's public key in lowercase hex: its id for [`Request::RevokeInvite`].
+    pub id: String,
+    /// When it stops admitting devices, in milliseconds since the Unix epoch.
+    pub expires_at_ms: u64,
+    /// How many more devices it admits; `None` is unlimited.
+    pub uses_left: Option<u32>,
+    /// When it was created, in milliseconds since the Unix epoch.
+    pub created_at_ms: u64,
+}
+
+/// A network's policy, from [`Request::GetPolicy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PolicyInfo {
+    /// The policy as the TOML [`Request::SetPolicy`] takes.
+    pub toml: String,
+    /// The same rules, structured.
+    pub rules: Vec<PolicyRuleInfo>,
+}
+
+/// One allow rule of a [`PolicyInfo`]: any source may reach any destination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PolicyRuleInfo {
+    /// Which devices may send.
+    pub sources: Vec<SelectorInfo>,
+    /// What they may reach.
+    pub destinations: Vec<TargetInfo>,
+}
+
+/// Which devices a policy selector names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct SelectorInfo {
+    /// `any`, `device` or `tag`.
+    pub kind: String,
+    /// The device id or tag name; `None` for `any`.
+    pub value: Option<String>,
+    /// The device's name in the network, when the selector names a known device.
+    pub name: Option<String>,
+}
+
+/// One destination of a [`PolicyRuleInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct TargetInfo {
+    /// The devices.
+    pub selector: SelectorInfo,
+    /// `any`, `tcp`, `udp` or `icmp`.
+    pub protocol: String,
+    /// The ports opened, as `start-end` ranges or single ports; empty means every port.
+    pub ports: Vec<String>,
+}
+
+/// A relay advertised in a network, from [`Request::ListRelays`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RelayInfo {
+    /// The relay's name.
+    pub name: String,
+    /// Its `host:port`.
+    pub address: String,
+    /// The node running it.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    pub node: NodeId,
 }
 
 /// A typed DNS record.
@@ -358,6 +465,18 @@ pub enum Response {
     Blocked(Vec<BlockedInfo>),
     /// Answers [`Request::AllowBlocked`].
     BlockedAllowed,
+    /// Answers [`Request::RenameDevice`].
+    DeviceRenamed,
+    /// Answers [`Request::ListInvites`].
+    Invites(Vec<InviteInfo>),
+    /// Answers [`Request::RevokeInvite`].
+    InviteRevoked,
+    /// Answers [`Request::GetPolicy`].
+    Policy(PolicyInfo),
+    /// Answers [`Request::ListRelays`].
+    Relays(Vec<RelayInfo>),
+    /// Answers [`Request::ListExits`].
+    Exits(Vec<NodeId>),
 }
 
 /// One device's report of the peers it reaches, from [`Response::Topology`].
@@ -776,6 +895,19 @@ pub enum EntryKind {
         port: Option<u16>,
         /// Packets refused since the last entry for this connection.
         count: u64,
+    },
+    /// A device's name in the network changed.
+    DeviceRenamed {
+        /// The network.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        network: NetworkId,
+        /// The device.
+        #[cfg_attr(feature = "ts", ts(type = "string"))]
+        node: NodeId,
+        /// Its name before.
+        old_name: String,
+        /// Its name now.
+        name: String,
     },
 }
 

@@ -77,6 +77,18 @@ pub fn declarations() -> String {
     push::<wire::JoinRequestState>(&mut out, &config);
     push::<wire::InviteIn>(&mut out, &config);
     push::<wire::Invite>(&mut out, &config);
+    push::<wire::ApproveIn>(&mut out, &config);
+    push::<wire::OpenInvite>(&mut out, &config);
+    push::<kith_ipc::SelectorInfo>(&mut out, &config);
+    push::<kith_ipc::TargetInfo>(&mut out, &config);
+    push::<kith_ipc::PolicyRuleInfo>(&mut out, &config);
+    push::<kith_ipc::PolicyInfo>(&mut out, &config);
+    push::<wire::PolicyIn>(&mut out, &config);
+    push::<wire::RelayView>(&mut out, &config);
+    push::<wire::RelayIn>(&mut out, &config);
+    push::<wire::ServerView>(&mut out, &config);
+    push::<wire::ImportIn>(&mut out, &config);
+    push::<wire::Imported>(&mut out, &config);
     push::<wire::PhoneIn>(&mut out, &config);
     push::<wire::PhoneCreated>(&mut out, &config);
     push::<wire::PhoneConfigIn>(&mut out, &config);

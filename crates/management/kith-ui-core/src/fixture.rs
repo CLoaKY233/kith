@@ -3,8 +3,9 @@
 //!
 //! The stream replays the recording through [`Live`], the same path a daemon's journal
 //! takes: the recorded journal is the history a page can resume from, ticks advance the
-//! recorded traffic, and the recorded entries are played again as new ones, 60 times
-//! faster than they happened, so the page always has something live to show.
+//! recorded traffic, and the recorded activity is played again as new entries, 60 times
+//! faster than it happened, so the page always has something live to show. Changes go to
+//! [`crate::sim`], which edits the recording and writes their entries.
 
 use core::time::Duration;
 use std::collections::BTreeMap;
@@ -12,7 +13,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
-use kith_ipc::{Entry, TrafficSample, TrafficSeries};
+use kith_ipc::{Entry, EntryKind, TrafficSample, TrafficSeries};
 use kith_types::{NetworkId, NodeId};
 use serde_json::Value;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -276,6 +277,20 @@ fn replay_delay(recorded: &[Entry], turn: usize) -> Duration {
     Duration::from_millis(gap).clamp(REPLAY_MIN, REPLAY_MAX)
 }
 
+/// Whether a recorded entry only reports activity, so replaying it changes no list.
+const fn is_activity(kind: &EntryKind) -> bool {
+    matches!(
+        kind,
+        EntryKind::PeerOnline { .. }
+            | EntryKind::PeerOffline { .. }
+            | EntryKind::PathChanged { .. }
+            | EntryKind::EndpointChanged { .. }
+            | EntryKind::Dropped { .. }
+            | EntryKind::Warning { .. }
+            | EntryKind::Log { .. }
+    )
+}
+
 /// Feeds `live` from the recording for as long as the server runs.
 pub(crate) async fn replay(fixture: Fixture, live: Arc<Live>) {
     let recorded: Vec<Entry> = fixture
@@ -285,10 +300,17 @@ pub(crate) async fn replay(fixture: Fixture, live: Arc<Live>) {
         .flatten()
         .filter_map(|entry| json::unshape_entry(entry).ok())
         .collect();
-    let mut seq = recorded
+    let next = recorded
         .last()
         .map_or(0, |entry| entry.seq.saturating_add(1));
-    live.restart(recorded.clone(), seq);
+    // Replayed entries only show activity: membership, names and the exit change only
+    // when the page asks the simulator, so the lists stay true to the stream.
+    let replayed: Vec<Entry> = recorded
+        .iter()
+        .filter(|entry| is_activity(&entry.kind))
+        .cloned()
+        .collect();
+    live.restart(recorded, next);
     if let Ok(series) = json::unshape::<Vec<TrafficSeries>>(&fixture.traffic) {
         live.record(|history| history.record(&series));
     }
@@ -296,7 +318,7 @@ pub(crate) async fn replay(fixture: Fixture, live: Arc<Live>) {
     let mut ticks = tokio::time::interval(TICK);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut turn = 0;
-    let wait = tokio::time::sleep(replay_delay(&recorded, turn));
+    let wait = tokio::time::sleep(replay_delay(&replayed, turn));
     tokio::pin!(wait);
     loop {
         tokio::select! {
@@ -319,16 +341,11 @@ pub(crate) async fn replay(fixture: Fixture, live: Arc<Live>) {
                 live.tick(tick);
             }
             () = &mut wait => {
-                if let Some(entry) = recorded.get(turn % recorded.len().max(1)) {
-                    live.extend([Entry {
-                        seq,
-                        at_ms: now_ms(),
-                        kind: entry.kind.clone(),
-                    }]);
-                    seq = seq.saturating_add(1);
+                if let Some(entry) = replayed.get(turn % replayed.len().max(1)) {
+                    live.push(entry.kind.clone());
                 }
                 turn = turn.wrapping_add(1);
-                wait.as_mut().reset(Instant::now() + replay_delay(&recorded, turn));
+                wait.as_mut().reset(Instant::now() + replay_delay(&replayed, turn));
             }
         }
     }
@@ -340,7 +357,7 @@ pub(crate) async fn replay(fixture: Fixture, live: Arc<Live>) {
     reason = "assertions fail the test; ? keeps the setup short"
 )]
 mod tests {
-    use kith_ipc::{EntryKind, PeerInfo, Status};
+    use kith_ipc::{PeerInfo, Status};
 
     use super::*;
 

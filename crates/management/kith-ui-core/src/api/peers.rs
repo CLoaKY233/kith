@@ -14,7 +14,8 @@ use crate::{Shared, json};
 /// `GET /api/networks/:net/peers`.
 pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     match &shared.source {
-        Source::Fixture(fixture) => {
+        Source::Fixture(sim) => {
+            let fixture = &*sim.read();
             recorded_network(fixture, &net)?;
             Ok(Json(
                 fixture

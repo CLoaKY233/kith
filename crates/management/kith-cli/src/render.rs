@@ -8,7 +8,7 @@ use kith_ipc::{
 };
 use kith_types::NodeId;
 
-use crate::cli::{Cmd, DnsCmd, ExitCmd, RelayCmd, WgCmd};
+use crate::cli::{Cmd, DnsCmd, ExitCmd, InviteCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
 
 /// The PATH column: offline comes from liveness, never from a missing path, and a device
@@ -588,7 +588,16 @@ pub(crate) fn response(
             "created network {name} ({})\nadd a device: kith invite {name}",
             network.short()
         )?,
-        (Cmd::Invite { .. }, Response::Invite { invite_link }) => writeln!(
+        (Cmd::Invite(InviteCmd::List { .. }), Response::Invites(invites)) => {
+            invite_table(out, &invites)?;
+        }
+        (Cmd::Invite(InviteCmd::Revoke { id, .. }), Response::InviteRevoked) => {
+            writeln!(out, "revoked invite {id}")?;
+        }
+        (Cmd::Rename { device, name, .. }, Response::DeviceRenamed) => {
+            writeln!(out, "renamed {device} to {name}")?;
+        }
+        (Cmd::Invite(_), Response::Invite { invite_link }) => writeln!(
             out,
             "{invite_link}\n\non the other device run: kith join {invite_link}"
         )?,
@@ -718,4 +727,36 @@ pub(crate) fn allow_command(info: &BlockedInfo) -> String {
         "kith allow {} {} {} {protocol}{port}",
         info.network, info.from, info.to
     )
+}
+
+/// Open invites: id, uses left and when each expires.
+fn invite_table(out: &mut impl Write, invites: &[kith_ipc::InviteInfo]) -> Result<(), CliError> {
+    if invites.is_empty() {
+        writeln!(out, "no open invites")?;
+        return Ok(());
+    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the CLI is a driver; it reads the clock to show time left"
+    )]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    writeln!(out, "{:<64}  {:>9}  EXPIRES IN", "ID", "USES LEFT")?;
+    for invite in invites {
+        let uses = invite
+            .uses_left
+            .map_or_else(|| "unlimited".to_owned(), |left| left.to_string());
+        let mins = invite.expires_at_ms.saturating_sub(now) / 60_000;
+        writeln!(
+            out,
+            "{:<64}  {uses:>9}  {}h{:02}m",
+            invite.id,
+            mins / 60,
+            mins % 60
+        )?;
+    }
+    Ok(())
 }

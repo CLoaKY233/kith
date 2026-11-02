@@ -13,7 +13,7 @@ use crate::{Shared, json};
 /// `GET /api/traffic`.
 pub(crate) async fn traffic(State(shared): State<Arc<Shared>>) -> Answer {
     match &shared.source {
-        Source::Fixture(fixture) => Ok(Json(fixture.traffic.clone())),
+        Source::Fixture(sim) => Ok(Json(sim.read().traffic.clone())),
         Source::Daemon(_) => Ok(Json(json::to_value(
             &shared.live.traffic(crate::traffic::CAPACITY),
         )?)),

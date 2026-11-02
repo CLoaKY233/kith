@@ -53,6 +53,8 @@ pub struct Invite {
     pub uses: u16,
     /// Tags given to joining devices.
     pub tags: Vec<String>,
+    /// The author's wall-clock time when the invite was created.
+    pub created: Timestamp,
 }
 
 /// The state of a network, derived deterministically from the set of ops alone.

@@ -54,7 +54,7 @@ fn parse(id: &str) -> Result<Connection, ApiError> {
 }
 
 /// The rule as a sentence, such as `phone may reach nas on TCP 22`.
-fn sentence(from: &str, to: &str, protocol: &str, port: Option<u16>) -> String {
+pub(crate) fn sentence(from: &str, to: &str, protocol: &str, port: Option<u16>) -> String {
     let over = match (protocol, port) {
         ("any", _) => "on any protocol".to_owned(),
         (protocol, Some(port)) => format!("on {} {port}", protocol.to_uppercase()),
@@ -110,27 +110,7 @@ pub(crate) async fn allow(
 ) -> Answer {
     let Json(input) = input?;
     let daemon = match &shared.source {
-        Source::Fixture(fixture) => {
-            let group = fixture
-                .pending
-                .blocked
-                .iter()
-                .find(|group| group.id == id)
-                .ok_or_else(|| ApiError::not_found("no such blocked connection"))?;
-            if !input.preview {
-                return Err(ApiError::fixture());
-            }
-            let rule = sentence(
-                &group.from_name,
-                &group.to_name,
-                &group.protocol,
-                group.port,
-            );
-            return Ok(Json(json!(AllowPreview {
-                new_paths: vec![rule.clone()],
-                rule_sentence: rule,
-            })));
-        }
+        Source::Fixture(sim) => return sim.allow(&id, input.preview),
         Source::Daemon(daemon) => daemon,
     };
     let connection = parse(&id)?;

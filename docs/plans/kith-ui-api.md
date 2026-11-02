@@ -21,7 +21,7 @@ This file follows `docs/plans/kith-ui-design.md` §2, which wins where they diff
 
 ## Errors
 
-Status 400, 401, 403, 404, 409, 500, 501 or 503 with `ApiErrorBody {code, message, conflict}`. `code` is an `ApiErrorCode`; `message` is the server's or daemon's words, for logs and the `internal` copy only.
+Status 400, 401, 403, 404, 409, 500 or 503 with `ApiErrorBody {code, message, conflict}`. `code` is an `ApiErrorCode`; `message` is the server's or daemon's words, for logs and the `internal` copy only.
 
 | Status | `code` | When |
 |---|---|---|
@@ -33,7 +33,6 @@ Status 400, 401, 403, 404, 409, 500, 501 or 503 with `ApiErrorBody {code, messag
 | 404 | `not_found` | the network, device or name is gone |
 | 409 | `conflict` | another device settled it first; see below |
 | 500 | `internal` | the daemon answered something unexpected, or another failure; `message` says what |
-| 501 | `not_implemented` | the daemon cannot do it yet, or the server replays a fixture |
 | 503 | `daemon_down`, `not_in_group`, `version_skew` | the daemon is not running, this OS user may not open its socket, or it speaks another protocol |
 
 A 409 fills `conflict` with `{resolved_by, resolution, at_ms, op}`: who won the race and how. The daemon does not yet say which device made a change, so `resolved_by` is empty and the page names no one.
@@ -50,8 +49,11 @@ A path under `/api/` that no route serves gets 404 `not_found`.
 | GET | `/api/traffic` | `[TrafficSeries]` |
 | GET | `/api/networks/<id>/peers` | `[PeerInfo]` |
 | GET | `/api/networks/<id>/records` | `[RecordView]` |
-| GET | `/api/networks/<id>/exits` | `[ExitView]`. The daemon does not list the devices allowed as exits yet, so this holds only the exit this device uses |
-| GET | `/api/networks/<id>/invites` | `[Invite]`, newest first. The daemon cannot list invites yet, so these are the open invites made through this page since `kith-ui` started |
+| GET | `/api/networks/<id>/exits` | `[ExitView]`: every device an admin allowed as an exit, with `in_use_by` naming this device when it uses that exit. `access` is empty: every member may use an allowed exit |
+| GET | `/api/networks/<id>/invites` | `[OpenInvite {id, expires_at_ms, uses_left, created_at_ms}]`, newest first: the invites in the network's ledger that are neither revoked, used up nor expired, whoever made them. `id` is the invite's public key in hex; `uses_left` is `null` for an unlimited invite |
+| GET | `/api/networks/<id>/policy` | `PolicyInfo {toml, rules}`: the policy in force as the TOML `POST` takes, and its rules as `PolicyRuleInfo {sources: [SelectorInfo], destinations: [TargetInfo]}`. A `SelectorInfo` is `{kind, value, name}` with `kind` `any`, `device` (`value` the id, `name` its name when known) or `tag` (`value` the tag); a `TargetInfo` is `{selector, protocol, ports}`, `protocol` `any`, `tcp`, `udp` or `icmp` and `ports` like `["22", "8000-8080"]`, empty for every port. A network that never set a policy shows the allow-all one it runs |
+| GET | `/api/networks/<id>/relays` | `[RelayView {name, address, node}]`: the relays advertised in the network |
+| GET | `/api/server` | `ServerView {exit, relay}`: whether this device offers itself as an exit and a relay |
 | GET | `/api/networks/<id>/request-code` | `JoinCode {code, command}`: the `kith://request/` code and `kith request <code>`, which a new device runs to ask an admin to let it in |
 | GET | `/api/validate/name?net=&name=` | `NameCheck {name, problem, suggestion}`. `name` comes back lowercased with spaces as hyphens. `problem` is `empty`, `too_long`, `invalid_character`, `hyphen_at_edge` or `taken`; a taken name comes with the first free `name-2`, `name-3`, … as `suggestion`. `net` is a network id or name: the name is taken when a device there (this one included) has it. Without `net` it is a new network's name, taken when this device is already in a network of that name |
 
@@ -65,7 +67,7 @@ Every snapshot carries `boot` and `seq`; a stream entry applies only when its `s
 
 | Event | Id | Data |
 |---|---|---|
-| `entry` | `<boot>:<seq>` | a journal `Entry`, flattened to `{seq, at_ms, kind, ...fields}` |
+| `entry` | `<boot>:<seq>` | a journal `Entry`, flattened to `{seq, at_ms, kind, ...fields}`. A rename is `device_renamed {network, node, old_name, name}` |
 | `tick` | none, never replayed | `Tick {at_ms, traffic: [TrafficTick], links: [LinkTick]}`, every 2 s. A link carries its exact `rate` when this device is an admin of the network or is one of the link's two ends. Otherwise it carries `rate_band` (`idle` below 1 kB/s, `light` up to 1 MB/s, `busy` above) and `rate` is `null`. The boot snapshot's `last_tick` follows the same rule |
 | `reset` | none | `Reset {boot, started_at_ms}`: the requested boot is not the current one, or its seq is ahead of the current run. Also sent to every open stream when the daemon restarts, right after `daemon_up`. The page refetches `/api/boot` |
 | `gap` | none | `Gap {missed_from, missed_to}`: entries after the requested seq are no longer kept. The kept entries follow |
@@ -79,11 +81,11 @@ There is no keep-alive comment: the tick is the heartbeat. A tick the daemon can
 
 ## Actions
 
-All `POST`, JSON in, JSON out. A `qr_svg` is `null` when the text is too long for a QR code. Changes that sign a ledger op return `Outcome {state, op}`. The daemon does not name its ops yet, so `op` is `null` and the page shows "Saved on this device" rather than a count.
+All `POST`, JSON in, JSON out. A `qr_svg` is `null` when the text is too long for a QR code. Changes return `Outcome {state, op}`. The daemon does not name the ledger op a change signed, so `op` is `null` and the page shows "Saved on this device" rather than a count.
 
 - **Join requests.** A check code is six Crockford base32 characters (30 bits) from a BLAKE3 hash (context `kith 2026-11 join check code v1`) of the requesting device's public key, so the device and every admin compute the same code. It tells two requests apart by eye; it is not a secret. Approve and deny can be sent again safely: when the request is no longer pending, 409 says how it ended (`approved`, `denied` or `expired`) and when.
-- **`based_on`.** Until the daemon reports op ids, `based_on` is the value the edit started from: a name's current value, a device's current name. When the thing now holds something else, the change is refused with 409 and `conflict.op` is what it holds now (`null` once deleted). `based_on: null` changes it whatever it holds.
-- **Tier 3** (showing a phone's private config, leaving a network). The request stays open while the OS asks the person at this computer (Touch ID or the login password on macOS, polkit on Linux), one prompt at a time; the page shows `awaiting_os_auth` while it waits. It answers once confirmed, or 403 `os_auth_denied` with nothing signed or shown, also when nobody answers within 2 minutes. A computer that cannot ask, such as a Linux server without a polkit agent, always answers 403. The prompt guards against someone at an unlocked, signed-in browser tab; it does not stop the OS user who runs `kith-ui`, who can make the same change with `kith`.
+- **`based_on`.** `based_on` is the value the edit started from: a name's current value, a device's current name. When the thing now holds something else, the change is refused with 409 and `conflict.op` is what it holds now (`null` once deleted). `based_on: null` changes it whatever it holds.
+- **Tier 3** (showing a phone's private config, leaving a network, changing what this device serves, importing a WireGuard config). The request stays open while the OS asks the person at this computer (Touch ID or the login password on macOS, polkit on Linux), one prompt at a time; the page shows `awaiting_os_auth` while it waits. It answers once confirmed, or 403 `os_auth_denied` with nothing signed or shown, also when nobody answers within 2 minutes. A computer that cannot ask, such as a Linux server without a polkit agent, always answers 403. The prompt guards against someone at an unlocked, signed-in browser tab; it does not stop the OS user who runs `kith-ui`, who can make the same change with `kith`.
 - **Admin changes** asked by a member answer 403 `permission_denied`.
 
 | Path | In | Out |
@@ -91,19 +93,24 @@ All `POST`, JSON in, JSON out. A `qr_svg` is `null` when the text is too long fo
 | `/api/networks` | `CreateNetworkIn {name, device_name}` | `Outcome` |
 | `/api/join` | `JoinIn {invite_link, device_name}` | `Outcome` |
 | `/api/join/request` | `RequestJoinIn {request_code, device_name}` | `JoinRequestState` |
-| `/api/networks/<id>/joins/<node>/approve` | `{name}`; the device joins under the name it asked for, as the daemon cannot name it on approval yet | `Outcome`; 409 when already settled |
+| `/api/networks/<id>/joins/<node>/approve` | `ApproveIn {name}`; the device joins under `name`, or under the name it asked for when `name` is `null`, empty or absent | `Outcome`; 409 when already settled |
 | `/api/networks/<id>/joins/<node>/deny` | `{}` | `Outcome`; 409 when already settled |
-| `/api/networks/<id>/invites` | `InviteIn {expires_secs, uses}` | `Invite`, with an `id` this server gives it |
-| `/api/networks/<id>/invites/<id>/revoke` | `{}` | 501 until the daemon can revoke an invite |
+| `/api/networks/<id>/invites` | `InviteIn {expires_secs, uses}` | `Invite`; its `id` is the one the list shows |
+| `/api/networks/<id>/invites/<id>/revoke` | `{}` | `Outcome`; signs a revocation, after which no device can join with the invite. 404 for an invite that is not open |
 | `/api/networks/<id>/phones` | `PhoneIn {name, tags}` | `PhoneCreated`. The flow's one ledger write; this server keeps the phone's config until `kith-ui` stops |
 | `/api/networks/<id>/phones/<node>/config` | `PhoneConfigIn {everything}` | `PhoneConfig`; tier 3. 404 for a phone made before `kith-ui` started; 400 for `everything` when this device offers no exit |
 | `/api/networks/<id>/records` | `RecordIn {name, type, value, based_on}`, `name` without the network suffix | `Outcome`; 409 when `based_on` is stale |
 | `/api/networks/<id>/records/<name>/delete` | `{}`; `<name>` is the full name the list shows, or the short one | `Outcome` |
-| `/api/networks/<id>/devices/<node>/rename` | `RenameIn {name, based_on}` | 501 until the daemon can rename a device |
+| `/api/networks/<id>/devices/<node>/rename` | `RenameIn {name, based_on}`; `name` follows the join rules (not empty, at most 64 bytes) and every member sees it as the device's name, made a unique DNS label | `Outcome`; 409 when `based_on` is stale, with the current name in `conflict.op` |
 | `/api/networks/<id>/devices/<node>/remove` | `RemoveIn {lost}`; with `lost`, the names an admin pointed at the device (by address or alias) go too | `Outcome`; 409 when another admin removed it first. This device leaves instead |
 | `/api/networks/<id>/leave` | `{}` | `Outcome`; tier 3 |
 | `/api/exit` | `ExitIn {network, node}`, both `null` for no exit | `Outcome` |
 | `/api/networks/<id>/exits/<node>` | `GrantIn {allowed}` | `Outcome` |
+| `/api/networks/<id>/policy` | `PolicyIn {toml}` | `Outcome`; 400 with the parser's line and column in `message` when the TOML does not parse |
+| `/api/networks/<id>/relays` | `RelayIn {name, address, node}`; `node` is the device running the relay, `null` for this one. A relay of the same name is replaced | `Outcome` |
+| `/api/networks/<id>/relays/<name>/remove` | `{}` | `Outcome`; 404 for a relay that is not advertised |
+| `/api/server` | `ServerView {exit, relay}` | `Outcome`; tier 3 |
+| `/api/wireguard/import` | `ImportIn {name, conf_text}`, a `wg-quick` config | `Imported {network}`; tier 3. 400 with the parser's message for a config that does not parse |
 | `/api/blocked/<id>/allow` | `AllowIn {preview}`. The id names the connection (`blocked:<network>:<from>:<to>:<protocol>:<port>`), so a second allow is harmless | `AllowPreview {rule_sentence, new_paths}` when previewing, such as `phone may reach nas on TCP 22`, with one path for the one rule; else `Outcome` |
 
 Not in v1, so the page ships no button for them: force-handshake, pause with a deadline, generic member requests.
@@ -114,11 +121,11 @@ Only the routes of the design spec §4.1 serve the page: `/`, `/welcome`, `/this
 
 ## Fixture mode
 
-`kith-ui --fixture web/fixtures/office.json` serves a recorded network instead of talking to the daemon. Every time in the file moves so that it was recorded at startup. The recording goes through the same path as a daemon's journal:
+`kith-ui --fixture web/fixtures/office.json` simulates a daemon from a recorded network instead of talking to one; the boot payload's `boot` is the file's, so the page knows it is a simulation. Every time in the file moves so that it was recorded at startup. The recording goes through the same path as a daemon's journal:
 
 - `boot` is the file's, and its journal is the history a page can resume from.
 - Ticks every 2 s advance the recorded traffic counters step by step, with the recorded links.
-- The recorded entries play again, in a loop, as new entries numbered after the last one and stamped now. They keep the recorded spacing 60 times faster, at least 0.5 s and at most 20 s apart.
+- The recorded activity (peers online and offline, path and endpoint changes, drops, warnings, log lines) plays again, in a loop, as new entries numbered after the last one and stamped now. It keeps the recorded spacing 60 times faster, at least 0.5 s and at most 20 s apart. Joins, removals and exit changes are not replayed: they happen only when the page makes them.
 - The recording never stops or restarts: no `daemon_down`, and `reset` only for a page that asks with another boot.
 
-Reads, name validation and blocked-connection previews answer from the file; `request-code` answers `kith://request/<network>-recorded`; changes answer 501. `npm run fixture` regenerates the file.
+Every endpoint works. Reads answer from an in-memory copy of the file, and every change edits that copy and writes the journal entry a daemon would, so the page sees its own changes on the stream: approving a join adds the device (`device_joined`), removing one drops it (`device_removed`), renaming writes `device_renamed`, using an exit writes `exit_changed`, and adding a phone adds a device. Records, invites (real `kith://join/` links for a network no daemon serves), revocations, the policy (allowing a blocked connection adds its rule and clears the group), relays and server mode change what the reads return; an import checks the config as the daemon does and names a made-up network. Tier-3 changes do not prompt. Nothing reaches a daemon or the network, and changes last until `kith-ui` stops. `request-code` answers `kith://request/<network>-recorded`. `npm run fixture` regenerates the file.

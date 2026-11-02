@@ -13,8 +13,9 @@ use kith_ipc::{Request, Response};
 use serde_json::json;
 
 use crate::api::{
-    Answer, ApiError, HeldPhone, as_admin, daemon, lock, network_id, node_id, qr_svg, summary,
+    Answer, ApiError, HeldPhone, as_admin, lock, network_id, node_id, qr_svg, summary,
 };
+use crate::ipc::Source;
 use crate::wire::{PhoneConfig, PhoneConfigIn, PhoneCreated, PhoneIn};
 use crate::{Shared, now_ms};
 
@@ -29,7 +30,14 @@ pub(crate) async fn create(
     input: Result<Json<PhoneIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let daemon = daemon(&shared)?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => {
+            let (created, held) = sim.add_phone(&shared.live, &net, &input)?;
+            hold(&shared, &net, &created.node, held);
+            return Ok(Json(json!(created)));
+        }
+        Source::Daemon(daemon) => daemon,
+    };
     let network = network_id(&net)?;
     let request = Request::ExportWireGuard {
         network,
@@ -63,8 +71,14 @@ pub(crate) async fn create(
         everything,
         made_ms: now_ms(),
     };
+    hold(&shared, &network.to_string(), &created.node, held);
+    Ok(Json(json!(created)))
+}
+
+/// Keeps a phone's config until the page reveals it, dropping the oldest past [`MAX_HELD`].
+fn hold(shared: &Shared, net: &str, node: &str, held: HeldPhone) {
     let mut phones = lock(&shared.api.phones);
-    phones.insert((network.to_string(), created.node.clone()), held);
+    phones.insert((net.to_owned(), node.to_owned()), held);
     while phones.len() > MAX_HELD {
         let Some(oldest) = phones
             .iter()
@@ -75,8 +89,6 @@ pub(crate) async fn create(
         };
         phones.remove(&oldest);
     }
-    drop(phones);
-    Ok(Json(json!(created)))
 }
 
 /// `POST /api/networks/:net/phones/:node/config`: the private config, once the OS
@@ -87,7 +99,6 @@ pub(crate) async fn config(
     input: Result<Json<PhoneConfigIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let daemon = daemon(&shared)?;
     let network = network_id(&net)?;
     let key = (network.to_string(), node_id(&node)?.to_string());
     let held = lock(&shared.api.phones)
@@ -104,12 +115,14 @@ pub(crate) async fn config(
     } else {
         held.mesh
     };
-    let status = crate::api::status_of(daemon).await?;
-    let name = summary(&status, network)?.name.clone();
-    shared
-        .api
-        .confirm(&format!("show the private key of a new phone in {name}"))
-        .await?;
+    if let Source::Daemon(daemon) = &shared.source {
+        let status = crate::api::status_of(daemon).await?;
+        let name = summary(&status, network)?.name.clone();
+        shared
+            .api
+            .confirm(&format!("show the private key of a new phone in {name}"))
+            .await?;
+    }
     Ok(Json(json!(PhoneConfig {
         qr_svg: qr_svg(&config),
         config,

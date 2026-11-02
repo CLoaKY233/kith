@@ -409,8 +409,6 @@ pub enum ApiErrorCode {
     VersionSkew,
     /// The person at this computer refused or cancelled the OS confirmation.
     OsAuthDenied,
-    /// This server has no such endpoint yet.
-    NotImplemented,
     /// Anything else; `message` says what.
     Internal,
 }
@@ -567,6 +565,89 @@ pub struct Invite {
     pub uses: Option<u32>,
     /// Devices that used it so far, by name.
     pub used_by: Vec<String>,
+}
+
+/// `POST /api/networks/:net/joins/:node/approve`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ApproveIn {
+    /// The name the device joins under; `null` or absent keeps the one it asked for.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// An invite that can still admit devices, from `GET /api/networks/:net/invites`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct OpenInvite {
+    /// Its id, for revoking it: the same as [`Invite::id`] when it was made.
+    pub id: String,
+    /// When it lapses, in Unix milliseconds.
+    pub expires_at_ms: u64,
+    /// How many more devices it admits; `null` is unlimited.
+    pub uses_left: Option<u32>,
+    /// When it was made, in Unix milliseconds.
+    pub created_at_ms: u64,
+}
+
+/// `POST /api/networks/:net/policy`: replaces the network's policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PolicyIn {
+    /// The policy as TOML, as `GET` gives it.
+    pub toml: String,
+}
+
+/// One relay advertised in a network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RelayView {
+    /// The relay's name, unique in the network.
+    pub name: String,
+    /// Its `host:port`.
+    pub address: String,
+    /// The device running it.
+    pub node: String,
+}
+
+/// `POST /api/networks/:net/relays`: advertises a relay. `node` is the device running it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct RelayIn {
+    /// The relay's name.
+    pub name: String,
+    /// Its `host:port`.
+    pub address: String,
+    /// The device running it; `null` is this device.
+    pub node: Option<String>,
+}
+
+/// `GET` and `POST /api/server`: whether this device offers itself as an exit and a relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ServerView {
+    /// Act as an exit node.
+    pub exit: bool,
+    /// Act as a relay.
+    pub relay: bool,
+}
+
+/// `POST /api/wireguard/import`: a plain WireGuard config to run as a network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ImportIn {
+    /// The name for the imported network.
+    pub name: String,
+    /// The `wg-quick` config text.
+    pub conf_text: String,
+}
+
+/// The network a WireGuard import made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Imported {
+    /// Its id.
+    pub network: String,
 }
 
 /// `POST /api/networks/:net/phones`: makes a plain WireGuard device.
@@ -741,5 +822,11 @@ pub struct Fixture {
     /// Exits per network id.
     pub exits: BTreeMap<String, Vec<ExitView>>,
     /// Open invites per network id.
-    pub invites: BTreeMap<String, Vec<Invite>>,
+    pub invites: BTreeMap<String, Vec<OpenInvite>>,
+    /// Each network's policy as TOML; a network without one allows everything.
+    #[serde(default)]
+    pub policies: BTreeMap<String, String>,
+    /// Relays per network id.
+    #[serde(default)]
+    pub relays: BTreeMap<String, Vec<RelayView>>,
 }

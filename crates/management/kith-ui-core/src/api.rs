@@ -1,7 +1,7 @@
 //! `/api/...`: reads and changes, each one or a few IPC requests to the daemon.
 //!
-//! Every handler reads from [`crate::ipc::Source`]: the daemon, or under `--fixture` a
-//! recorded network that answers reads and refuses changes with 501.
+//! Every handler reads from [`crate::ipc::Source`]: the daemon, or under `--fixture` the
+//! simulator in [`crate::sim`], which changes its copy of the recording.
 
 pub(crate) mod blocked;
 pub(crate) mod codes;
@@ -11,7 +11,10 @@ pub(crate) mod invites;
 pub(crate) mod joins;
 pub(crate) mod peers;
 pub(crate) mod phones;
+pub(crate) mod policy;
 pub(crate) mod records;
+pub(crate) mod relays;
+pub(crate) mod server;
 pub(crate) mod status;
 pub(crate) mod traffic;
 pub(crate) mod validate;
@@ -32,12 +35,9 @@ use qrcode::QrCode;
 use qrcode::render::svg;
 use serde_json::{Value, json};
 
-use crate::Shared;
-use crate::ipc::{Daemon, Source};
+use crate::ipc::Daemon;
 use crate::osauth::{Gate, OsAuthError};
-use crate::wire::{
-    ApiErrorBody, ApiErrorCode, Conflict, Host, Invite, Outcome, OutcomeState, Resolution,
-};
+use crate::wire::{ApiErrorBody, ApiErrorCode, Conflict, Host, Outcome, OutcomeState, Resolution};
 
 /// How long reading the daemon's journal history may take before giving up on it.
 const HISTORY_TIME: core::time::Duration = core::time::Duration::from_secs(5);
@@ -73,20 +73,6 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, ApiErrorCode::NotFound, message)
     }
 
-    /// For an endpoint the contract names but the daemon cannot do yet.
-    pub(crate) fn not_implemented(what: &str) -> Self {
-        Self::new(
-            StatusCode::NOT_IMPLEMENTED,
-            ApiErrorCode::NotImplemented,
-            format!("{what} is not available yet"),
-        )
-    }
-
-    /// For a change asked of the fixture server, which only replays.
-    pub(crate) fn fixture() -> Self {
-        Self::not_implemented("changing a recorded network")
-    }
-
     pub(crate) fn unexpected() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -111,6 +97,14 @@ impl ApiError {
         self.body.code
     }
 }
+
+impl core::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}: {}", self.status, self.body.message)
+    }
+}
+
+impl core::error::Error for ApiError {}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -188,8 +182,8 @@ impl From<JsonRejection> for ApiError {
 /// A JSON answer.
 pub(crate) type Answer = Result<Json<Value>, ApiError>;
 
-/// The answer to a change the daemon applied. The daemon does not name its ledger ops
-/// yet, so `op` stays `null` and the page shows "Saved on this device".
+/// The answer to a change the daemon applied. `op` stays `null`: the daemon does not name
+/// the ledger op a change signed, and the page shows "Saved on this device".
 pub(crate) fn accepted() -> Json<Value> {
     Json(json!(Outcome {
         state: OutcomeState::Accepted,
@@ -217,9 +211,6 @@ pub(crate) struct State {
     prompt: tokio::sync::Mutex<()>,
     /// The computer, read once.
     pub(crate) host: Host,
-    /// Invites made through this page, per network id as it prints, as the daemon cannot
-    /// list them.
-    pub(crate) invites: Mutex<BTreeMap<String, Vec<Invite>>>,
     /// Phone configs made through this page, per network id and device id, each as the
     /// ids print.
     pub(crate) phones: Mutex<BTreeMap<(String, String), HeldPhone>>,
@@ -231,7 +222,6 @@ impl State {
             gate,
             prompt: tokio::sync::Mutex::new(()),
             host: status::host(),
-            invites: Mutex::new(BTreeMap::new()),
             phones: Mutex::new(BTreeMap::new()),
         }
     }
@@ -243,25 +233,15 @@ impl State {
     }
 }
 
-/// Forgets what this server holds for a network this device left: its invites and the
-/// private configs of its phones.
+/// Forgets the private configs of the phones of a network this device left.
 pub(crate) fn forget(state: &State, network: NetworkId) {
     let key = network.to_string();
-    lock(&state.invites).remove(&key);
     lock(&state.phones).retain(|(net, _), _| *net != key);
 }
 
 /// Locks `mutex`; a panic elsewhere while holding it leaves data that is still usable.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// The daemon, or 501 when serving a recording, which cannot change.
-pub(crate) fn daemon(shared: &Shared) -> Result<&Daemon, ApiError> {
-    match &shared.source {
-        Source::Daemon(daemon) => Ok(daemon),
-        Source::Fixture(_) => Err(ApiError::fixture()),
-    }
 }
 
 pub(crate) fn network_id(text: &str) -> Result<NetworkId, ApiError> {

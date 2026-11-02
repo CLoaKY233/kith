@@ -21,7 +21,7 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
 use futures_core::Stream;
-use kith_ipc::{Entry, TrafficSeries};
+use kith_ipc::{Entry, EntryKind, TrafficSeries};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -264,29 +264,58 @@ impl Live {
         let mut run = self.lock();
         self.mark_up(&mut run);
         for entry in entries {
-            if entry.seq < run.next {
-                continue;
-            }
-            if entry.seq > run.next
-                && let Some(gap) = gap(run.next, entry.seq)
-            {
-                self.send(Message::Signal(gap));
-            }
-            run.next = entry.seq.saturating_add(1);
-            if let Some(frame) = Frame::entry(&run.boot, &entry) {
-                self.send(Message::Entry {
-                    boot: Arc::clone(&run.boot),
-                    seq: entry.seq,
-                    frame,
-                });
-            }
-            if run.ring.len() == KEEP {
-                run.ring.pop_front();
-            }
-            run.ring.push_back(entry);
+            self.append(&mut run, entry);
         }
         drop(run);
         self.settle();
+    }
+
+    /// Keeps and sends one entry; an entry already kept is skipped.
+    fn append(&self, run: &mut Run, entry: Entry) {
+        if entry.seq < run.next {
+            return;
+        }
+        if entry.seq > run.next
+            && let Some(gap) = gap(run.next, entry.seq)
+        {
+            self.send(Message::Signal(gap));
+        }
+        run.next = entry.seq.saturating_add(1);
+        if let Some(frame) = Frame::entry(&run.boot, &entry) {
+            self.send(Message::Entry {
+                boot: Arc::clone(&run.boot),
+                seq: entry.seq,
+                frame,
+            });
+        }
+        if run.ring.len() == KEEP {
+            run.ring.pop_front();
+        }
+        run.ring.push_back(entry);
+    }
+
+    /// Adds one new entry of the current run, numbered after the newest, as a simulated
+    /// daemon writes its journal.
+    pub(crate) fn push(&self, kind: EntryKind) {
+        let mut run = self.lock();
+        let entry = Entry {
+            seq: run.next,
+            at_ms: now_ms(),
+            kind,
+        };
+        self.append(&mut run, entry);
+        drop(run);
+        self.settle();
+    }
+
+    /// The kinds of the kept entries, oldest first.
+    #[cfg(test)]
+    pub(crate) fn kinds(&self) -> Vec<EntryKind> {
+        self.lock()
+            .ring
+            .iter()
+            .map(|entry| entry.kind.clone())
+            .collect()
     }
 
     /// The daemon stopped answering. Sent once until it answers again.

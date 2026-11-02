@@ -28,6 +28,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+mod manage;
+
 use crate::blocked::BlockedLog;
 use crate::channel::{ChannelLayer, now, pick_targets};
 use crate::connectivity::{Connectivity, Output};
@@ -750,31 +752,6 @@ impl Daemon {
             }
             Action::UseExit { network, node } => self.use_exit(network, node).await,
             Action::RemoveDevice { network, node } => self.remove_device(network, node).await,
-            Action::AdvertiseRelay {
-                network,
-                name,
-                address,
-                node,
-            } => {
-                let node = node.unwrap_or_else(|| identity.node_id());
-                let relay = Relay::new(name, address.clone(), node)
-                    .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
-                self.write_admin_record(network, &Record::Relay(relay), true)
-                    .await?;
-                Ok(Response::RelayAdvertised { address })
-            }
-            Action::RemoveRelay { network, name } => {
-                let relay = self
-                    .member_map(network)?
-                    .relays()
-                    .iter()
-                    .find(|relay| relay.name() == name)
-                    .cloned()
-                    .ok_or_else(|| NodeError::NotFound(format!("relay {name}")))?;
-                self.write_admin_record(network, &Record::Relay(relay), false)
-                    .await?;
-                Ok(Response::RelayRemoved)
-            }
             Action::SetExitGrant {
                 network,
                 node,
@@ -802,6 +779,14 @@ impl Daemon {
             Action::PendingJoins => Ok(self.pending_joins()),
             Action::ApproveJoin { network, node } => self.approve_join(network, node).await,
             Action::DenyJoin { network, node } => self.deny_join(network, node),
+            action @ (Action::AdvertiseRelay { .. }
+            | Action::RemoveRelay { .. }
+            | Action::RenameDevice { .. }
+            | Action::ListInvites { .. }
+            | Action::RevokeInvite { .. }
+            | Action::GetPolicy { .. }
+            | Action::ListRelays { .. }
+            | Action::ListExits { .. }) => self.manage(action).await,
         }
     }
 

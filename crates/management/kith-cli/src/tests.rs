@@ -87,6 +87,26 @@ fn every_command_parses_into_the_right_request() {
         ),
         (vec!["remove", "home", "ghost"], Err(())),
         (
+            vec!["rename", "home", "nas", "attic"],
+            Ok(Request::RenameDevice {
+                network: NET,
+                node: NODE,
+                name: "attic".into(),
+            }),
+        ),
+        (vec!["rename", "home", "nas"], Err(())),
+        (
+            vec!["invite", "list", "home"],
+            Ok(Request::ListInvites { network: NET }),
+        ),
+        (
+            vec!["invite", "revoke", "home", "ab12"],
+            Ok(Request::RevokeInvite {
+                network: NET,
+                invite: "ab12".into(),
+            }),
+        ),
+        (
             vec!["peers", "home", "--json"],
             Ok(Request::Peers { network: NET }),
         ),

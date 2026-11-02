@@ -9,25 +9,49 @@ use axum::extract::{Path, State};
 use kith_ipc::{DnsRecord, EntryKind, PeerInfo, RecordInfo, Request, Response};
 use kith_types::{NetworkId, NodeId};
 
-use crate::Shared;
 use crate::api::records::{named, relative};
 use crate::api::{
-    Answer, ApiError, accepted, as_admin, daemon, forget, history, lock, network_id, node_id,
-    settled, status_of, summary,
+    Answer, ApiError, accepted, as_admin, forget, history, lock, network_id, node_id, settled,
+    status_of, summary,
 };
-use crate::ipc::Daemon;
+use crate::ipc::{Daemon, Source};
 use crate::wire::{ApiErrorCode, RemoveIn, RenameIn};
+use crate::{Shared, now_ms};
 
-/// `POST /api/networks/:net/devices/:node/rename`: the daemon has no rename yet, so this
-/// answers 501.
+/// `POST /api/networks/:net/devices/:node/rename` (tier 2). With `based_on`, the name the
+/// edit started from, a device renamed by someone else meanwhile answers 409 with its
+/// current name in `conflict.op`.
 pub(crate) async fn rename(
     State(shared): State<Arc<Shared>>,
-    Path((_net, _node)): Path<(String, String)>,
+    Path((net, node)): Path<(String, String)>,
     input: Result<Json<RenameIn>, JsonRejection>,
 ) -> Answer {
-    let Json(_input) = input?;
-    daemon(&shared)?;
-    Err(ApiError::not_implemented("renaming a device"))
+    let Json(input) = input?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.rename(&shared.live, &net, &node, &input.name),
+        Source::Daemon(daemon) => daemon,
+    };
+    let (network, node) = (network_id(&net)?, node_id(&node)?);
+    if let Some(based_on) = &input.based_on {
+        let Response::Peers(peers) = daemon.ask(Request::Peers { network }).await? else {
+            return Err(ApiError::unexpected());
+        };
+        if let Some(peer) = peers.iter().find(|peer| peer.node == node)
+            && peer.name != *based_on
+            && peer.display_name != *based_on
+        {
+            return Err(settled(None, now_ms(), Some(peer.name.clone())));
+        }
+    }
+    let request = Request::RenameDevice {
+        network,
+        node,
+        name: input.name,
+    };
+    let Response::DeviceRenamed = as_admin(daemon, network, request).await? else {
+        return Err(ApiError::unexpected());
+    };
+    Ok(accepted())
 }
 
 /// Whether `record` points at `device`: by its addresses, or as an alias of its name.
@@ -110,7 +134,10 @@ pub(crate) async fn remove(
     input: Result<Json<RemoveIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let daemon = daemon(&shared)?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.remove(&shared.live, &net, &node, input.lost),
+        Source::Daemon(daemon) => daemon,
+    };
     let (network, node) = (network_id(&net)?, node_id(&node)?);
     if status_of(daemon).await?.node == Some(node) {
         return leave_network(&shared, daemon, network).await;
@@ -145,6 +172,9 @@ pub(crate) async fn remove(
 /// `POST /api/networks/:net/leave` (tier 3): takes this device out of the network once
 /// the OS confirms the person at this computer.
 pub(crate) async fn leave(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
-    let daemon = daemon(&shared)?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.leave(&shared.live, &net),
+        Source::Daemon(daemon) => daemon,
+    };
     leave_network(&shared, daemon, network_id(&net)?).await
 }

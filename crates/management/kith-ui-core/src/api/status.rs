@@ -34,7 +34,7 @@ const BUSY_ABOVE: u64 = 1_000_000;
 /// `GET /api/status`.
 pub(crate) async fn status(State(shared): State<Arc<Shared>>) -> Answer {
     let view = match &shared.source {
-        Source::Fixture(fixture) => fixture.status.clone(),
+        Source::Fixture(sim) => sim.read().status.clone(),
         Source::Daemon(daemon) => read(&shared, daemon, false).await?.view,
     };
     Ok(Json(json!(view)))
@@ -43,7 +43,7 @@ pub(crate) async fn status(State(shared): State<Arc<Shared>>) -> Answer {
 /// `GET /api/pending`.
 pub(crate) async fn pending(State(shared): State<Arc<Shared>>) -> Answer {
     let pending = match &shared.source {
-        Source::Fixture(fixture) => fixture.pending.clone(),
+        Source::Fixture(sim) => sim.read().pending.clone(),
         Source::Daemon(daemon) => {
             let mut client = daemon.connect().await?;
             let Response::Status(status) = client.request(Request::Status).await? else {
@@ -64,7 +64,7 @@ pub(crate) async fn boot(State(shared): State<Arc<Shared>>) -> Answer {
 /// `boot`, `seq`, traffic and tick over it.
 pub(crate) async fn snapshot(shared: &Shared) -> Result<Boot, ApiError> {
     match &shared.source {
-        Source::Fixture(fixture) => Ok(crate::fixture::boot(fixture)),
+        Source::Fixture(sim) => Ok(crate::fixture::boot(&sim.read())),
         Source::Daemon(daemon) => daemon_boot(shared, daemon).await,
     }
 }

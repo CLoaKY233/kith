@@ -12,11 +12,12 @@ use serde_json::json;
 use crate::api::codes::check_code;
 use crate::api::status::{JOIN_LIFETIME_MS, recorded_network};
 use crate::api::{
-    Answer, ApiError, accepted, as_admin, daemon, history, network_id, node_id, settled, status_of,
+    Answer, ApiError, accepted, as_admin, history, network_id, node_id, settled, status_of,
 };
 use crate::ipc::{Daemon, Source};
 use crate::wire::{
-    ApiErrorCode, CreateNetworkIn, JoinCode, JoinIn, JoinRequestState, RequestJoinIn, Resolution,
+    ApiErrorCode, ApproveIn, CreateNetworkIn, JoinCode, JoinIn, JoinRequestState, RequestJoinIn,
+    Resolution,
 };
 use crate::{Shared, now_ms};
 
@@ -26,11 +27,15 @@ pub(crate) async fn create_network(
     input: Result<Json<CreateNetworkIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.create_network(&input),
+        Source::Daemon(daemon) => daemon,
+    };
     let request = Request::CreateNetwork {
         name: input.name,
         device_name: input.device_name,
     };
-    let Response::NetworkCreated { .. } = daemon(&shared)?.ask(request).await? else {
+    let Response::NetworkCreated { .. } = daemon.ask(request).await? else {
         return Err(ApiError::unexpected());
     };
     Ok(accepted())
@@ -42,11 +47,15 @@ pub(crate) async fn join(
     input: Result<Json<JoinIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.join(&input),
+        Source::Daemon(daemon) => daemon,
+    };
     let request = Request::Join {
         invite_link: input.invite_link,
         device_name: input.device_name,
     };
-    let Response::Joined { .. } = daemon(&shared)?.ask(request).await? else {
+    let Response::Joined { .. } = daemon.ask(request).await? else {
         return Err(ApiError::unexpected());
     };
     Ok(accepted())
@@ -61,7 +70,10 @@ pub(crate) async fn request(
     input: Result<Json<RequestJoinIn>, JsonRejection>,
 ) -> Answer {
     let Json(input) = input?;
-    let daemon = daemon(&shared)?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.request_join(&input.request_code),
+        Source::Daemon(daemon) => daemon,
+    };
     let mut client = daemon.connect().await?;
     let Response::Status(status) = client.request(Request::Status).await? else {
         return Err(ApiError::unexpected());
@@ -119,7 +131,8 @@ pub(crate) async fn request_code(
     Path(net): Path<String>,
 ) -> Answer {
     let code = match &shared.source {
-        Source::Fixture(fixture) => {
+        Source::Fixture(sim) => {
+            let fixture = &*sim.read();
             let name = recorded_network(fixture, &net)?
                 .get("name")
                 .and_then(|name| name.as_str())
@@ -181,17 +194,49 @@ async fn settled_join(daemon: &Daemon, network: NetworkId, node: NodeId) -> ApiE
     }
 }
 
-/// Approves or denies; when the request is already settled, 409 says how.
-async fn answer(shared: &Shared, net: &str, node: &str, approve: bool) -> Answer {
-    let daemon = daemon(shared)?;
+/// What an admin decided about a join request.
+#[derive(Debug)]
+enum Decision {
+    /// Let it in, under this name or the one it asked for.
+    Approve(Option<String>),
+    /// Turn it down.
+    Deny,
+}
+
+/// Approves, under `name` when given, or denies; when the request is already settled,
+/// 409 says how.
+async fn answer(shared: &Shared, net: &str, node: &str, decision: Decision) -> Answer {
+    let daemon = match (&shared.source, &decision) {
+        (Source::Fixture(sim), Decision::Approve(name)) => {
+            return sim.approve(&shared.live, net, node, name.as_deref());
+        }
+        (Source::Fixture(sim), Decision::Deny) => return sim.deny(net, node),
+        (Source::Daemon(daemon), _) => daemon,
+    };
     let (network, node) = (network_id(net)?, node_id(node)?);
-    let request = if approve {
+    let request = if matches!(decision, Decision::Approve(_)) {
         Request::ApproveJoin { network, node }
     } else {
         Request::DenyJoin { network, node }
     };
     match as_admin(daemon, network, request).await {
-        Ok(Response::JoinApproved { .. } | Response::JoinRequestDenied) => Ok(accepted()),
+        Ok(Response::JoinApproved { device }) => {
+            if let Decision::Approve(Some(name)) = decision
+                && !name.trim().is_empty()
+                && name.trim() != device
+            {
+                let rename = Request::RenameDevice {
+                    network,
+                    node,
+                    name,
+                };
+                let Response::DeviceRenamed = as_admin(daemon, network, rename).await? else {
+                    return Err(ApiError::unexpected());
+                };
+            }
+            Ok(accepted())
+        }
+        Ok(Response::JoinRequestDenied) => Ok(accepted()),
         Ok(_) => Err(ApiError::unexpected()),
         Err(error) if error.code() == ApiErrorCode::NotFound => {
             Err(settled_join(daemon, network, node).await)
@@ -200,15 +245,15 @@ async fn answer(shared: &Shared, net: &str, node: &str, approve: bool) -> Answer
     }
 }
 
-/// `POST /api/networks/:net/joins/:node/approve`.
-///
-/// The device joins as a member, under the name it asked for: the daemon cannot name it
-/// on approval yet, so a `name` in the body is ignored.
+/// `POST /api/networks/:net/joins/:node/approve`: the device joins as a member, under
+/// `name` when the admin gave one, else under the name it asked for.
 pub(crate) async fn approve(
     State(shared): State<Arc<Shared>>,
     Path((net, node)): Path<(String, String)>,
+    input: Result<Json<ApproveIn>, JsonRejection>,
 ) -> Answer {
-    answer(&shared, &net, &node, true).await
+    let Json(input) = input?;
+    answer(&shared, &net, &node, Decision::Approve(input.name)).await
 }
 
 /// `POST /api/networks/:net/joins/:node/deny`.
@@ -216,5 +261,5 @@ pub(crate) async fn deny(
     State(shared): State<Arc<Shared>>,
     Path((net, node)): Path<(String, String)>,
 ) -> Answer {
-    answer(&shared, &net, &node, false).await
+    answer(&shared, &net, &node, Decision::Deny).await
 }

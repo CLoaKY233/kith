@@ -234,6 +234,23 @@ const status = {
   exit_state: 'active',
 };
 
+// The policy as the daemon writes it: everyone reaches vps, only desk and laptop reach
+// everything, so phone's ssh to nas is blocked.
+const device = (d) => `{ Device = [${d.node.match(/../g).map((b) => parseInt(b, 16)).join(', ')}] }`;
+const everything = 'protocol = "Any"\nports = "All"\n';
+const policy = `[[rules]]
+sources = ["Any"]
+
+[[rules.destinations]]
+selector = ${device(vps)}
+${everything}
+[[rules]]
+sources = [${device(self)}, ${device(byName.desk)}]
+
+[[rules.destinations]]
+selector = "Any"
+${everything}`;
+
 const fixture = {
   recorded_at_ms: RECORDED,
   boot: '9f2c1a7e5b3d4c60',
@@ -283,15 +300,15 @@ const fixture = {
   invites: {
     [NET]: [
       {
-        id: 'inv-3f9a',
-        link: 'kith://invite/home/3f9a-k2m4-x7q1-c8d0',
-        qr_svg: null,
+        id: hex(32),
         expires_at_ms: RECORDED + 40 * MINUTE,
-        uses: 1,
-        used_by: [],
+        uses_left: 1,
+        created_at_ms: RECORDED - 20 * MINUTE,
       },
     ],
   },
+  policies: { [NET]: policy },
+  relays: { [NET]: [{ name: 'vps', address: '203.0.113.40:443', node: vps.node }] },
 };
 
 const target = fileURLToPath(new URL('../fixtures/office.json', import.meta.url));

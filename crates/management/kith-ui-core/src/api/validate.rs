@@ -34,7 +34,7 @@ pub(crate) struct NameQuery {
 
 /// The name as it would be stored: lowercase, trimmed, each run of spaces and hyphens
 /// one hyphen, as the daemon turns a name into its label.
-fn normalize(name: &str) -> String {
+pub(crate) fn normalize(name: &str) -> String {
     let mut label = String::with_capacity(name.len());
     for ch in name.trim().chars().flat_map(char::to_lowercase) {
         if ch.is_whitespace() || ch == '-' {
@@ -48,7 +48,7 @@ fn normalize(name: &str) -> String {
     label
 }
 
-fn problem(name: &str) -> Option<NameProblem> {
+pub(crate) fn problem(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
         Some(NameProblem::Empty)
     } else if name.len() > MAX_LABEL {
@@ -181,7 +181,7 @@ pub(crate) async fn name(
     }
     let net = query.net.as_deref().filter(|net| !net.is_empty());
     let taken = match &shared.source {
-        Source::Fixture(fixture) => recorded(fixture, net)?,
+        Source::Fixture(sim) => recorded(&sim.read(), net)?,
         Source::Daemon(daemon) => in_use(daemon, net).await?,
     };
     let check = if taken.contains(&name) {

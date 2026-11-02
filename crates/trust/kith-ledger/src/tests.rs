@@ -1198,3 +1198,39 @@ fn a_client_key_of_zeros_is_refused() {
         LedgerError::BadClientKey
     );
 }
+
+fn rename(seed: u8, name: &str) -> OpBody {
+    OpBody::RenameDevice {
+        device: id(seed),
+        name: name.into(),
+    }
+}
+
+#[test]
+fn admins_rename_devices_last_writer_wins_and_readd_resets() {
+    let mut ledger = network(&[2], 1);
+    act(&mut ledger, &key(1), add_device(5, "old"));
+    act(&mut ledger, &key(5), rename(5, "sneaky"));
+    assert_eq!(
+        ledger.view().devices()[&id(5)].name,
+        "old",
+        "non-admins cannot rename"
+    );
+
+    act(&mut ledger, &key(1), rename(5, "first"));
+    act(&mut ledger, &key(2), rename(5, "second"));
+    assert_eq!(ledger.view().devices()[&id(5)].name, "second");
+
+    act(&mut ledger, &key(1), OpBody::RemoveDevice { device: id(5) });
+    act(&mut ledger, &key(1), add_device(5, "fresh"));
+    assert_eq!(ledger.view().devices()[&id(5)].name, "fresh");
+
+    let long = "x".repeat(MAX_NAME_LEN + 1);
+    assert_eq!(
+        ledger
+            .draft(id(1), rename(5, &long), NOW)
+            .sign(&key(1))
+            .unwrap_err(),
+        LedgerError::NameTooLong(MAX_NAME_LEN + 1)
+    );
+}

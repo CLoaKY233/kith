@@ -274,6 +274,23 @@ fn admission_action(request: Request) -> Result<Action, NodeError> {
         Request::PendingJoins => Action::PendingJoins,
         Request::ApproveJoin { network, node } => Action::ApproveJoin { network, node },
         Request::DenyJoin { network, node } => Action::DenyJoin { network, node },
+        Request::RenameDevice {
+            network,
+            node,
+            name,
+        } => Action::RenameDevice {
+            network,
+            node,
+            name: device_name(name)?,
+        },
+        Request::ListInvites { network } => Action::ListInvites { network },
+        Request::RevokeInvite { network, invite } => Action::RevokeInvite {
+            network,
+            invite: non_empty("invite id", invite)?,
+        },
+        Request::GetPolicy { network } => Action::GetPolicy { network },
+        Request::ListRelays { network } => Action::ListRelays { network },
+        Request::ListExits { network } => Action::ListExits { network },
         _ => return Err(NodeError::InvalidArgument("unsupported request".to_owned())),
     })
 }
@@ -311,6 +328,18 @@ fn non_empty(what: &str, value: String) -> Result<String, NodeError> {
     } else {
         trimmed.to_owned()
     })
+}
+
+/// A device name as joins take it: not empty, and short enough for the ledger.
+fn device_name(name: String) -> Result<String, NodeError> {
+    let name = non_empty("device name", name)?;
+    if name.len() > kith_ledger::MAX_NAME_LEN {
+        return Err(NodeError::InvalidArgument(format!(
+            "device name is longer than {} bytes",
+            kith_ledger::MAX_NAME_LEN
+        )));
+    }
+    Ok(name)
 }
 
 fn invite_lifetime(secs: u64) -> Result<Duration, NodeError> {
@@ -411,6 +440,10 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::Watch
             | Request::PendingJoins
             | Request::RequestCode { .. }
+            | Request::ListInvites { .. }
+            | Request::GetPolicy { .. }
+            | Request::ListRelays { .. }
+            | Request::ListExits { .. }
     )
 }
 

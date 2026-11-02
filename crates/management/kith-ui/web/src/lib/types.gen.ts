@@ -342,7 +342,23 @@ port: number | null,
 /**
  * Packets refused since the last entry for this connection.
  */
-count: number, };
+count: number, } | { "kind": "device_renamed", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * Its name before.
+ */
+old_name: string, 
+/**
+ * Its name now.
+ */
+name: string, };
 
 /**
  * One thing that happened, numbered so a client can resume where it stopped.
@@ -523,7 +539,23 @@ port: number | null,
 /**
  * Packets refused since the last entry for this connection.
  */
-count: number, });
+count: number, } | { "kind": "device_renamed", 
+/**
+ * The network.
+ */
+network: string, 
+/**
+ * The device.
+ */
+node: string, 
+/**
+ * Its name before.
+ */
+old_name: string, 
+/**
+ * Its name now.
+ */
+name: string, });
 
 /**
  * Total bytes received from and sent to a peer at one moment.
@@ -1181,7 +1213,7 @@ set_by: string | null, };
 /**
  * Why a request failed, as the page maps it to copy.
  */
-export type ApiErrorCode = "unauthorized" | "session_used" | "session_expired" | "forbidden" | "permission_denied" | "not_found" | "conflict" | "invalid_argument" | "daemon_down" | "not_in_group" | "version_skew" | "os_auth_denied" | "not_implemented" | "internal";
+export type ApiErrorCode = "unauthorized" | "session_used" | "session_expired" | "forbidden" | "permission_denied" | "not_found" | "conflict" | "invalid_argument" | "daemon_down" | "not_in_group" | "version_skew" | "os_auth_denied" | "internal";
 
 /**
  * How a join request was settled.
@@ -1369,6 +1401,174 @@ uses: number | null,
  * Devices that used it so far, by name.
  */
 used_by: Array<string>, };
+
+/**
+ * `POST /api/networks/:net/joins/:node/approve`.
+ */
+export type ApproveIn = { 
+/**
+ * The name the device joins under; `null` or absent keeps the one it asked for.
+ */
+name: string | null, };
+
+/**
+ * An invite that can still admit devices, from `GET /api/networks/:net/invites`.
+ */
+export type OpenInvite = { 
+/**
+ * Its id, for revoking it: the same as [`Invite::id`] when it was made.
+ */
+id: string, 
+/**
+ * When it lapses, in Unix milliseconds.
+ */
+expires_at_ms: number, 
+/**
+ * How many more devices it admits; `null` is unlimited.
+ */
+uses_left: number | null, 
+/**
+ * When it was made, in Unix milliseconds.
+ */
+created_at_ms: number, };
+
+/**
+ * Which devices a policy selector names.
+ */
+export type SelectorInfo = { 
+/**
+ * `any`, `device` or `tag`.
+ */
+kind: string, 
+/**
+ * The device id or tag name; `None` for `any`.
+ */
+value: string | null, 
+/**
+ * The device's name in the network, when the selector names a known device.
+ */
+name: string | null, };
+
+/**
+ * One destination of a [`PolicyRuleInfo`].
+ */
+export type TargetInfo = { 
+/**
+ * The devices.
+ */
+selector: SelectorInfo, 
+/**
+ * `any`, `tcp`, `udp` or `icmp`.
+ */
+protocol: string, 
+/**
+ * The ports opened, as `start-end` ranges or single ports; empty means every port.
+ */
+ports: Array<string>, };
+
+/**
+ * One allow rule of a [`PolicyInfo`]: any source may reach any destination.
+ */
+export type PolicyRuleInfo = { 
+/**
+ * Which devices may send.
+ */
+sources: Array<SelectorInfo>, 
+/**
+ * What they may reach.
+ */
+destinations: Array<TargetInfo>, };
+
+/**
+ * A network's policy, from [`Request::GetPolicy`].
+ */
+export type PolicyInfo = { 
+/**
+ * The policy as the TOML [`Request::SetPolicy`] takes.
+ */
+toml: string, 
+/**
+ * The same rules, structured.
+ */
+rules: Array<PolicyRuleInfo>, };
+
+/**
+ * `POST /api/networks/:net/policy`: replaces the network's policy.
+ */
+export type PolicyIn = { 
+/**
+ * The policy as TOML, as `GET` gives it.
+ */
+toml: string, };
+
+/**
+ * One relay advertised in a network.
+ */
+export type RelayView = { 
+/**
+ * The relay's name, unique in the network.
+ */
+name: string, 
+/**
+ * Its `host:port`.
+ */
+address: string, 
+/**
+ * The device running it.
+ */
+node: string, };
+
+/**
+ * `POST /api/networks/:net/relays`: advertises a relay. `node` is the device running it.
+ */
+export type RelayIn = { 
+/**
+ * The relay's name.
+ */
+name: string, 
+/**
+ * Its `host:port`.
+ */
+address: string, 
+/**
+ * The device running it; `null` is this device.
+ */
+node: string | null, };
+
+/**
+ * `GET` and `POST /api/server`: whether this device offers itself as an exit and a relay.
+ */
+export type ServerView = { 
+/**
+ * Act as an exit node.
+ */
+exit: boolean, 
+/**
+ * Act as a relay.
+ */
+relay: boolean, };
+
+/**
+ * `POST /api/wireguard/import`: a plain WireGuard config to run as a network.
+ */
+export type ImportIn = { 
+/**
+ * The name for the imported network.
+ */
+name: string, 
+/**
+ * The `wg-quick` config text.
+ */
+conf_text: string, };
+
+/**
+ * The network a WireGuard import made.
+ */
+export type Imported = { 
+/**
+ * Its id.
+ */
+network: string, };
 
 /**
  * `POST /api/networks/:net/phones`: makes a plain WireGuard device.
@@ -1584,4 +1784,12 @@ exits: { [key in string]: Array<ExitView> },
 /**
  * Open invites per network id.
  */
-invites: { [key in string]: Array<Invite> }, };
+invites: { [key in string]: Array<OpenInvite> }, 
+/**
+ * Each network's policy as TOML; a network without one allows everything.
+ */
+policies: { [key in string]: string }, 
+/**
+ * Relays per network id.
+ */
+relays: { [key in string]: Array<RelayView> }, };
