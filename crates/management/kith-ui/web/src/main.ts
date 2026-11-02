@@ -5,16 +5,23 @@ import '../tailwind.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { api } from './lib/api';
+import type { ApiFailure, GateReason } from './lib/types';
+import { parseBoot } from './lib/live/boot';
 import { start } from './lib/live/store.svelte';
+import { preload } from './screens.svelte';
 
-async function signIn(): Promise<void> {
+/** Trades the token; answers why it was refused when the link was used or expired. */
+async function signIn(): Promise<GateReason | null> {
   const match = /(?:^#|&)t=([0-9a-f]+)/.exec(location.hash);
-  if (!match?.[1]) return;
+  if (!match?.[1]) return null;
   history.replaceState(null, '', `${location.pathname}${location.search}`);
   try {
     await api.post('/api/session', { token: match[1] });
-  } catch {
-    // The store's first read reports why (used, expired); the Gate shows it.
+    return null;
+  } catch (cause) {
+    const code = (cause as Partial<ApiFailure> | null)?.code;
+    // The Gate shows it once the store's first read finds no session.
+    return code === 'session_used' || code === 'session_expired' ? code : null;
   }
 }
 
@@ -28,10 +35,11 @@ async function boot(): Promise<void> {
     mount(Kit, { target });
     return;
   }
-  await signIn();
+  const snapshot = parseBoot(document.getElementById('boot')?.textContent);
+  const [signedOut] = await Promise.all([signIn(), preload(location.pathname, snapshot)]);
   target.replaceChildren();
   mount(App, { target });
-  await start();
+  await start(signedOut);
 }
 
 void boot();

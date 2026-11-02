@@ -53,8 +53,6 @@ Props:
         return copy.error.permissionDenied;
       case 'os_auth_denied':
         return copy.error.osAuthDenied;
-      case 'not_implemented':
-        return copy.error.notImplemented;
       case 'daemon_down':
         return copy.conn.staleActions;
       case 'unauthorized':
@@ -108,6 +106,9 @@ Props:
 
   // Relays.
   let loadRelays = $state<ActionHandle<Relay[]> | null>(null);
+  const settled = (handle: ActionHandle<unknown> | null): boolean =>
+    handle !== null && handle.state !== 'idle' && handle.state !== 'pending';
+  const listsSettled = $derived((!admin || settled(loadInvites)) && settled(loadRelays));
   const relays = $derived(
     network ? [...(live.relays[network.id] ?? [])].sort((a, b) => a.name.localeCompare(b.name)) : [],
   );
@@ -301,167 +302,170 @@ Props:
       </div>
     </section>
 
-    <section class="group" aria-labelledby="settings-network">
-      <h2 class="t-heading" id="settings-network">{copy.settings.network}</h2>
+    <!-- Once the lists have loaded, so the sections below them never move (§11.9). -->
+    {#if listsSettled}
+      <section class="group" aria-labelledby="settings-network">
+        <h2 class="t-heading" id="settings-network">{copy.settings.network}</h2>
 
-      <h3 class="label">{copy.settings.admins}</h3>
-      <ul class="list">
-        {#each self.admins as name (name)}
-          {@const peer = peers.find((p) => p.name === name)}
-          <li class="item">
-            <span class="name">{name}</span>
-            {#if name === self.name}
-              <Badge>{copy.device.you}</Badge>
-            {:else if peer}
-              <span class="state">
-                <StatusDot state={peer.online ? 'online' : 'offline'} />
-                {peer.online ? copy.status.online : copy.status.offline}
-              </span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-
-      {#if admin}
-        <h3 class="label">{copy.settings.invites}</h3>
-        {#if loadInvites?.state === 'failed'}
-          <p class="error">{failureText(loadInvites.error)}</p>
-        {:else if loadInvites?.state === 'accepted' && invites.length === 0}
-          <p class="quiet">{copyScreens.settings.noInvites}</p>
-        {:else if invites.length > 0}
-          <ul class="list">
-            {#each invites as invite (invite.id)}
-              {@const handle = revoking[invite.id]}
-              <li class="item invite">
-                <div class="text">
-                  <span>{inviteStatus(invite)}</span>
-                  <span class="quiet">{copyScreens.settings.inviteMade(expiry(invite.created_at_ms))}</span>
-                  {#if handle?.state === 'failed'}
-                    <p class="error">{failureText(handle.error)}</p>
-                  {/if}
-                </div>
-                <Button
-                  variant="secondary"
-                  pending={handle?.state === 'pending'}
-                  disabled={frozen}
-                  aria-label={copyScreens.settings.revokeLabel(expiry(invite.expires_at_ms))}
-                  onclick={() => void revoke(invite)}
-                >
-                  {copy.settings.revoke}
-                </Button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      {/if}
-      {#if frozen}<p class="quiet">{copy.conn.staleActions}</p>{/if}
-    </section>
-
-    <section class="group" aria-labelledby="settings-relays">
-      <h2 class="t-heading" id="settings-relays">{copy.relays.heading}</h2>
-      <p class="quiet">{copy.relays.intro}</p>
-      {#if loadRelays?.state === 'failed'}
-        <p class="error">{failureText(loadRelays.error)}</p>
-      {:else if loadRelays?.state === 'accepted' && relays.length === 0}
-        <p class="quiet">{copy.relays.none}</p>
-      {/if}
-      {#if relays.length > 0}
+        <h3 class="label">{copy.settings.admins}</h3>
         <ul class="list">
-          {#each relays as relay (relay.name)}
-            {@const handle = relayRemoving[relay.name]}
-            <li class="item invite">
-              <div class="text">
-                <span class="name">{relay.name}</span>
-                <span class="quiet"><code class="mono">{relay.address}</code>{DOT}{runner(relay.node)}</span>
-              </div>
-              {#if admin}
-                <Button
-                  variant="secondary"
-                  pending={handle?.state === 'pending'}
-                  disabled={frozen}
-                  aria-label={copy.relays.removeLabel(relay.name)}
-                  onclick={() => void removeRelay(relay)}
-                >
-                  {copy.relays.remove}
-                </Button>
+          {#each self.admins as name (name)}
+            {@const peer = peers.find((p) => p.name === name)}
+            <li class="item">
+              <span class="name">{name}</span>
+              {#if name === self.name}
+                <Badge>{copy.device.you}</Badge>
+              {:else if peer}
+                <span class="state">
+                  <StatusDot state={peer.online ? 'online' : 'offline'} />
+                  {peer.online ? copy.status.online : copy.status.offline}
+                </span>
               {/if}
             </li>
           {/each}
         </ul>
-      {/if}
-      {#if admin}
-        <form class="relay-form" novalidate onsubmit={(e) => void addRelay(e)}>
-          <Field label={copy.relays.name} error={relayNameError}>
-            {#snippet children(control)}
-              <Input
-                {...control}
-                kind="name"
-                bind:value={relayName}
-                bind:ref={relayNameRef}
-                oninput={() => (relayNameError = null)}
-              />
-            {/snippet}
-          </Field>
-          <Field label={copy.relays.address} helper={copy.relays.addressHelp} error={relayAddressError}>
-            {#snippet children(control)}
-              <Input
-                {...control}
-                kind="mono"
-                bind:value={relayAddress}
-                autocapitalize="none"
-                autocorrect="off"
-                spellcheck={false}
-                oninput={() => (relayAddressError = null)}
-              />
-            {/snippet}
-          </Field>
-          <div class="pick">
-            <span class="field-label" aria-hidden="true">{copy.relays.runsOn}</span>
-            <Combobox
-              value={relayNode}
-              options={runnerOptions}
-              label={copy.relays.runsOn}
-              empty={copy.access.noDevices}
-              onValueChange={(v) => (relayNode = v)}
-            />
-          </div>
-          {#if relayAdding?.state === 'failed' && relayAdding.error}
-            <p class="error">{errorText(relayAdding.error)}</p>
+
+        {#if admin}
+          <h3 class="label">{copy.settings.invites}</h3>
+          {#if loadInvites?.state === 'failed'}
+            <p class="error">{failureText(loadInvites.error)}</p>
+          {:else if loadInvites?.state === 'accepted' && invites.length === 0}
+            <p class="quiet">{copyScreens.settings.noInvites}</p>
+          {:else if invites.length > 0}
+            <ul class="list">
+              {#each invites as invite (invite.id)}
+                {@const handle = revoking[invite.id]}
+                <li class="item invite">
+                  <div class="text">
+                    <span>{inviteStatus(invite)}</span>
+                    <span class="quiet">{copyScreens.settings.inviteMade(expiry(invite.created_at_ms))}</span>
+                    {#if handle?.state === 'failed'}
+                      <p class="error">{failureText(handle.error)}</p>
+                    {/if}
+                  </div>
+                  <Button
+                    variant="secondary"
+                    pending={handle?.state === 'pending'}
+                    disabled={frozen}
+                    aria-label={copyScreens.settings.revokeLabel(expiry(invite.expires_at_ms))}
+                    onclick={() => void revoke(invite)}
+                  >
+                    {copy.settings.revoke}
+                  </Button>
+                </li>
+              {/each}
+            </ul>
           {/if}
+        {/if}
+        {#if frozen}<p class="quiet">{copy.conn.staleActions}</p>{/if}
+      </section>
+
+      <section class="group" aria-labelledby="settings-relays">
+        <h2 class="t-heading" id="settings-relays">{copy.relays.heading}</h2>
+        <p class="quiet">{copy.relays.intro}</p>
+        {#if loadRelays?.state === 'failed'}
+          <p class="error">{failureText(loadRelays.error)}</p>
+        {:else if loadRelays?.state === 'accepted' && relays.length === 0}
+          <p class="quiet">{copy.relays.none}</p>
+        {/if}
+        {#if relays.length > 0}
+          <ul class="list">
+            {#each relays as relay (relay.name)}
+              {@const handle = relayRemoving[relay.name]}
+              <li class="item invite">
+                <div class="text">
+                  <span class="name">{relay.name}</span>
+                  <span class="quiet"><code class="mono">{relay.address}</code>{DOT}{runner(relay.node)}</span>
+                </div>
+                {#if admin}
+                  <Button
+                    variant="secondary"
+                    pending={handle?.state === 'pending'}
+                    disabled={frozen}
+                    aria-label={copy.relays.removeLabel(relay.name)}
+                    onclick={() => void removeRelay(relay)}
+                  >
+                    {copy.relays.remove}
+                  </Button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if admin}
+          <form class="relay-form" novalidate onsubmit={(e) => void addRelay(e)}>
+            <Field label={copy.relays.name} error={relayNameError}>
+              {#snippet children(control)}
+                <Input
+                  {...control}
+                  kind="name"
+                  bind:value={relayName}
+                  bind:ref={relayNameRef}
+                  oninput={() => (relayNameError = null)}
+                />
+              {/snippet}
+            </Field>
+            <Field label={copy.relays.address} helper={copy.relays.addressHelp} error={relayAddressError}>
+              {#snippet children(control)}
+                <Input
+                  {...control}
+                  kind="mono"
+                  bind:value={relayAddress}
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  oninput={() => (relayAddressError = null)}
+                />
+              {/snippet}
+            </Field>
+            <div class="pick">
+              <span class="field-label" aria-hidden="true">{copy.relays.runsOn}</span>
+              <Combobox
+                value={relayNode}
+                options={runnerOptions}
+                label={copy.relays.runsOn}
+                empty={copy.access.noDevices}
+                onValueChange={(v) => (relayNode = v)}
+              />
+            </div>
+            {#if relayAdding?.state === 'failed' && relayAdding.error}
+              <p class="error">{errorText(relayAdding.error)}</p>
+            {/if}
+            <div>
+              <Button
+                type="submit"
+                pending={relayAdding?.state === 'pending'}
+                pendingLabel={copy.action.signing}
+                disabled={frozen}
+              >
+                {copy.relays.add}
+              </Button>
+            </div>
+          </form>
+        {:else}
+          <div><Button onclick={() => (askRelay = true)}>{copy.relays.ask}</Button></div>
+          <AskAdminSheet
+            bind:open={askRelay}
+            net={network.id}
+            request={copy.askAdmin.request.addRelay(network.name)}
+          />
+        {/if}
+      </section>
+
+      <section class="group" aria-labelledby="settings-danger">
+        <h2 class="t-heading" id="settings-danger">{copy.settings.danger}</h2>
+        {#if lastAdmin}
+          <p class="quiet">{copy.remove.lastAdmin(self.name)}</p>
+        {:else}
           <div>
-            <Button
-              type="submit"
-              pending={relayAdding?.state === 'pending'}
-              pendingLabel={copy.action.signing}
-              disabled={frozen}
-            >
-              {copy.relays.add}
+            <Button variant="danger-quiet" disabled={frozen} onclick={openLeave}>
+              {copy.settings.leave(network.name)}
             </Button>
           </div>
-        </form>
-      {:else}
-        <div><Button onclick={() => (askRelay = true)}>{copy.relays.ask}</Button></div>
-        <AskAdminSheet
-          bind:open={askRelay}
-          net={network.id}
-          request={copy.askAdmin.request.addRelay(network.name)}
-        />
-      {/if}
-    </section>
-
-    <section class="group" aria-labelledby="settings-danger">
-      <h2 class="t-heading" id="settings-danger">{copy.settings.danger}</h2>
-      {#if lastAdmin}
-        <p class="quiet">{copy.remove.lastAdmin(self.name)}</p>
-      {:else}
-        <div>
-          <Button variant="danger-quiet" disabled={frozen} onclick={openLeave}>
-            {copy.settings.leave(network.name)}
-          </Button>
-        </div>
-        {#if frozen}<p class="quiet">{copy.conn.staleActions}</p>{/if}
-      {/if}
-    </section>
+          {#if frozen}<p class="quiet">{copy.conn.staleActions}</p>{/if}
+        {/if}
+      </section>
+    {/if}
 
     <AlertDialog
       bind:open={leaving}

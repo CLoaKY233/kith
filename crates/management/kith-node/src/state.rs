@@ -115,6 +115,37 @@ impl StateDir {
         Ok(())
     }
 
+    /// Forgets the import `name` and whether it was paused.
+    pub(crate) fn remove_import(&self, name: &str) -> Result<(), NodeError> {
+        self.store.delete(&import_key(IMPORTS_NAMESPACE, name)?)?;
+        self.store
+            .delete(&import_key(PAUSED_IMPORTS_NAMESPACE, name)?)?;
+        Ok(())
+    }
+
+    /// The names of imports that are kept but not routed through.
+    pub(crate) fn load_paused_imports(&self) -> Result<Vec<String>, NodeError> {
+        let namespace =
+            Namespace::new(PAUSED_IMPORTS_NAMESPACE).map_err(kith_store::Error::from)?;
+        Ok(self
+            .store
+            .list(&namespace)?
+            .iter()
+            .filter_map(|key| decode_hex(key.name.as_str()))
+            .collect())
+    }
+
+    /// Marks the import `name` paused, or routed through again.
+    pub(crate) fn save_import_paused(&self, name: &str, paused: bool) -> Result<(), NodeError> {
+        let key = import_key(PAUSED_IMPORTS_NAMESPACE, name)?;
+        if paused {
+            self.store.put(&key, &[])?;
+        } else {
+            self.store.delete(&key)?;
+        }
+        Ok(())
+    }
+
     /// Loads the persisted gateway key and clients, if any.
     pub(crate) fn load_gateway(&self) -> Result<Option<Vec<u8>>, NodeError> {
         Ok(self.store.get(&gateway_key()?)?)
@@ -231,12 +262,17 @@ const IDENTITY_NAMESPACE: &str = "identity";
 const DEVICE_NAME: &str = "device";
 const NETWORKS_NAMESPACE: &str = "networks";
 const IMPORTS_NAMESPACE: &str = "imports";
+const PAUSED_IMPORTS_NAMESPACE: &str = "imports-paused";
 const EXTERNAL_NAMESPACE: &str = "external";
 const GATEWAY_NAME: &str = "gateway";
 const PEERS_NAMESPACE: &str = "peers";
 const ENDPOINTS_NAME: &str = "endpoints";
 const EXIT_NAME: &str = "exit";
 const LAST_SEEN_NAME: &str = "last-seen";
+
+fn import_key(namespace: &str, name: &str) -> Result<Key, NodeError> {
+    Ok(Key::parse(namespace, &encode_hex(name)).map_err(kith_store::Error::from)?)
+}
 
 fn exit_key() -> Result<Key, NodeError> {
     Ok(Key::parse(PEERS_NAMESPACE, EXIT_NAME).map_err(kith_store::Error::from)?)

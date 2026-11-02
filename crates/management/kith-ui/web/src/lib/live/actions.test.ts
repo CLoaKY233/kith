@@ -79,4 +79,19 @@ describe('actions for the newer endpoints', () => {
       conf_text: '[Interface]\n[Peer]\n',
     });
   });
+
+  it('uses, stops and removes an imported network', async () => {
+    const { calls, host, actions } = setup({
+      'POST /api/wireguard/w1/use': {},
+      'POST /api/wireguard/w1/remove': {},
+    });
+    await actions.useImport('w1', false).done;
+    await actions.removeImport('w1').done;
+    const posts = calls.filter((c) => c.method === 'POST');
+    expect(posts.map((c) => [c.url, c.body])).toEqual([
+      ['/api/wireguard/w1/use', { active: false }],
+      ['/api/wireguard/w1/remove', {}],
+    ]);
+    expect(host.resync).toHaveBeenCalledTimes(2);
+  });
 });

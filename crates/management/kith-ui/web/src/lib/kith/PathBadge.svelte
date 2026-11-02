@@ -5,7 +5,8 @@ Relayed is not a fault, so no path gets a colour. A change of path waits for 5 s
 stability before the badge follows, so a flap does not flicker. More than 3 changes in a
 minute add `flapping` in ink-3.
 Hover or keyboard focus opens a card after 400 ms with the endpoint (mono), the MTU and
-the reason as a sentence. On touch it does nothing: the row opens the detail instead.
+the reason as a sentence (PathCard, which loads after the first paint; until then the
+badge shows alone). On touch it does nothing: the row opens the detail instead.
 Props:
   - path: PathKind | null; nothing renders while null.
   - relay?: string | null, the relay's name for `via vps`.
@@ -17,14 +18,12 @@ Props:
     and the badge is plain text with no button role.
 -->
 <script lang="ts">
-  import { LinkPreview } from 'bits-ui';
   import { untrack } from 'svelte';
   import { copy } from '../copy';
   import Icon from '../icons/Icon.svelte';
   import type { IconName } from '../icons/names';
-  import { HOVERCARD_DELAY_MS, PATH_HYSTERESIS_MS } from '../live/timing';
+  import { PATH_HYSTERESIS_MS } from '../live/timing';
   import type { PathKind } from '../types.gen';
-  import '../ui/overlay.css';
   import { pathText, sentence } from './devices';
 
   let {
@@ -81,31 +80,18 @@ Props:
   {#if flapping}<span class="flap">{copy.path.flapping}</span>{/if}
 {/snippet}
 
+{#snippet badge(props: Record<string, unknown>)}
+  <span class="badge" {...props} role="button" tabindex="0">
+    {@render content(shown.path ?? 'direct')}
+  </span>
+{/snippet}
+
 {#if hasCard && shown.path}
-  <LinkPreview.Root openDelay={HOVERCARD_DELAY_MS}>
-    <LinkPreview.Trigger>
-      {#snippet child({ props })}
-        <span class="badge" {...props} role="button" tabindex="0">
-          {@render content(shown.path ?? 'direct')}
-        </span>
-      {/snippet}
-    </LinkPreview.Trigger>
-    <LinkPreview.Portal>
-      <LinkPreview.Content
-        class="kith-float kith-pop path-card"
-        side="bottom"
-        align="start"
-        sideOffset={8}
-      >
-        <div class="facts">
-          {#if address}<p class="mono">{address}</p>
-          {:else if shown.relay && shown.path !== 'direct'}<p>{pathText(shown.path ?? 'relay', shown.relay)}</p>{/if}
-          {#if mtu !== null}<p>{copy.path.mtu(mtu)}</p>{/if}
-          {#if reason}<p class="reason">{sentence(reason)}</p>{/if}
-        </div>
-      </LinkPreview.Content>
-    </LinkPreview.Portal>
-  </LinkPreview.Root>
+  {#await import('./PathCard.svelte')}
+    {@render badge({})}
+  {:then { default: PathCard }}
+    <PathCard path={shown.path} relay={shown.relay} {address} {mtu} {reason} trigger={badge} />
+  {/await}
 {:else if shown.path}
   <span class="badge" title={reason ? sentence(reason) : undefined}>{@render content(shown.path)}</span>
 {/if}
@@ -133,26 +119,5 @@ Props:
     flex: none;
     font: var(--t-small);
     color: var(--ink-3);
-  }
-  /* The card carries its own surface so it never depends on another popover being loaded. */
-  :global(.path-card) {
-    z-index: var(--z-popover);
-    max-width: calc(var(--detail) - var(--s-6));
-    padding: var(--s-3);
-    border-radius: var(--r-3);
-    border: var(--hairline) solid var(--line);
-    background: var(--surface);
-    color: var(--ink-1);
-    box-shadow: var(--shadow-pop);
-  }
-  .facts {
-    display: grid;
-    gap: var(--s-1);
-  }
-  .mono {
-    font: var(--t-mono);
-  }
-  .reason {
-    color: var(--ink-2);
   }
 </style>

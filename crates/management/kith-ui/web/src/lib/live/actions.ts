@@ -11,6 +11,7 @@ import type {
   ExitIn,
   ExitView,
   GrantIn,
+  ImportUseIn,
   Invite,
   InviteIn,
   JoinIn,
@@ -382,6 +383,26 @@ export function createActions(host: ActionsHost, runner: Runner) {
               host.resync();
               return value;
             }),
+      }),
+    // An imported network: send its traffic through it, stop, or remove it (tier 3).
+    useImport: (network: string, active: boolean) =>
+      runner.run<Outcome>({
+        run: () =>
+          api
+            .post<Outcome>(`/api/wireguard/${enc(network)}/use`, { active } satisfies ImportUseIn)
+            .then((value) => {
+              host.resync();
+              return value;
+            }),
+      }),
+    removeImport: (network: string) =>
+      runner.run<Outcome>({
+        tier3: true,
+        run: () =>
+          api.post<Outcome>(`/api/wireguard/${enc(network)}/remove`).then((value) => {
+            host.resync();
+            return value;
+          }),
       }),
   } as const;
 }

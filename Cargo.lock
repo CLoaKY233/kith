@@ -1373,6 +1373,7 @@ dependencies = [
  "proptest",
  "serde",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

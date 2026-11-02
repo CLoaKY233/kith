@@ -185,6 +185,21 @@ export function reduce(state: ReducerState, entry: Entry, fx: Effects): void {
       fx.pending = true;
       return;
     }
+    case 'device_renamed': {
+      if (entry.node === state.status?.node) {
+        const membership = state.status.memberships.find((m) => m.network === entry.network);
+        if (membership) membership.name = entry.name;
+      }
+      const peer = state.peers[entry.network]?.[entry.node];
+      if (peer) {
+        if (peer.display_name === peer.name) peer.display_name = entry.name;
+        peer.name = entry.name;
+        fx.tint.add(tintKey.device(entry.network, entry.node));
+      }
+      // Exits and records name it; the server has the new names.
+      fx.status = true;
+      return;
+    }
     case 'exit_changed': {
       if (!state.status) return;
       if (state.status.exit_node !== entry.exit) {

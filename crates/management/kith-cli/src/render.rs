@@ -4,7 +4,8 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 use kith_ipc::{
-    BlockedInfo, DnsRecord, IpcError, LinkReport, PathKind, PeerInfo, RecordInfo, Response, Status,
+    BlockedInfo, DnsRecord, ImportedInfo, IpcError, LinkReport, PathKind, PeerInfo, RecordInfo,
+    Response, Status,
 };
 use kith_types::NodeId;
 
@@ -275,6 +276,7 @@ pub(crate) fn status(
     if let Some(exit) = &status.exit_node {
         writeln!(out, "internet traffic goes through {exit}")?;
     }
+    imports(out, &status.imported)?;
     if status.networks.is_empty() {
         return writeln!(
             out,
@@ -293,6 +295,33 @@ pub(crate) fn status(
         peer_table(out, peers, "  ")?;
     }
     notes(out, status)
+}
+
+/// Imported WireGuard networks, one line each.
+fn imports(out: &mut impl Write, imported: &[ImportedInfo]) -> io::Result<()> {
+    for import in imported {
+        let what = if import.everything {
+            "all internet traffic".to_owned()
+        } else {
+            import.routes.join(", ")
+        };
+        let state = if import.active {
+            "in use"
+        } else {
+            "not in use"
+        };
+        let seen = import.last_seen_secs.map_or_else(
+            || "never heard from".to_owned(),
+            |secs| format!("heard {secs}s ago"),
+        );
+        writeln!(
+            out,
+            "wireguard {} ({}): {what}, {state}, {seen}",
+            import.name,
+            import.network.short()
+        )?;
+    }
+    Ok(())
 }
 
 /// Conflicts, drops, network problems and recent warnings, when there are any.
@@ -550,6 +579,35 @@ pub(crate) fn status_json(
         json_str(out, &warning.message)?;
         out.write_all(b"}")?;
     }
+    out.write_all(b"],\"imported\":[")?;
+    for (i, import) in status.imported.iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        write!(out, "{{\"network\":\"{}\",\"name\":", import.network)?;
+        json_str(out, &import.name)?;
+        out.write_all(b",\"endpoint\":")?;
+        match &import.endpoint {
+            Some(endpoint) => json_str(out, endpoint)?,
+            None => out.write_all(b"null")?,
+        }
+        out.write_all(b",\"routes\":")?;
+        json_strings(out, import.routes.iter().cloned())?;
+        write!(
+            out,
+            ",\"everything\":{},\"active\":{},\"last_seen_secs\":",
+            import.everything, import.active
+        )?;
+        match import.last_seen_secs {
+            Some(secs) => write!(out, "{secs}")?,
+            None => out.write_all(b"null")?,
+        }
+        write!(
+            out,
+            ",\"rx_bytes\":{},\"tx_bytes\":{}}}",
+            import.rx_bytes, import.tx_bytes
+        )?;
+    }
     out.write_all(b"],\"networks\":[")?;
     for (i, (network, peers)) in status.networks.iter().zip(peers).enumerate() {
         if i > 0 {
@@ -653,11 +711,39 @@ pub(crate) fn response(
                 writeln!(out, "{note}")?;
             }
         }
-        (Cmd::Wg(WgCmd::Import { name, .. }), Response::Imported { network }) => {
+        (Cmd::Wg(wg), response) => wg_response(out, wg, response)?,
+        (Cmd::Blocked { .. }, Response::Blocked(blocked)) => blocked_list(out, &blocked)?,
+        (Cmd::Allow { from, to, .. }, Response::BlockedAllowed) => {
+            writeln!(out, "{from} may now reach {to} that way")?;
+        }
+        (_, other) => {
+            drop(other);
+            return Err(IpcError::Unexpected.into());
+        }
+    }
+    Ok(())
+}
+
+/// The answer to a `kith wg` command.
+fn wg_response(out: &mut impl Write, cmd: &WgCmd, response: Response) -> Result<(), CliError> {
+    match (cmd, response) {
+        (WgCmd::Import { name, .. }, Response::Imported { network }) => {
             writeln!(out, "imported {name} ({})", network.short())?;
         }
+        (WgCmd::Use { name }, Response::ImportUsed) => {
+            writeln!(out, "traffic for {name} goes through it")?;
+        }
+        (WgCmd::Stop { name }, Response::ImportUsed) => {
+            writeln!(
+                out,
+                "stopped using {name}; `kith wg use {name}` starts again"
+            )?;
+        }
+        (WgCmd::Remove { name }, Response::ImportRemoved) => {
+            writeln!(out, "removed {name} and forgot its config")?;
+        }
         (
-            Cmd::Wg(WgCmd::Export { text, network, .. }),
+            WgCmd::Export { text, network, .. },
             Response::WireGuardConfig {
                 device,
                 endpoint,
@@ -671,10 +757,6 @@ pub(crate) fn response(
                 endpoint: &endpoint,
             };
             exported(out, *text, &added, &mesh, everything.as_deref())?;
-        }
-        (Cmd::Blocked { .. }, Response::Blocked(blocked)) => blocked_list(out, &blocked)?,
-        (Cmd::Allow { from, to, .. }, Response::BlockedAllowed) => {
-            writeln!(out, "{from} may now reach {to} that way")?;
         }
         (_, other) => {
             drop(other);

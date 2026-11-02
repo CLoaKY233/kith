@@ -214,6 +214,19 @@ const status = {
   drops: { no_route: 2, policy: 37 },
   route_conflicts: [],
   warnings: [{ secs_ago: 15 * HOUR / SECOND, message: 'Another VPN holds a route to 100.64.0.0/10; kith routes take priority' }],
+  imported: [
+    {
+      network: '0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1ce0f1c',
+      name: 'work-vpn',
+      endpoint: '198.51.100.20:51820',
+      routes: ['10.20.0.0/16'],
+      everything: false,
+      active: true,
+      last_seen_secs: 8,
+      rx_bytes: 18_400_000,
+      tx_bytes: 2_100_000,
+    },
+  ],
   operator: true,
   versions: { ui: '0.1.1', daemon: '0.1.1', compatible: true },
   paused_until: null,
@@ -236,7 +249,7 @@ const status = {
 
 // The policy as the daemon writes it: everyone reaches vps, only desk and laptop reach
 // everything, so phone's ssh to nas is blocked.
-const device = (d) => `{ Device = [${d.node.match(/../g).map((b) => parseInt(b, 16)).join(', ')}] }`;
+const device = (d) => `{ Device = "${d.node}" }`;
 const everything = 'protocol = "Any"\nports = "All"\n';
 const policy = `[[rules]]
 sources = ["Any"]

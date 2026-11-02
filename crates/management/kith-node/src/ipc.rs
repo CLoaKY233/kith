@@ -291,6 +291,8 @@ fn admission_action(request: Request) -> Result<Action, NodeError> {
         Request::GetPolicy { network } => Action::GetPolicy { network },
         Request::ListRelays { network } => Action::ListRelays { network },
         Request::ListExits { network } => Action::ListExits { network },
+        Request::UseImport { network, active } => Action::UseImport { network, active },
+        Request::RemoveImport { network } => Action::RemoveImport { network },
         _ => return Err(NodeError::InvalidArgument("unsupported request".to_owned())),
     })
 }

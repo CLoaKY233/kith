@@ -18,9 +18,9 @@ use axum::http::{Request as Http, StatusCode, header};
 use http_body_util::BodyExt as _;
 use kith_identity::InviteToken;
 use kith_ipc::{
-    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, InviteInfo, IpcServer, LinkInfo,
-    LinkReport, NetworkSummary, PathKind, PeerInfo, PendingJoin, PolicyInfo, RecordInfo, RelayInfo,
-    Request as Ipc, Response as Reply, Status,
+    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, ImportedInfo, InviteInfo, IpcServer,
+    LinkInfo, LinkReport, NetworkSummary, PathKind, PeerInfo, PendingJoin, PolicyInfo, RecordInfo,
+    RelayInfo, Request as Ipc, Response as Reply, Status,
 };
 use kith_types::{NetworkId, NodeId, Timestamp};
 use serde_json::{Value, json};
@@ -161,6 +161,17 @@ impl World {
             drops: BTreeMap::new(),
             route_conflicts: Vec::new(),
             warnings: Vec::new(),
+            imported: vec![ImportedInfo {
+                network: IMPORTED,
+                name: "office".into(),
+                endpoint: Some("198.51.100.1:51820".into()),
+                routes: vec!["0.0.0.0/0".into(), "::/0".into()],
+                everything: true,
+                active: true,
+                last_seen_secs: Some(4),
+                rx_bytes: 0,
+                tx_bytes: 0,
+            }],
         }
     }
 
@@ -316,6 +327,11 @@ impl World {
             Ipc::RemoveRelay { .. } => Self::refuse(ErrorCode::NotFound, "relay gone"),
             Ipc::ServerMode { .. } => Reply::ServerModeSet { notes: Vec::new() },
             Ipc::ImportWireGuard { .. } => Reply::Imported { network: IMPORTED },
+            Ipc::UseImport { network, .. } if *network == IMPORTED => Reply::ImportUsed,
+            Ipc::RemoveImport { network } if *network == IMPORTED => Reply::ImportRemoved,
+            Ipc::UseImport { .. } | Ipc::RemoveImport { .. } => {
+                Self::refuse(ErrorCode::NotFound, "imported network")
+            }
             Ipc::Leave { .. } => Reply::Left,
             Ipc::RequestCode { .. } => Reply::RequestCode {
                 code: "kith://request/abc".into(),
@@ -1162,5 +1178,98 @@ async fn reads_refuse_bad_ids_and_unknown_networks_alike_live_and_recorded() -> 
         .get("/api/validate/name?net=home&name=Na%20--%20S")
         .await?;
     assert_eq!(check["name"], "na-s");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_imported_network_is_listed_used_and_removed() -> TestResult {
+    let mut refused = Page::open(World::new(true), Gate::Fixed(Err(OsAuthError::Denied))).await?;
+    let (code, status) = refused.get("/api/status").await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(status["imported"][0]["network"], IMPORTED.to_string());
+    assert_eq!(status["imported"][0]["everything"], true);
+    let remove = format!("/api/wireguard/{IMPORTED}/remove");
+    let (code, _) = refused.post(&remove, json!({})).await?;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+
+    let mut page = Page::open(World::new(true), Gate::Fixed(Ok(()))).await?;
+    let (code, _) = page
+        .post(
+            &format!("/api/wireguard/{IMPORTED}/use"),
+            json!({ "active": false }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, _) = page.post(&remove, json!({})).await?;
+    assert_eq!(code, StatusCode::OK);
+    let (code, _) = page
+        .post(&format!("/api/wireguard/{NET}/remove"), json!({}))
+        .await?;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+    assert_eq!(
+        page.changes(),
+        [
+            Ipc::UseImport {
+                network: IMPORTED,
+                active: false
+            },
+            Ipc::RemoveImport { network: IMPORTED },
+        ]
+    );
+    assert_eq!(refused.changes(), []);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_simulator_lists_an_import_until_it_is_removed() -> TestResult {
+    let mut page = Page::recorded().await?;
+    let conf = "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\n\
+                Address = 10.64.0.2/32\n\n[Peer]\n\
+                PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\n\
+                Endpoint = 198.51.100.1:51820\nAllowedIPs = 0.0.0.0/0, ::/0\n";
+    let (code, imported) = page
+        .post(
+            "/api/wireguard/import",
+            json!({ "name": "mullvad", "conf_text": conf }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let network = imported["network"].as_str().ok_or("no network")?.to_owned();
+    let (_, status) = page.get("/api/status").await?;
+    let listed = status["imported"]
+        .as_array()
+        .and_then(|all| all.iter().find(|one| one["network"] == network.as_str()))
+        .ok_or("the import is not listed")?;
+    assert_eq!(listed["name"], "mullvad");
+    assert_eq!(listed["active"], true);
+    assert_eq!(listed["everything"], true);
+    assert_eq!(listed["endpoint"], "198.51.100.1:51820");
+    assert_eq!(status["exit_node"], Value::Null);
+
+    let (code, _) = page
+        .post(
+            &format!("/api/wireguard/{network}/use"),
+            json!({ "active": false }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (_, status) = page.get("/api/status").await?;
+    let listed = status["imported"]
+        .as_array()
+        .and_then(|all| all.iter().find(|one| one["network"] == network.as_str()))
+        .ok_or("the import is not listed")?;
+    assert_eq!(listed["active"], false);
+    let (code, _) = page
+        .post(&format!("/api/wireguard/{network}/remove"), json!({}))
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    let (_, status) = page.get("/api/status").await?;
+    let names: Vec<&Value> = status["imported"]
+        .as_array()
+        .ok_or("no imports")?
+        .iter()
+        .map(|one| &one["name"])
+        .collect();
+    assert_eq!(names, [&json!("work-vpn")]);
     Ok(())
 }

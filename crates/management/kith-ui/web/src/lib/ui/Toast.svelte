@@ -6,7 +6,8 @@ the user's own actions; network events never toast. A toast with Undo stays 8 s 
 `undoMs` for the allow-rule's 10 s). Error toasts carry a `circle-x` mark and stay until
 dismissed. Every toast is also announced through announce(): sonner's own live regions are
 switched off, so the page keeps one polite region (§11.1). Toasts are fixed, so the layout
-never moves when one appears. Render once in App.svelte.
+never moves when one appears. svelte-sonner loads with the first toast, off the first
+load. Render once in App.svelte.
 API (module exports):
   - toast.done(message, { undo?, undoMs? }): string | number. The result of the user's own
     action, with an optional Undo. Returns the toast's id.
@@ -15,49 +16,73 @@ API (module exports):
 Props: none.
 -->
 <script lang="ts" module>
-  import { toast as sonner } from 'svelte-sonner';
   import { announce } from '../announce';
   import { copy } from '../copy';
   import { TOAST_MS, UNDO_MS } from '../live/timing';
 
   export type ToastOptions = { undo?: () => void; undoMs?: number };
 
+  type Sonner = typeof import('svelte-sonner');
+  let sonner: Promise<Sonner> | null = null;
+  /** Whether a toast was asked for, so the host mounts the Toaster. */
+  const host = $state({ wanted: false });
+  let next = 0;
+
+  function library(): Promise<Sonner> {
+    sonner ??= import('svelte-sonner');
+    return sonner;
+  }
+
+  function load(): Promise<Sonner> {
+    host.wanted = true;
+    return library();
+  }
+
   export const toast = {
     /** The result of the user's own action, with an optional Undo. */
     done(message: string, options: ToastOptions = {}): string | number {
       const { undo, undoMs } = options;
+      const id = `toast-${(next += 1)}`;
       announce(message);
-      return sonner(message, {
-        duration: undo ? (undoMs ?? UNDO_MS) : TOAST_MS,
-        action: undo ? { label: copy.action.undo, onClick: () => undo() } : undefined,
-      });
+      void load().then(({ toast: show }) =>
+        show(message, {
+          id,
+          duration: undo ? (undoMs ?? UNDO_MS) : TOAST_MS,
+          action: undo ? { label: copy.action.undo, onClick: () => undo() } : undefined,
+        }),
+      );
+      return id;
     },
     /** A failure of the user's own action: stays until dismissed. */
     failed(message: string): string | number {
+      const id = `toast-${(next += 1)}`;
       announce(message);
-      return sonner.error(message, {
-        duration: Number.POSITIVE_INFINITY,
-        cancel: { label: copy.action.dismiss, onClick: () => undefined },
-      });
+      void load().then(({ toast: show }) =>
+        show.error(message, {
+          id,
+          duration: Number.POSITIVE_INFINITY,
+          cancel: { label: copy.action.dismiss, onClick: () => undefined },
+        }),
+      );
+      return id;
     },
     /** Removes one toast, or every toast when no id is given. */
     dismiss(id?: string | number): void {
-      sonner.dismiss(id);
+      if (sonner) void sonner.then(({ toast: show }) => show.dismiss(id));
     },
   };
 </script>
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Toaster } from 'svelte-sonner';
   import Icon from '../icons/Icon.svelte';
   import { TOAST_MAX } from '../live/timing';
   import { narrow } from './layers.svelte';
 
-  let host: HTMLDivElement | null = $state(null);
+  let region: HTMLDivElement | null = $state(null);
 
   onMount(() => {
-    const root = host;
+    const root = region;
     if (!root) return;
     const quiet = (): void => {
       for (const el of root.querySelectorAll('[aria-live]')) {
@@ -79,7 +104,9 @@ Props: none.
   });
 </script>
 
-<div bind:this={host} class="contents" data-kith-keep>
+<div bind:this={region} class="contents" data-kith-keep>
+  {#if host.wanted}
+  {#await library() then { Toaster }}
   <Toaster
     class="kith-toaster"
     position={narrow.current ? 'top-center' : 'bottom-right'}
@@ -110,6 +137,8 @@ Props: none.
   >
     {#snippet errorIcon()}<Icon name="circle-x" />{/snippet}
   </Toaster>
+  {/await}
+  {/if}
 </div>
 
 <style>

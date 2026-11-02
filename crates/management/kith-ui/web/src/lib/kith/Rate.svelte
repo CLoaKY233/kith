@@ -31,14 +31,19 @@ Decision (§5): rates use bytes so every number on the page shares one unit fami
   const quiet = $derived(stale || band === 'idle' || (value !== null && value < IDLE_BYTES_PER_SEC));
 </script>
 
+<!-- Each value renders as new text: right-aligned digits of another width would otherwise
+     count as moved text (§11.9 CLS). -->
 <span class="rate" class:quiet aria-live="off"
-  >{parts.value}{#if parts.unit}&thinsp;<span class="unit">{parts.unit}</span>{/if}</span
+  >{#key `${parts.value} ${parts.unit}`}{parts.value}{#if parts.unit}&thinsp;<span class="unit"
+        >{parts.unit}</span
+      >{/if}{/key}</span
 >
 
 <style>
   .rate {
     display: inline-block;
     width: 9ch;
+    font-variant-numeric: tabular-nums;
     text-align: right;
     white-space: nowrap;
   }

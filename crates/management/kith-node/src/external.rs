@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time::Instant;
 
 use kith_config::{Endpoint, WgPublicKey, WgQuickConfig};
 use kith_crypto::{AgreementSecret, Context, Hash};
-use kith_dataplane::{ExternalInterface, ExternalPeer};
+use kith_dataplane::{ExternalInterface, ExternalPeer, ExternalPeerStats};
+use kith_ipc::ImportedInfo;
 use kith_policy::Addresses;
 use kith_types::{IpPrefix, Ipv4Prefix, Ipv6Prefix, NetworkId};
 
@@ -20,6 +22,8 @@ const IMPORT_CONTEXT: Context = Context::new("kith-node external import network 
 #[derive(Debug)]
 pub(crate) struct ExternalPeers {
     imported: BTreeMap<String, ExternalInterface>,
+    /// Imports kept but not routed through, by name.
+    paused: BTreeSet<String>,
     gateway: Option<AgreementSecret>,
     /// The tunnel MTU, which exported devices are told to use too.
     pub(crate) mtu: u16,
@@ -49,6 +53,7 @@ impl ExternalPeers {
         let mut peers = Self {
             mtu,
             imported: BTreeMap::new(),
+            paused: state.load_paused_imports()?.into_iter().collect(),
             gateway: state
                 .load_gateway()?
                 .map(|bytes| load_gateway_key(state, &bytes))
@@ -80,7 +85,99 @@ impl ExternalPeers {
         if let Some(interface) = self.imported.get(&name) {
             state.save_import(&name, render_import(interface)?.as_bytes())?;
         }
+        if self.paused.remove(&name) {
+            state.save_import_paused(&name, false)?;
+        }
         Ok(network)
+    }
+
+    /// The name of the import addressed by `network`.
+    fn name_of(&self, network: NetworkId) -> Result<String, NodeError> {
+        self.imported
+            .keys()
+            .find(|name| import_id(name) == network)
+            .cloned()
+            .ok_or_else(|| NodeError::NotFound(format!("imported network {network}")))
+    }
+
+    /// Whether `network` is an imported network.
+    pub(crate) fn contains(&self, network: NetworkId) -> bool {
+        self.name_of(network).is_ok()
+    }
+
+    /// Routes through the import `network` again, or keeps it but stops using it.
+    pub(crate) fn set_active(
+        &mut self,
+        state: &StateDir,
+        network: NetworkId,
+        active: bool,
+    ) -> Result<(), NodeError> {
+        let name = self.name_of(network)?;
+        state.save_import_paused(&name, !active)?;
+        if active {
+            self.paused.remove(&name);
+        } else {
+            self.paused.insert(name);
+        }
+        Ok(())
+    }
+
+    /// Forgets the import `network`.
+    pub(crate) fn remove(&mut self, state: &StateDir, network: NetworkId) -> Result<(), NodeError> {
+        let name = self.name_of(network)?;
+        state.remove_import(&name)?;
+        self.imported.remove(&name);
+        self.paused.remove(&name);
+        Ok(())
+    }
+
+    /// The active imports that carry all internet traffic.
+    pub(crate) fn active_exits(&self) -> Vec<NetworkId> {
+        self.active()
+            .filter(|interface| carries_everything(interface))
+            .map(|interface| import_id(&interface.name))
+            .collect()
+    }
+
+    /// Every import as `kith status` shows it, with its traffic from `stats`.
+    pub(crate) fn infos(&self, stats: &[ExternalPeerStats], now: Instant) -> Vec<ImportedInfo> {
+        self.imported
+            .values()
+            .map(|interface| {
+                let own = || stats.iter().filter(|stat| stat.interface == interface.name);
+                let mut routes: Vec<IpPrefix> = interface
+                    .peers
+                    .iter()
+                    .flat_map(|peer| peer.allowed_ips.iter().copied())
+                    .collect();
+                routes.sort_unstable();
+                routes.dedup();
+                ImportedInfo {
+                    network: import_id(&interface.name),
+                    name: interface.name.clone(),
+                    endpoint: interface
+                        .peers
+                        .iter()
+                        .find_map(|peer| peer.endpoint)
+                        .map(|endpoint| endpoint.to_string()),
+                    routes: routes.iter().map(ToString::to_string).collect(),
+                    everything: carries_everything(interface),
+                    active: !self.paused.contains(&interface.name),
+                    last_seen_secs: own()
+                        .filter_map(|stat| stat.last_received)
+                        .max()
+                        .map(|at| now.saturating_duration_since(at).as_secs()),
+                    rx_bytes: own().map(|stat| stat.rx_bytes).sum(),
+                    tx_bytes: own().map(|stat| stat.tx_bytes).sum(),
+                }
+            })
+            .collect()
+    }
+
+    fn active(&self) -> impl Iterator<Item = &ExternalInterface> {
+        self.imported
+            .values()
+            .filter(|interface| !self.paused.contains(&interface.name))
     }
 
     async fn insert_import(
@@ -120,7 +217,7 @@ impl ExternalPeers {
             addresses,
             peers,
         };
-        let network = NetworkId::from_bytes(Hash::of(IMPORT_CONTEXT, name.as_bytes()).to_bytes());
+        let network = import_id(&name);
         self.imported.insert(name, interface);
         Ok(network)
     }
@@ -140,7 +237,7 @@ impl ExternalPeers {
     /// Dataplane external interfaces for every import, and for the gateway when it has
     /// `clients`.
     pub(crate) fn interfaces(&self, clients: Vec<ExternalPeer>) -> Vec<ExternalInterface> {
-        let mut interfaces = self.imported.values().cloned().collect::<Vec<_>>();
+        let mut interfaces = self.active().cloned().collect::<Vec<_>>();
         if let Some(secret) = self.gateway.as_ref().filter(|_| !clients.is_empty()) {
             interfaces.push(ExternalInterface {
                 name: GATEWAY_NAME.to_owned(),
@@ -155,8 +252,7 @@ impl ExternalPeers {
     /// Routes the OS must send into the tunnel for imported exits.
     pub(crate) fn routes(&self) -> Vec<IpPrefix> {
         let mut routes = self
-            .imported
-            .values()
+            .active()
             .flat_map(|interface| &interface.peers)
             .flat_map(|peer| peer.allowed_ips.iter().copied())
             .collect::<Vec<_>>();
@@ -164,6 +260,26 @@ impl ExternalPeers {
         routes.dedup();
         routes
     }
+}
+
+/// The network id an import named `name` is addressed by.
+fn import_id(name: &str) -> NetworkId {
+    NetworkId::from_bytes(Hash::of(IMPORT_CONTEXT, name.as_bytes()).to_bytes())
+}
+
+/// Whether an import routes the whole internet, as a full-tunnel VPN config does.
+fn carries_everything(interface: &ExternalInterface) -> bool {
+    let probes = [
+        IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+    ];
+    probes.iter().all(|probe| {
+        interface
+            .peers
+            .iter()
+            .flat_map(|peer| &peer.allowed_ips)
+            .any(|prefix| prefix.contains(*probe))
+    })
 }
 
 /// The saved gateway key. An older kith saved its exported devices after the key, outside

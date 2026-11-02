@@ -13,6 +13,7 @@
 
 import { go, href, parse } from '../../router';
 import { api } from '../api';
+import type { GateReason } from '../types';
 import type { Boot, Entry } from '../types.gen';
 import { createActions, type Actions } from './actions';
 import { readInlineBoot } from './boot';
@@ -90,8 +91,9 @@ watch(live, runner, notifications, onEntry);
 /** Hydrates from `#boot` (or /api/boot) and opens the stream. Safe to call more than once.
  * With an inline snapshot the state is complete before this returns, so the first frame
  * has it (§8.1). */
-export function start(): Promise<void> {
-  return store.start(readInlineBoot(typeof document === 'undefined' ? null : document));
+/** Starts the store; `signedOut` is why the link's token was refused, if it was. */
+export function start(signedOut: GateReason | null = null): Promise<void> {
+  return store.start(readInlineBoot(typeof document === 'undefined' ? null : document), signedOut);
 }
 
 /** Test hook: loads a snapshot without a server. */

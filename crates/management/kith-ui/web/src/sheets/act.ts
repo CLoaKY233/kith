@@ -96,8 +96,6 @@ export function failureText(error: ApiFailure, subject: string): string {
       return copy.error.nameChars;
     case 'os_auth_denied':
       return copy.error.osAuthDenied;
-    case 'not_implemented':
-      return copy.error.notImplemented;
     case 'daemon_down':
     case 'not_in_group':
     case 'version_skew':

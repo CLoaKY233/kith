@@ -1,8 +1,8 @@
 // The network policy (M1.1 Access): rules as plain sentences, the structured editor's
 // helpers, and the TOML the daemon reads. A policy is a set of allow rules only; anything
 // no rule allows is blocked. The TOML is the daemon's own encoding of its Policy type, so
-// a device is its key as 32 bytes and variants are `Any`, `{ Device = [...] }`,
-// `{ Tag = "phones" }`.
+// variants are `Any`, `{ Device = "<id>" }` (the device's 64-hex-digit id; older daemons
+// wrote 32 numbers, which are still read) and `{ Tag = "phones" }`.
 
 import { copy } from '../copy';
 import type {
@@ -160,13 +160,6 @@ export function parsePorts(text: string): PortRange[] | null | 'invalid' {
   return ranges;
 }
 
-function bytes(nodeHex: string): string {
-  if (!/^[0-9a-f]{64}$/i.test(nodeHex)) return JSON.stringify(nodeHex);
-  const out: number[] = [];
-  for (let i = 0; i < 64; i += 2) out.push(parseInt(nodeHex.slice(i, i + 2), 16));
-  return `[${out.join(', ')}]`;
-}
-
 function selectorToml(selector: PolicySelector): string {
   switch (selector.kind) {
     case 'any':
@@ -174,7 +167,7 @@ function selectorToml(selector: PolicySelector): string {
     case 'tag':
       return `{ Tag = ${JSON.stringify(selector.tag)} }`;
     case 'device':
-      return `{ Device = ${bytes(selector.node)} }`;
+      return `{ Device = ${JSON.stringify(selector.node.toLowerCase())} }`;
   }
 }
 

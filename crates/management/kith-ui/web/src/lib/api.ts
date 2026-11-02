@@ -50,7 +50,6 @@ const CODES: readonly ApiErrorCode[] = [
   'not_in_group',
   'version_skew',
   'os_auth_denied',
-  'not_implemented',
   'internal',
 ];
 
@@ -72,7 +71,6 @@ const STATUS_CODES: Readonly<Record<number, ApiErrorCode>> = {
   404: 'not_found',
   409: 'conflict',
   422: 'invalid_argument',
-  501: 'not_implemented',
   503: 'daemon_down',
 };
 
@@ -159,8 +157,6 @@ export function errorText(failure: ApiFailure, context: ErrorContext = {}): stri
       return copy.conn.staleActions;
     case 'os_auth_denied':
       return copy.error.osAuthDenied;
-    case 'not_implemented':
-      return copy.error.notImplemented;
     case 'unauthorized':
       return copy.conn.unauth;
     case 'session_used':

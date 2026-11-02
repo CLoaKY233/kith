@@ -6,8 +6,8 @@ may be used offers `Stop offering…`; one that may not offers `Allow as exit…
 `Not allowed yet`. Both are tier 2: an AlertDialog with the consequences, and the button
 names the exit. This device is `This device` in the lists, first. `Allow device…` (§6.7)
 waits for the API: an exit grant is network-wide today.
-Below them: this device offered as an exit or relay, and `Import a WireGuard config…`,
-which turns a wg-quick config into an exit (`?sheet=wireguard`).
+Below them: imported WireGuard networks (ImportedExits: use, stop using, remove),
+`Import a WireGuard config…` (`?sheet=wireguard`), and this device offered as an exit or relay.
 Props:
   - net: string, the network's id or name (as in the URL).
   - query?: URLSearchParams, for `?sheet=wireguard`.
@@ -16,6 +16,7 @@ Props:
   import { announce } from '../lib/announce';
   import { copy } from '../lib/copy';
   import ExitPicker from '../lib/kith/ExitPicker.svelte';
+  import ImportedExits from '../lib/kith/ImportedExits.svelte';
   import OfferThisDevice from '../lib/kith/OfferThisDevice.svelte';
   import ImportWireguard from '../sheets/ImportWireguard.svelte';
   import Button from '../lib/ui/Button.svelte';
@@ -33,6 +34,7 @@ Props:
   let { net, query }: { net: string; query?: URLSearchParams } = $props();
 
   const importing = $derived(query?.get('sheet') === 'wireguard');
+  let pickerReady = $state(false);
 
   function findNetwork(list: readonly NetworkSummary[], ref: string): NetworkSummary | null {
     return (
@@ -125,8 +127,6 @@ Props:
         return copy.error.permissionDenied;
       case 'daemon_down':
         return copy.conn.staleActions;
-      case 'not_implemented':
-        return copy.error.notImplemented;
       case 'not_found':
         return copy.error.notFound(exit);
       default:
@@ -176,87 +176,91 @@ Props:
   {#if network}
     <div class="sections">
       <section>
-        <ExitPicker {net} />
+        <ExitPicker {net} bind:ready={pickerReady} />
       </section>
 
-      {#if admin && rows.length > 0}
-        <section class="network" aria-labelledby={headingId}>
-          <h2 class="t-heading" id={headingId}>{copy.exits.onNetwork}</h2>
-          <div class="table" role="table" aria-labelledby={headingId}>
-            <div class="row head t-micro" role="row">
-              <span role="columnheader">{copy.exits.exit}</span>
-              <span role="columnheader">{copy.exits.access}</span>
-              <span role="columnheader">{copy.exits.inUse}</span>
-              <span role="columnheader" class="num">{copy.device.columns.rate}</span>
-              <span role="columnheader"><span class="sr-only">{copy.device.columns.actions}</span></span>
-            </div>
-            {#each rows as exit (exit.node)}
-              {@const grant = grants[exit.node]}
-              <div class="row" class:locked={!exit.allowed} role="row">
-                <span class="who" role="cell">
-                  <span class="line">
-                    <StatusDot state={dot(exit)} />
-                    <span class="name">{exit.name}</span>
-                    <span class="sr-only">{online(exit) ? copy.status.online : copy.status.offline}</span>
-                  </span>
-                  {#if grant}
-                    <span
-                      class="status"
-                      class:failed={grant.state === 'failed' || grant.state === 'conflict'}
-                    >
-                      {progress(grant, exit.name)}
-                    </span>
-                  {/if}
-                </span>
-                <span class="access" role="cell">
-                  <span class="cell-label">{copy.exits.access}</span>
-                  {#if !exit.allowed}
-                    <span class="quiet">{copy.exits.notAllowed}</span>
-                  {:else}
-                    <span>
-                      {exit.access.length === 0
-                        ? copy.exits.everyone
-                        : copy.exits.list(people(exit.access))}
-                    </span>
-                  {/if}
-                </span>
-                <span class="use" role="cell">
-                  <span class="cell-label">{copy.exits.inUse}</span>
-                  <span class:quiet={exit.in_use_by.length === 0}>
-                    {exit.in_use_by.length === 0
-                      ? copy.exits.nobody
-                      : copy.exits.list(people(exit.in_use_by))}
-                  </span>
-                </span>
-                <span class="num" role="cell"><Rate value={rate(exit)} stale={frozen} /></span>
-                <span class="more" role="cell">
-                  <DropdownMenu items={items(exit)}>
-                    {#snippet trigger(props)}
-                      <IconButton
-                        icon="ellipsis"
-                        label={copy.exits.moreFor(exit.name)}
-                        triggerProps={props}
-                        aria-describedby={frozen ? reasonId : undefined}
-                      />
-                    {/snippet}
-                  </DropdownMenu>
-                </span>
+      <!-- Below the picker once it has its height, so nothing moves (§11.9). -->
+      {#if pickerReady}
+        {#if admin && rows.length > 0}
+          <section class="network" aria-labelledby={headingId}>
+            <h2 class="t-heading" id={headingId}>{copy.exits.onNetwork}</h2>
+            <div class="table" role="table" aria-labelledby={headingId}>
+              <div class="row head t-micro" role="row">
+                <span role="columnheader">{copy.exits.exit}</span>
+                <span role="columnheader">{copy.exits.access}</span>
+                <span role="columnheader">{copy.exits.inUse}</span>
+                <span role="columnheader" class="num">{copy.device.columns.rate}</span>
+                <span role="columnheader"><span class="sr-only">{copy.device.columns.actions}</span></span>
               </div>
-            {/each}
+              {#each rows as exit (exit.node)}
+                {@const grant = grants[exit.node]}
+                <div class="row" class:locked={!exit.allowed} role="row">
+                  <span class="who" role="cell">
+                    <span class="line">
+                      <StatusDot state={dot(exit)} />
+                      <span class="name">{exit.name}</span>
+                      <span class="sr-only">{online(exit) ? copy.status.online : copy.status.offline}</span>
+                    </span>
+                    {#if grant}
+                      <span
+                        class="status"
+                        class:failed={grant.state === 'failed' || grant.state === 'conflict'}
+                      >
+                        {progress(grant, exit.name)}
+                      </span>
+                    {/if}
+                  </span>
+                  <span class="access" role="cell">
+                    <span class="cell-label">{copy.exits.access}</span>
+                    {#if !exit.allowed}
+                      <span class="quiet">{copy.exits.notAllowed}</span>
+                    {:else}
+                      <span>
+                        {exit.access.length === 0
+                          ? copy.exits.everyone
+                          : copy.exits.list(people(exit.access))}
+                      </span>
+                    {/if}
+                  </span>
+                  <span class="use" role="cell">
+                    <span class="cell-label">{copy.exits.inUse}</span>
+                    <span class:quiet={exit.in_use_by.length === 0}>
+                      {exit.in_use_by.length === 0
+                        ? copy.exits.nobody
+                        : copy.exits.list(people(exit.in_use_by))}
+                    </span>
+                  </span>
+                  <span class="num" role="cell"><Rate value={rate(exit)} stale={frozen} /></span>
+                  <span class="more" role="cell">
+                    <DropdownMenu items={items(exit)}>
+                      {#snippet trigger(props)}
+                        <IconButton
+                          icon="ellipsis"
+                          label={copy.exits.moreFor(exit.name)}
+                          triggerProps={props}
+                          aria-describedby={frozen ? reasonId : undefined}
+                        />
+                      {/snippet}
+                    </DropdownMenu>
+                  </span>
+                </div>
+              {/each}
+            </div>
+            {#if frozen}<p class="reason" id={reasonId}>{copy.conn.staleActions}</p>{/if}
+          </section>
+        {/if}
+
+        <section class="network" aria-labelledby="{headingId}-wg">
+          <h2 class="t-heading" id="{headingId}-wg">{copy.wgImport.heading}</h2>
+          <p class="reason">{copy.wgImport.intro}</p>
+          <ImportedExits />
+          <div>
+            <Button onclick={() => openOverlay('sheet', 'wireguard')}>{copy.wgImport.open}</Button>
           </div>
-          {#if frozen}<p class="reason" id={reasonId}>{copy.conn.staleActions}</p>{/if}
         </section>
+
+        <OfferThisDevice />
       {/if}
-
-      <section class="network" aria-labelledby="{headingId}-wg">
-        <h2 class="t-heading" id="{headingId}-wg">{copy.wgImport.heading}</h2>
-        <p class="reason">{copy.wgImport.intro}</p>
-        <div>
-          <Button onclick={() => openOverlay('sheet', 'wireguard')}>{copy.wgImport.open}</Button>
-        </div>
-      </section>
-
-      <OfferThisDevice />
     </div>
   {/if}
 </section>

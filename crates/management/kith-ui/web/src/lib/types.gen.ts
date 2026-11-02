@@ -66,6 +66,47 @@ problems: Array<Problem>,
 admin: boolean, };
 
 /**
+ * A plain WireGuard network imported from a `wg-quick` config, in [`Status`].
+ */
+export type ImportedInfo = { 
+/**
+ * The id it is addressed by in [`Request::UseImport`] and [`Request::RemoveImport`].
+ */
+network: string, 
+/**
+ * The name it was imported under.
+ */
+name: string, 
+/**
+ * Where its server is reached, as text.
+ */
+endpoint: string | null, 
+/**
+ * What it carries, as prefixes.
+ */
+routes: Array<string>, 
+/**
+ * Whether it carries all internet traffic, so acts as an exit.
+ */
+everything: boolean, 
+/**
+ * Whether its routes go through it now.
+ */
+active: boolean, 
+/**
+ * Seconds since anything arrived from its server, if ever.
+ */
+last_seen_secs: number | null, 
+/**
+ * Bytes received from it.
+ */
+rx_bytes: number, 
+/**
+ * Bytes sent to it.
+ */
+tx_bytes: number, };
+
+/**
  * The daemon's state.
  */
 export type Status = { 
@@ -108,7 +149,11 @@ route_conflicts: Array<string>,
 /**
  * Recent warnings, newest last.
  */
-warnings: Array<Warning>, };
+warnings: Array<Warning>, 
+/**
+ * Plain WireGuard networks imported from a `wg-quick` config.
+ */
+imported: Array<ImportedInfo>, };
 
 /**
  * One peer in [`Response::Peers`].
@@ -864,7 +909,11 @@ route_conflicts: Array<string>,
 /**
  * Recent warnings, newest last.
  */
-warnings: Array<Warning>, };
+warnings: Array<Warning>, 
+/**
+ * Plain WireGuard networks imported from a `wg-quick` config.
+ */
+imported: Array<ImportedInfo>, };
 
 /**
  * One exit in a network, for the Exits screen and the picker.
@@ -1569,6 +1618,15 @@ export type Imported = {
  * Its id.
  */
 network: string, };
+
+/**
+ * `POST /api/wireguard/:net/use`: routes through an imported network, or stops.
+ */
+export type ImportUseIn = { 
+/**
+ * Send its traffic through it when true.
+ */
+active: boolean, };
 
 /**
  * `POST /api/networks/:net/phones`: makes a plain WireGuard device.

@@ -199,6 +199,7 @@ mod tests {
             drops: std::collections::BTreeMap::default(),
             route_conflicts: Vec::new(),
             warnings: Vec::new(),
+            imported: Vec::new(),
         }
     }
 

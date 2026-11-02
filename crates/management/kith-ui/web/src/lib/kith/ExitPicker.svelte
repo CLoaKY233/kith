@@ -16,6 +16,8 @@ readers).
 Used by the Exits screen, the header's ExitChip popover and ⌘K `Use exit…`.
 Props:
   - net: string, the network's id or name (as in the URL).
+  - ready?: boolean, bindable: true once the exits have loaded or failed to, so a screen
+    can hold what sits below the picker until it has its height (§11.9).
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -32,7 +34,7 @@ Props:
   import CopyField from '../ui/CopyField.svelte';
   import AskAdminSheet from './AskAdminSheet.svelte';
 
-  let { net }: { net: string } = $props();
+  let { net, ready: shown = $bindable(false) }: { net: string; ready?: boolean } = $props();
 
   /** The `No exit` option's key; every other option is keyed by its device id. */
   const NONE = '';
@@ -142,6 +144,9 @@ Props:
     ...(exits !== null ? usable : fallback).map((e) => ({ key: e.node, node: e.node, name: e.name })),
   ]);
   const ready = $derived(exits !== null || loadFailure !== null);
+  $effect(() => {
+    shown = ready;
+  });
 
   const currentName = $derived(inUse?.name ?? null);
 
@@ -298,8 +303,6 @@ Props:
         return copy.error.permissionDenied;
       case 'daemon_down':
         return copy.conn.staleActions;
-      case 'not_implemented':
-        return copy.error.notImplemented;
       case 'not_found':
         return copy.error.notFound(exit);
       default:
@@ -427,7 +430,7 @@ Props:
       </div>
     {/if}
 
-    {#if loadFailure && loadFailure.code !== 'not_implemented'}
+    {#if loadFailure}
       <p class="note failed">{copy.error.internal(loadFailure.message)}</p>
     {/if}
   {/if}

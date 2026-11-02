@@ -29,7 +29,7 @@ Props:
 <script lang="ts">
   import { connection } from '../../frame/conn.svelte';
   import { needs } from '../../frame/needs.svelte';
-  import { removalLine, removalOf } from '../../sheets/RemoveDevice.svelte';
+  import { removalLine, removalOf } from '../../sheets/removals.svelte';
   import { announce } from '../announce';
   import Spark from '../charts/Spark.svelte';
   import { copy, DOT } from '../copy';
@@ -39,7 +39,7 @@ Props:
   import type { DotState } from '../types';
   import type { PeerInfo } from '../types.gen';
   import Badge from '../ui/Badge.svelte';
-  import DropdownMenu, { type MenuItem } from '../ui/DropdownMenu.svelte';
+  import DropdownMenu, { type MenuItem } from '../ui/RowMenu.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import StatusDot from '../ui/StatusDot.svelte';
   import { toast } from '../ui/Toast.svelte';

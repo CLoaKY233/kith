@@ -13,7 +13,6 @@ Props:
 -->
 <script lang="ts">
   import { tick } from 'svelte';
-  import ExitPicker from '../lib/kith/ExitPicker.svelte';
   import { copy } from '../lib/copy';
   import Icon from '../lib/icons/Icon.svelte';
   import { tintKey } from '../lib/live/keys';
@@ -83,7 +82,9 @@ Props:
         <span class="label">{text}</span>
       </button>
     {/snippet}
-    <ExitPicker {net} />
+    {#await import('../lib/kith/ExitPicker.svelte') then { default: ExitPicker }}
+      <ExitPicker {net} />
+    {/await}
   </Popover>
 {/if}
 

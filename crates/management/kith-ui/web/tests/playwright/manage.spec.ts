@@ -53,7 +53,10 @@ test('a TOML parse error shows at its line and column', async ({ app }) => {
   await app.getByRole('tab', { name: copy.access.views.toml }).click();
   await app.getByLabel(copy.access.toml).fill('ru les');
   await app.getByRole('button', { name: copy.access.save }).click();
-  await expect(app.getByText(copy.access.tomlError(1, 3, 'invalid key'))).toBeVisible();
+  // The live region announces it too; the visible line is in the TOML tab.
+  await expect(
+    app.getByRole('tabpanel').getByText(copy.access.tomlError(1, 3, 'invalid key')),
+  ).toBeVisible();
 });
 
 test('Settings lists relays and open invites, and changes them', async ({ app }) => {
@@ -100,17 +103,34 @@ test('offering this device as a relay asks first, then saves', async ({ app }) =
   await expect.poll(() => asked).toEqual([{ exit: false, relay: true }]);
 });
 
-test('a WireGuard config imports from Exits', async ({ app }) => {
-  const sent: unknown[] = [];
-  await app.route('**/api/wireguard/import', async (route) => {
-    sent.push(route.request().postDataJSON());
-    await route.fulfill({ json: { network: network.id } });
-  });
+test('a WireGuard config imports into Exits, where it is used, stopped and removed', async ({ app }) => {
+  const conf =
+    '[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.64.0.2/32\n\n' +
+    '[Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\n' +
+    'Endpoint = 198.51.100.1:51820\nAllowedIPs = 0.0.0.0/0, ::/0\n';
   await open(app, `${net}/exits`);
+  const imports = app.getByRole('list', { name: copy.wgImport.heading });
+  await expect(imports.getByText('work-vpn', { exact: true })).toBeVisible();
+
   await app.getByRole('button', { name: copy.wgImport.open }).click();
-  await app.getByLabel(copy.wgImport.name).fill('office');
-  await app.getByLabel(copy.wgImport.conf).fill('[Interface]\nPrivateKey = x\n[Peer]\nPublicKey = y\n');
+  await app.getByLabel(copy.wgImport.name).fill('mullvad');
+  await app.getByLabel(copy.wgImport.conf, { exact: true }).fill(conf);
   await app.getByRole('button', { name: copy.wgImport.submit }).click();
-  await expect(app.getByText(copy.wgImport.done('office'))).toBeVisible();
-  expect(sent).toEqual([{ name: 'office', conf_text: '[Interface]\nPrivateKey = x\n[Peer]\nPublicKey = y\n' }]);
+  await expect(
+    app.getByRole('region', { name: copy.layer.toasts }).getByText(copy.wgImport.done('mullvad')),
+  ).toBeVisible();
+  const row = imports.getByRole('listitem').filter({ hasText: 'mullvad' });
+  await expect(row.getByText(copy.wgImport.everything)).toBeVisible();
+  await expect(row.getByText(copy.wgImport.inUse, { exact: true })).toBeVisible();
+
+  await row.getByRole('button', { name: copy.wgImport.stop('mullvad') }).click();
+  await expect(row.getByText(copy.wgImport.notInUse)).toBeVisible();
+  await row.getByRole('button', { name: copy.wgImport.use('mullvad') }).click();
+  await expect(row.getByText(copy.wgImport.inUse, { exact: true })).toBeVisible();
+
+  await row.getByRole('button', { name: copy.wgImport.moreFor('mullvad') }).click();
+  await app.getByRole('menuitem', { name: copy.wgImport.remove }).click();
+  await app.getByRole('button', { name: copy.wgImport.removeSubmit('mullvad') }).click();
+  await expect(row).toHaveCount(0);
+  await expect(imports.getByText('work-vpn', { exact: true })).toBeVisible();
 });

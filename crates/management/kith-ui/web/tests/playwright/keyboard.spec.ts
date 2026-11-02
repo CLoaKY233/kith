@@ -106,11 +106,13 @@ test('add a phone from the command palette', async ({ app }) => {
   });
   const keys = new Keys(app);
   await keys.press('ControlOrMeta+k');
+  await expect(app.getByRole('dialog')).toBeVisible();
   await keys.type(`>${copy.palette.addPhone.split(' ').at(-1) ?? ''}`);
   await keys.press('Enter');
 
   await expect(app.getByRole('heading', { name: copy.addPhone.title })).toBeVisible();
-  await expect(app.getByLabel(copy.addPhone.name, { exact: true })).toHaveValue(name);
+  // Overview's join request has a Name field too; this one is in the sheet.
+  await expect(app.getByRole('dialog').getByLabel(copy.addPhone.name, { exact: true })).toHaveValue(name);
   await keys.tabTo(app.getByRole('button', { name: copy.addPhone.create, exact: true }));
   await keys.press('Enter');
   await expect.poll(() => created).toEqual([{ name, tags: [copy.addPhone.tagDefault] }]);
@@ -137,7 +139,9 @@ test('set an exit, which moves at once and confirms when done', async ({ app }) 
   const keys = new Keys(app);
   await keys.skipToContent(copy.skipToContent);
   await keys.tabTo(checked);
+  // Arrows move focus only (§7.8); Space switches.
   await keys.press('ArrowDown');
+  await keys.press('Space');
 
   await expect(app.getByText(copy.exits.switching)).toBeVisible();
   const after = await checked.ariaSnapshot();
@@ -146,7 +150,9 @@ test('set an exit, which moves at once and confirms when done', async ({ app }) 
   release();
 
   await expect(
-    app.getByText(chosen ? copy.exits.done(chosen.name) : copy.exits.doneNone),
+    app
+      .getByRole('main')
+      .getByText(chosen ? copy.exits.done(chosen.name) : copy.exits.doneNone),
   ).toBeVisible();
   expect(asked).toEqual([expect.objectContaining({ node: chosen?.node ?? null })]);
   expect(keys.count).toBeLessThan(KEY_BUDGET);

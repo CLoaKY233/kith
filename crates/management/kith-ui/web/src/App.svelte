@@ -14,7 +14,6 @@ title and the live regions. Screens receive the network id as `net`.
   import { layers } from './frame/layers.svelte';
   import { isAdmin, membership, networkName } from './frame/net';
   import { section, title } from './frame/nav';
-  import NeedSheet from './frame/NeedSheet.svelte';
   import { needs } from './frame/needs.svelte';
   import { prefs } from './frame/prefs.svelte';
   import UnauthOverlay from './frame/UnauthOverlay.svelte';
@@ -34,20 +33,10 @@ title and the live regions. Screens receive the network id as `net`.
     subscribe,
     type Route,
   } from './router';
-  import Access from './routes/Access.svelte';
-  import Activity from './routes/Activity.svelte';
-  import Devices from './routes/Devices.svelte';
-  import Exits from './routes/Exits.svelte';
   import Gate from './routes/Gate.svelte';
-  import Names from './routes/Names.svelte';
   import Overview from './routes/Overview.svelte';
-  import Settings from './routes/Settings.svelte';
-  import ThisDevice from './routes/ThisDevice.svelte';
-  import Welcome from './routes/Welcome.svelte';
-  import AddDevice from './sheets/AddDevice.svelte';
-  import AddPhone from './sheets/AddPhone.svelte';
-  import Invite from './sheets/Invite.svelte';
-  import RemoveDevice from './sheets/RemoveDevice.svelte';
+  import Lazy from './frame/Lazy.svelte';
+
 
   let route = $state<Route>(parse(location.pathname));
   let query = $state(new URLSearchParams(location.search));
@@ -58,6 +47,9 @@ title and the live regions. Screens receive the network id as `net`.
   needs.track();
 
   onMount(() => {
+    // ⌘K must answer at once, so the palette loads as soon as the page is idle.
+    const idle = window.requestIdleCallback ?? ((run: () => void) => window.setTimeout(run, 1));
+    idle(() => void import('./frame/Palette.svelte').catch(() => undefined));
     attachAnnouncer((politeness, message) => {
       if (politeness === 'assertive') assertive = message;
       else polite = message;
@@ -73,6 +65,8 @@ title and the live regions. Screens receive the network id as `net`.
   });
 
   const networks = $derived(live.status?.networks ?? []);
+  /** The network of a route inside it, for the screens' `net`. */
+  const routeNet = $derived('net' in route ? route.net : '');
   /** The network the frame points into: the one on screen, else the last one used. */
   const net = $derived(
     'net' in route
@@ -192,6 +186,15 @@ title and the live regions. Screens receive the network id as `net`.
     if (!open) closeOverlay('add');
   };
 
+  // Each sheet mounts the first time the URL opens it, so it can animate closed after.
+  let opened = $state({ device: false, phone: false, invite: false, need: false });
+  $effect(() => {
+    if (add === 'device') opened.device = true;
+    if (add === 'phone') opened.phone = true;
+    if (add === 'invite') opened.invite = true;
+    if (need !== null || layers.needs) opened.need = true;
+  });
+
   // The palette and the shortcut sheet load on first use, off the first paint (§8.1).
   let paletteUsed = $state(false);
   let shortcutsUsed = $state(false);
@@ -272,7 +275,9 @@ title and the live regions. Screens receive the network id as `net`.
       <div class="layer" transition:fade={crossfade}>
         <div class="app" inert={unauth}>
         {#if route.name === 'welcome' || net === null}
-          <main id="content"><Welcome flow={query.get('flow')} /></main>
+          <main id="content">
+            <Lazy name="welcome">{#snippet children(Welcome)}<Welcome flow={query.get('flow')} />{/snippet}</Lazy>
+          </main>
         {:else if route.name !== 'root' && route.name !== 'not_found'}
           <Frame
             title={title(route)}
@@ -281,40 +286,60 @@ title and the live regions. Screens receive the network id as `net`.
             page={section(route)}
             self={route.name === 'this'}
           >
-            {#if route.name === 'this'}
-              <ThisDevice />
-            {:else if route.name === 'overview'}
-              <Overview net={route.net} />
+            {#if route.name === 'overview'}
+              <Overview net={routeNet} />
+            {:else if route.name === 'this'}
+              <Lazy name="this">{#snippet children(ThisDevice)}<ThisDevice />{/snippet}</Lazy>
             {:else if route.name === 'devices' || route.name === 'device'}
               <!-- One Devices for the list and a device open in it, so the map, the list's
                    scroll and focus survive opening and closing the detail. -->
-              <Devices net={route.net} dev={route.name === 'device' ? route.dev : null} {query} />
+              <Lazy name="devices">{#snippet children(Devices)}
+                <Devices net={routeNet} dev={route.name === 'device' ? route.dev : null} {query} />
+              {/snippet}</Lazy>
             {:else if route.name === 'activity'}
-              <Activity net={route.net} {query} />
+              <Lazy name="activity">{#snippet children(Activity)}<Activity net={routeNet} {query} />{/snippet}</Lazy>
             {:else if route.name === 'names'}
-              <Names net={route.net} {query} />
+              <Lazy name="names">{#snippet children(Names)}<Names net={routeNet} {query} />{/snippet}</Lazy>
             {:else if route.name === 'exits'}
-              <Exits net={route.net} {query} />
+              <Lazy name="exits">{#snippet children(Exits)}<Exits net={routeNet} {query} />{/snippet}</Lazy>
             {:else if route.name === 'access'}
-              <Access net={route.net} {query} />
+              <Lazy name="access">{#snippet children(Access)}<Access net={routeNet} {query} />{/snippet}</Lazy>
             {:else if route.name === 'settings'}
-              <Settings net={route.net} {query} />
+              <Lazy name="settings">{#snippet children(Settings)}<Settings net={routeNet} {query} />{/snippet}</Lazy>
             {/if}
           </Frame>
 
-          <AddDevice bind:open={() => add === 'device', closeAdd} {net} />
-          <AddPhone bind:open={() => add === 'phone', closeAdd} {net} node={query.get('node') ?? undefined} />
-          <Invite bind:open={() => add === 'invite', closeAdd} {net} />
-          <NeedSheet {net} id={need} />
-          <NeedSheet {net} id={null} list />
+          {#if opened.device}
+            <Lazy name="addDevice">{#snippet children(AddDevice)}
+              <AddDevice bind:open={() => add === 'device', closeAdd} {net} />
+            {/snippet}</Lazy>
+          {/if}
+          {#if opened.phone}
+            <Lazy name="addPhone">{#snippet children(AddPhone)}
+              <AddPhone bind:open={() => add === 'phone', closeAdd} {net} node={query.get('node') ?? undefined} />
+            {/snippet}</Lazy>
+          {/if}
+          {#if opened.invite}
+            <Lazy name="invite">{#snippet children(Invite)}
+              <Invite bind:open={() => add === 'invite', closeAdd} {net} />
+            {/snippet}</Lazy>
+          {/if}
+          {#if opened.need}
+            <Lazy name="need">{#snippet children(NeedSheet)}
+              <NeedSheet {net} id={need} />
+              <NeedSheet {net} id={null} list />
+            {/snippet}</Lazy>
+          {/if}
           {#if removing}
-            <RemoveDevice
-              bind:open={() => remove !== null, (open) => !open && closeOverlay('remove')}
-              {net}
-              node={removing.node}
-              name={removing.name}
-              network={networkName(net)}
-            />
+            <Lazy name="remove">{#snippet children(RemoveDevice)}
+              <RemoveDevice
+                bind:open={() => remove !== null, (open) => !open && closeOverlay('remove')}
+                {net}
+                node={removing?.node ?? ''}
+                name={removing?.name ?? ''}
+                network={networkName(net)}
+              />
+            {/snippet}</Lazy>
           {/if}
           {#if paletteUsed}
             {#await import('./frame/Palette.svelte') then { default: Palette }}

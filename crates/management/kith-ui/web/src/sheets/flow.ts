@@ -28,8 +28,6 @@ export function failureText(failure: ApiFailure): string {
     case 'permission_denied':
     case 'forbidden':
       return copy.error.permissionDenied;
-    case 'not_implemented':
-      return copy.error.notImplemented;
     case 'os_auth_denied':
       return copy.error.osAuthDenied;
     case 'daemon_down':

@@ -407,6 +407,7 @@ export const copy = {
     deviceJoinedPlain: (device: string): string => `${device} joined`,
     deviceRemoved: (device: string, by: string): string => `${device} removed by ${by}`,
     deviceRemovedPlain: (device: string): string => `${device} was removed`,
+    deviceRenamed: (from: string, to: string): string => `${from} is now called ${to}`,
     exitChanged: (exit: string): string => `This device now uses ${exit} as exit`,
     exitCleared: 'This device now uses its own connection',
     blocked: (from: string, to: string, port: string, n: number): string =>
@@ -628,7 +629,7 @@ export const copy = {
   wgImport: {
     heading: 'Use a WireGuard server',
     intro:
-      'A config from a VPN provider or your own WireGuard server becomes a network of its own. Its server is then an exit you can pick.',
+      'A config from a VPN provider or your own WireGuard server. Use one that carries all internet traffic as your exit, or one that reaches a private network beside kith.',
     open: 'Import a WireGuard config…',
     title: 'Import a WireGuard config',
     name: 'Name',
@@ -642,7 +643,25 @@ export const copy = {
     fileFailed: "Couldn't read that file. Paste its text instead.",
     submit: 'Import config',
     pending: 'Importing…',
-    done: (name: string): string => `Imported ${name}. Pick its exit to send your traffic through it.`,
+    done: (name: string): string => `Imported ${name}. Its traffic goes through it now.`,
+    everything: 'All internet traffic',
+    routes: (routes: readonly string[]): string => routes.join(', '),
+    inUse: 'In use',
+    notInUse: 'Not in use',
+    heard: (ago: string): string => `Heard from ${ago}`,
+    neverHeard: 'Not heard from yet',
+    use: (name: string): string => `Use ${name}`,
+    stop: (name: string): string => `Stop using ${name}`,
+    remove: 'Remove…',
+    moreFor: (name: string): string => `More for ${name}`,
+    removeTitle: (name: string): string => `Remove ${name}?`,
+    removeBody: (name: string): string =>
+      `kith forgets ${name}'s config and its private key. To use it again, import the .conf file again.`,
+    removeSubmit: (name: string): string => `Remove ${name}`,
+    replacesExit: 'Using it stops the exit in use: internet traffic goes through it instead.',
+    used: (name: string): string => `Using ${name}.`,
+    stopped: (name: string): string => `Stopped using ${name}.`,
+    removed: (name: string): string => `Removed ${name}.`,
   },
 
   /** §6.8 Settings. */
@@ -764,7 +783,6 @@ export const copy = {
         : `kith couldn't do this: ${said}. Details are in Logs.`;
     },
     osAuthDenied: 'This computer did not confirm it. Nothing was signed.',
-    notImplemented: "This version of kith can't do this yet.",
   },
 
   /** §7.1 Start a network. */

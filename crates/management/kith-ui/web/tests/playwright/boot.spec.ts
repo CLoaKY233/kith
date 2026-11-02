@@ -5,17 +5,24 @@ import { TICK_MS } from '../../src/lib/live/timing';
 import { expect, network, open, test, thisDevice } from './kith';
 
 const CSP =
-  "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'";
+  "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 test('the one-time link signs in, drops its token and lands on the first network', async ({
   app,
   context,
+  server,
 }) => {
   expect(new URL(app.url()).hash).toBe('');
   await expect(app).toHaveTitle(copy.documentTitle(thisDevice, network.name, 0));
   const cookies = await context.cookies();
   expect(cookies).toEqual([
-    expect.objectContaining({ name: 'kith_ui', httpOnly: true, sameSite: 'Strict', path: '/' }),
+    // One cookie per port, so two kith-ui on one machine keep their own sessions.
+    expect.objectContaining({
+      name: `kith_ui_${new URL(server.origin).port}`,
+      httpOnly: true,
+      sameSite: 'Strict',
+      path: '/',
+    }),
   ]);
 });
 

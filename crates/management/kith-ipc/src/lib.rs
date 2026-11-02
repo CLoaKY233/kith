@@ -18,15 +18,15 @@ mod server;
 pub use client::IpcClient;
 pub use error::IpcError;
 pub use message::{
-    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, InviteInfo, LinkInfo, LinkReport,
-    NetworkSummary, PathKind, PeerInfo, PendingJoin, PolicyInfo, PolicyRuleInfo, Problem,
-    RecordInfo, RelayInfo, Request, Response, SelectorInfo, Status, TargetInfo, TrafficSample,
-    TrafficSeries, Warning,
+    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, ImportedInfo, InviteInfo, LinkInfo,
+    LinkReport, NetworkSummary, PathKind, PeerInfo, PendingJoin, PolicyInfo, PolicyRuleInfo,
+    Problem, RecordInfo, RelayInfo, Request, Response, SelectorInfo, Status, TargetInfo,
+    TrafficSample, TrafficSeries, Warning,
 };
 pub use server::{Connection, IpcServer, PeerCred};
 
 /// The protocol version both sides must agree on in [`Request::Hello`].
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// The largest request the daemon accepts, in envelope bytes.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;

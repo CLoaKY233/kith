@@ -23,7 +23,7 @@ Props:
   import Icon from '../icons/Icon.svelte';
   import { live } from '../live/store.svelte';
   import type { Entry } from '../types.gen';
-  import DropdownMenu, { type MenuItem } from '../ui/DropdownMenu.svelte';
+  import DropdownMenu, { type MenuItem } from '../ui/RowMenu.svelte';
   import IconButton from '../ui/IconButton.svelte';
   import { toast } from '../ui/Toast.svelte';
   import {
@@ -231,7 +231,7 @@ Props:
 </div>
 
 <style>
-  /* §3.5: a new row grows in (height plus fade) and carries the change tint, which fades
+  /* §3.5: a new row fades in (the list slides it in) and carries the change tint, which fades
      by opacity on a layer of its own so reduced motion keeps it. */
   .event {
     position: relative;
@@ -245,9 +245,6 @@ Props:
   .event.fresh {
     animation: event-grow var(--d-row) var(--e-linear);
   }
-  .event.fresh > .inner {
-    overflow: hidden;
-  }
   .event.fresh::after {
     content: '';
     position: absolute;
@@ -260,7 +257,6 @@ Props:
   }
   @keyframes event-grow {
     from {
-      grid-template-rows: 0fr;
       opacity: 0;
     }
   }

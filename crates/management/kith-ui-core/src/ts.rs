@@ -32,6 +32,7 @@ pub fn declarations() -> String {
     push::<kith_ipc::Problem>(&mut out, &config);
     push::<kith_ipc::Warning>(&mut out, &config);
     push::<kith_ipc::NetworkSummary>(&mut out, &config);
+    push::<kith_ipc::ImportedInfo>(&mut out, &config);
     push::<kith_ipc::Status>(&mut out, &config);
     push::<kith_ipc::PeerInfo>(&mut out, &config);
     push::<kith_ipc::EntryKind>(&mut out, &config);
@@ -89,6 +90,7 @@ pub fn declarations() -> String {
     push::<wire::ServerView>(&mut out, &config);
     push::<wire::ImportIn>(&mut out, &config);
     push::<wire::Imported>(&mut out, &config);
+    push::<wire::ImportUseIn>(&mut out, &config);
     push::<wire::PhoneIn>(&mut out, &config);
     push::<wire::PhoneCreated>(&mut out, &config);
     push::<wire::PhoneConfigIn>(&mut out, &config);

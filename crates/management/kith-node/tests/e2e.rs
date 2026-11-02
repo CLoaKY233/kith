@@ -1350,6 +1350,85 @@ mod tests {
         shutdown([a, p, s]).await
     }
 
+    async fn imports(node: &NodeHandle) -> TestResult<Vec<kith_ipc::ImportedInfo>> {
+        let response = node.request(Request::Status).await;
+        if let Response::Status(status) = response {
+            return Ok(status.imported);
+        }
+        Err(format!("status failed: {response:?}").into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_imported_wireguard_network_is_listed_used_paused_and_removed() -> TestResult {
+        let s = start_server(true, false, Some("localhost")).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server: Ipv4Addr = peer(&a, network, "server").await?;
+        let (phone, everything) = checked_configs(export(&s, network, "Phone", &["phone"]).await?)?;
+        let disk = Disk::new("imports")?;
+        let p = disk.start().await?;
+        let imported = p
+            .request(Request::ImportWireGuard {
+                name: "phone".into(),
+                conf_text: everything.replace("Endpoint = localhost:", "Endpoint = 127.0.0.1:"),
+            })
+            .await;
+        let Response::Imported { network: id } = imported else {
+            return Err(format!("the config did not import: {imported:?}").into());
+        };
+        let listed = imports(&p).await?;
+        let [one] = listed.as_slice() else {
+            return Err(format!("expected one import: {listed:?}").into());
+        };
+        if one.network != id
+            || one.name != "phone"
+            || !one.active
+            || !one.everything
+            || !one.routes.iter().any(|route| route == "0.0.0.0/0")
+            || one
+                .endpoint
+                .as_deref()
+                .is_none_or(|e| !e.starts_with("127.0.0.1:"))
+        {
+            return Err(format!("the import is listed wrong: {one:?}").into());
+        }
+        deliver(&p, &s, &udp_packet(phone, server, b"through the import")?).await?;
+
+        let paused = p
+            .request(Request::UseImport {
+                network: id,
+                active: false,
+            })
+            .await;
+        if paused != Response::ImportUsed {
+            return Err(format!("could not stop using the import: {paused:?}").into());
+        }
+        p.shutdown().await?;
+        let p = disk.start().await?;
+        if imports(&p).await?.iter().any(|import| import.active) {
+            return Err("a paused import came back in use after a restart".into());
+        }
+        let used = p
+            .request(Request::UseImport {
+                network: id,
+                active: true,
+            })
+            .await;
+        if used != Response::ImportUsed || !imports(&p).await?.iter().all(|i| i.active) {
+            return Err(format!("could not use the import again: {used:?}").into());
+        }
+        let removed = p.request(Request::RemoveImport { network: id }).await;
+        if removed != Response::ImportRemoved || !imports(&p).await?.is_empty() {
+            return Err(format!("the import was not removed: {removed:?}").into());
+        }
+        let again = p.request(Request::RemoveImport { network: id }).await;
+        if !matches!(again, Response::Error { .. }) {
+            return Err(format!("removing it twice succeeded: {again:?}").into());
+        }
+        shutdown([a, p, s]).await
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_phone_on_plain_wireguard_is_a_full_member() -> TestResult {
         let s = start_server(true, false, Some("localhost")).await?;

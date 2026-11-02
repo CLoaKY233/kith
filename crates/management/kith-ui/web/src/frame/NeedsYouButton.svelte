@@ -7,7 +7,7 @@ Props:
   - net: string, the network id.
 -->
 <script lang="ts">
-  import NeedsYouCard from '../lib/kith/NeedsYouCard.svelte';
+  import Lazy from './Lazy.svelte';
   import { copy } from '../lib/copy';
   import Popover from '../lib/ui/Popover.svelte';
   import StatusDot from '../lib/ui/StatusDot.svelte';
@@ -44,9 +44,11 @@ Props:
     {/snippet}
     <div class="list">
       <h2 class="heading" tabindex="-1" bind:this={heading}>{copy.header.needsYouTitle}</h2>
-      {#each list as need (need.id)}
-        <NeedsYouCard {need} layered primary={need.id === list.find((n) => n.kind === 'join')?.id} />
-      {/each}
+      <Lazy name="needsCard">{#snippet children(NeedsYouCard)}
+        {#each list as need (need.id)}
+          <NeedsYouCard {need} layered primary={need.id === list.find((n) => n.kind === 'join')?.id} />
+        {/each}
+      {/snippet}</Lazy>
     </div>
   </Popover>
 {/if}

@@ -12,10 +12,10 @@ use tokio::io::AsyncWriteExt;
 use crate::codec::{Framed, decode, encode};
 use crate::message::ServerMessage;
 use crate::{
-    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, InviteInfo, IpcError, LinkInfo,
-    LinkReport, MAX_FRAME_LEN, MAX_RESPONSE_LEN, NetworkSummary, PROTOCOL_VERSION, PathKind,
-    PeerInfo, PendingJoin, PolicyInfo, PolicyRuleInfo, Problem, RecordInfo, RelayInfo, Request,
-    Response, SelectorInfo, Status, TargetInfo, TrafficSample, TrafficSeries, Warning,
+    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, ImportedInfo, InviteInfo, IpcError,
+    LinkInfo, LinkReport, MAX_FRAME_LEN, MAX_RESPONSE_LEN, NetworkSummary, PROTOCOL_VERSION,
+    PathKind, PeerInfo, PendingJoin, PolicyInfo, PolicyRuleInfo, Problem, RecordInfo, RelayInfo,
+    Request, Response, SelectorInfo, Status, TargetInfo, TrafficSample, TrafficSeries, Warning,
 };
 #[cfg(unix)]
 use crate::{IpcClient, IpcServer};
@@ -32,7 +32,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 13, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 14, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -42,7 +42,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 13, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 14, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -60,7 +60,7 @@ fn golden_bytes() {
         gateway: Some("e".to_owned()),
         path_mtu: Some(1216),
     }]));
-    let mut expected = vec![64, b'k', b't', 0x70, 13, 0, 6, 1];
+    let mut expected = vec![64, b'k', b't', 0x70, 14, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,
@@ -200,6 +200,7 @@ fn status() -> impl Strategy<Value = Status> {
                 secs_ago: 5,
                 message: "w".to_owned(),
             }],
+            imported: Vec::new(),
         })
 }
 
@@ -357,6 +358,7 @@ async fn serve_one(server: IpcServer) -> Option<u32> {
                     drops: BTreeMap::new(),
                     route_conflicts: Vec::new(),
                     warnings: Vec::new(),
+                    imported: Vec::new(),
                 }))
                 .await
                 .unwrap(),
@@ -533,6 +535,8 @@ fn request_index(request: &Request) -> u8 {
         Request::GetPolicy { .. } => 33,
         Request::ListRelays { .. } => 34,
         Request::ListExits { .. } => 35,
+        Request::UseImport { .. } => 36,
+        Request::RemoveImport { .. } => 37,
     }
 }
 
@@ -576,6 +580,8 @@ fn response_index(response: &Response) -> u8 {
         Response::Policy(_) => 35,
         Response::Relays(_) => 36,
         Response::Exits(_) => 37,
+        Response::ImportUsed => 38,
+        Response::ImportRemoved => 39,
     }
 }
 
@@ -722,6 +728,11 @@ fn requests() -> Vec<Request> {
         Request::GetPolicy { network: NET },
         Request::ListRelays { network: NET },
         Request::ListExits { network: NET },
+        Request::UseImport {
+            network: NET,
+            active: true,
+        },
+        Request::RemoveImport { network: NET },
     ]
 }
 
@@ -757,6 +768,17 @@ fn responses() -> Vec<Response> {
             warnings: vec![Warning {
                 secs_ago: 5,
                 message: s("w"),
+            }],
+            imported: vec![ImportedInfo {
+                network: NET,
+                name: s("mullvad"),
+                endpoint: Some(s("198.51.100.1:51820")),
+                routes: vec![s("0.0.0.0/0")],
+                everything: true,
+                active: false,
+                last_seen_secs: Some(7),
+                rx_bytes: 1,
+                tx_bytes: 2,
             }],
         }),
         Response::NetworkCreated { network: NET },
@@ -886,6 +908,8 @@ fn responses() -> Vec<Response> {
             node: NODE,
         }]),
         Response::Exits(vec![NODE]),
+        Response::ImportUsed,
+        Response::ImportRemoved,
     ]
 }
 
@@ -1065,7 +1089,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (13, 0x1029_4cff_040e_e84e),
+        (14, 0x08ca_916e_b999_e4a6),
         "the wire format changed"
     );
 }

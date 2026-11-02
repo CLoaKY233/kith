@@ -778,9 +778,10 @@ Props:
       {#if !narrow}{@render focusCard()}{/if}
     </div>
     {#if legend.length > 0}
+      <!-- Every item keeps its slot and absent ones are hidden, so none moves (§11.9). -->
       <ul class="legend" aria-hidden="true">
-        {#each legend as item (item)}
-          <li>
+        {#each LEGEND_ORDER as item (item)}
+          <li class:absent={!legend.includes(item)}>
             <svg width="16" height="10" viewBox="0 0 16 10">
               {#if item === 'relay'}
                 <rect class="dot" x="4" y="1" width="8" height="8" />
@@ -1063,6 +1064,9 @@ Props:
     display: inline-flex;
     align-items: center;
     gap: var(--s-1);
+  }
+  .legend li.absent {
+    visibility: hidden;
   }
   .legend .dot.hollow {
     fill: var(--surface);

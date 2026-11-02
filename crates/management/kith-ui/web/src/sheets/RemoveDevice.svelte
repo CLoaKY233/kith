@@ -16,68 +16,11 @@ Props:
   - name: string, the device's name. network: string, the network's name.
   - onOpenChange?: (open: boolean) => void.
 
-Module exports, for DeviceRow (spec §5 Removing state):
+Removals in flight live in removals.svelte.ts, for DeviceRow (spec §5 Removing state):
   - removalOf(net, node): the removal in flight for a device, or null. `net` is the id.
   - removalLine(removal): `Removing… 3 of 5 have dropped phone`, then
     `2 offline devices will drop it when they're back.`
 -->
-<script lang="ts" module>
-  import { SvelteMap } from 'svelte/reactivity';
-  import { copy as text } from '../lib/copy';
-  import { live as store } from '../lib/live/store.svelte';
-  import { REMOVED_HOLD_MS, ROW_ANIMATION_MS } from '../lib/live/timing';
-  import type { ActionHandle } from '../lib/types';
-  import type { Outcome } from '../lib/types.gen';
-
-  export type Removal = {
-    readonly net: string;
-    readonly node: string;
-    readonly name: string;
-    readonly handle: ActionHandle<Outcome>;
-    /** Devices that were offline when it was signed: they drop it when they're back. */
-    readonly offline: number;
-  };
-
-  const removals = new SvelteMap<string, Removal>();
-  let watching = false;
-
-  /** Forgets each removal once its device has left the list and its row has collapsed. */
-  function watch(): void {
-    if (watching) return;
-    watching = true;
-    $effect.root(() => {
-      $effect(() => {
-        for (const [key, removal] of removals) {
-          if (store.peers[removal.net]?.[removal.node]) continue;
-          setTimeout(() => {
-            if (removals.get(key) === removal) removals.delete(key);
-          }, REMOVED_HOLD_MS + ROW_ANIMATION_MS);
-        }
-      });
-    });
-  }
-
-  function track(removal: Removal): void {
-    const key = `${removal.net}/${removal.node}`;
-    removals.set(key, removal);
-    watch();
-    void removal.handle.done.then((handle) => {
-      if (handle.state !== 'accepted' && removals.get(key) === removal) removals.delete(key);
-    });
-  }
-
-  export function removalOf(net: string, node: string): Removal | null {
-    return removals.get(`${net}/${node}`) ?? null;
-  }
-
-  export function removalLine(removal: Removal): string {
-    const seen = removal.handle.seen;
-    if (!seen) return text.device.removing;
-    if (seen.by < seen.of) return text.remove.progress(seen.by, seen.of, removal.name);
-    return removal.offline > 0 ? text.remove.offlineLater(removal.offline) : text.device.removed;
-  }
-</script>
-
 <script lang="ts">
   import { untrack } from 'svelte';
   import { announce } from '../lib/announce';
@@ -91,6 +34,9 @@ Module exports, for DeviceRow (spec §5 Removing state):
   import Input from '../lib/ui/Input.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
   import { cannotAct, failureText, networkContext } from './act';
+  import { removalLine, removalOf, track } from './removals.svelte';
+  import type { ActionHandle } from '../lib/types';
+  import type { Outcome } from '../lib/types.gen';
 
   let {
     open = $bindable(false),

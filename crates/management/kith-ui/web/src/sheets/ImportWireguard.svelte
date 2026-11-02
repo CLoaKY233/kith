@@ -1,8 +1,8 @@
 <!--
 @component
 ImportWireguard: a wg-quick config (pasted, or read from a chosen .conf file) becomes a
-network of its own through `POST /api/wireguard/import`; its server is then an exit this
-device can pick. Once kith lists the new network, the page opens its Exits. The config holds
+network of its own through `POST /api/wireguard/import`, in use at once; Exits lists it with
+Use, Stop using and Remove (ImportedExits). The config holds
 a private key, so the field never autocompletes or spell-checks, and nothing keeps it after
 the sheet closes.
 Props:
@@ -13,14 +13,13 @@ Props:
   import { announce } from '../lib/announce';
   import { errorText } from '../lib/api';
   import { copy } from '../lib/copy';
-  import { actions, live } from '../lib/live/store.svelte';
+  import { actions } from '../lib/live/store.svelte';
   import type { ActionHandle, WireguardImported } from '../lib/types';
   import Button from '../lib/ui/Button.svelte';
   import Field from '../lib/ui/Field.svelte';
   import Input from '../lib/ui/Input.svelte';
   import Sheet from '../lib/ui/Sheet.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
-  import { go, netHref } from '../router';
   import { isStale } from './flow';
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
@@ -32,8 +31,6 @@ Props:
   let confError = $state<string | null>(null);
   let importing = $state<ActionHandle<WireguardImported> | null>(null);
   let picker = $state<HTMLInputElement | null>(null);
-  /** The imported network, until kith lists it and its Exits open. */
-  let waitingFor = $state<string | null>(null);
   const stale = $derived(isStale());
   const pending = $derived(importing?.state === 'pending');
   const failed = $derived(
@@ -51,16 +48,6 @@ Props:
       confError = null;
       importing = null;
     });
-  });
-
-  $effect(() => {
-    const id = waitingFor;
-    if (id && live.status?.networks.some((n) => n.id === id)) {
-      untrack(() => {
-        waitingFor = null;
-        go(netHref(id, 'exits'));
-      });
-    }
   });
 
   async function choose(event: Event & { currentTarget: HTMLInputElement }): Promise<void> {
@@ -116,7 +103,6 @@ Props:
       if (failed) announce(failed);
       return;
     }
-    waitingFor = handle.result.network;
     conf = '';
     open = false;
     toast.done(copy.wgImport.done(n));

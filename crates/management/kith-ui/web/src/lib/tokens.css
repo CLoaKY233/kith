@@ -7,23 +7,23 @@
 @font-face {
   font-family: 'Inter';
   font-style: normal;
-  font-weight: 100 900;
+  font-weight: 400 600;
   font-display: block;
   src: url('../fonts/inter-latin-wght.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215,
-    U+FEFF, U+FFFD;
+  /* scripts/fonts.py cuts the files to these characters and weights. */
+  unicode-range: U+0020-007E, U+00A0, U+00A7, U+00B7, U+00D7, U+2009, U+2013-2014,
+    U+2018-2019, U+201C-201D, U+2026, U+203A, U+2190-2193, U+2212, U+2264-2265;
 }
 
 @font-face {
   font-family: 'JetBrains Mono';
   font-style: normal;
-  font-weight: 100 800;
+  font-weight: 400 600;
   font-display: block;
   src: url('../fonts/jetbrains-mono-latin-wght.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215,
-    U+FEFF, U+FFFD;
+  /* scripts/fonts.py cuts the files to these characters and weights. */
+  unicode-range: U+0020-007E, U+00A0, U+00A7, U+00B7, U+00D7, U+2009, U+2013-2014,
+    U+2018-2019, U+201C-201D, U+2026, U+203A, U+2190-2193, U+2212, U+2264-2265;
 }
 
 :root {

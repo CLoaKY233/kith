@@ -60,6 +60,7 @@ function assertNever(value: never): never {
 export function kindOf(entry: Entry): ActivityKind {
   switch (entry.kind) {
     case 'device_removed':
+    case 'device_renamed':
     case 'exit_changed':
       return 'changes';
     case 'device_joined':
@@ -113,6 +114,7 @@ export function devicesOf(entry: Entry): DeviceRef[] {
     case 'endpoint_changed':
     case 'device_joined':
     case 'device_removed':
+    case 'device_renamed':
     case 'join_requested':
       return [{ network: entry.network, node: entry.node, name: entry.name }];
     case 'blocked':
@@ -218,6 +220,8 @@ export function describe(entry: Entry, ctx: Context): Described {
       return plain(copy.entry.deviceJoinedPlain(entry.name), 'seal');
     case 'device_removed':
       return plain(copy.entry.deviceRemovedPlain(entry.name), 'seal');
+    case 'device_renamed':
+      return plain(copy.entry.deviceRenamed(entry.old_name, entry.name), 'seal');
     case 'exit_changed':
       return plain(
         entry.exit ? copy.entry.exitChanged(exitDevice(entry.exit)) : copy.entry.exitCleared,

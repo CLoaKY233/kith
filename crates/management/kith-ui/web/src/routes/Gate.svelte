@@ -6,7 +6,7 @@ Gate (spec §6.9): the page cannot show the network yet. No app frame, centred, 
   - not_in_group: the group command for this OS, then `Then log out and back in.`
   - version_skew: `kith-ui 0.2 can't talk to kith 0.1. Update kith on this device.`
   - unauthorized, session_used, session_expired: the fresh-link page (the server renders
-    the same without JS); used and expired links say which in the title.
+    the same without JS); used and expired links say which under the title.
 Props:
   - reason: GateReason
 -->
@@ -19,12 +19,12 @@ Props:
   let { reason }: { reason: GateReason } = $props();
 
   const mac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
-  const authTitle = $derived(
+  const variant = $derived(
     reason === 'session_used'
       ? copy.gate.authUsed
       : reason === 'session_expired'
         ? copy.gate.authExpired
-        : copy.gate.authTitle,
+        : null,
   );
 </script>
 
@@ -44,7 +44,8 @@ Props:
       {copy.gate.skew(live.versions?.ui ?? '', live.versions?.daemon ?? '')}
     </h1>
   {:else}
-    <h1 id="gate-title" class="title">{authTitle}</h1>
+    <h1 id="gate-title" class="title">{copy.gate.authTitle}</h1>
+    {#if variant}<p>{variant}</p>{/if}
     <p>{copy.gate.authBody}</p>
     <CopyField label={copy.gate.commandLabel} value={copy.gate.authCommand} />
     <p class="meta">{copy.gate.authOnce}</p>

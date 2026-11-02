@@ -12,6 +12,7 @@ Props:
   - net: string, the network id.
 -->
 <script lang="ts">
+  import Lazy from '../frame/Lazy.svelte';
   import { MediaQuery } from 'svelte/reactivity';
   import { layers } from '../frame/layers.svelte';
   import { peers, selfPeer, summary } from '../frame/net';
@@ -21,7 +22,6 @@ Props:
   import EventRow from '../lib/kith/EventRow.svelte';
   import Headline from '../lib/kith/Headline.svelte';
   import { problemId } from '../lib/kith/headline';
-  import NeedsYouCard from '../lib/kith/NeedsYouCard.svelte';
   import { live } from '../lib/live/store.svelte';
   import type { Entry } from '../lib/types.gen';
   import { follow, go, href, netHref } from '../router';
@@ -123,9 +123,11 @@ Props:
       <section class="section" aria-labelledby="needs-title" data-needs>
         <h2 id="needs-title" class="heading" tabindex="-1" data-needs-heading>{copy.overview.needsYou}</h2>
         <div class="cards">
-          {#each shownNeeds as need (need.id)}
-            <NeedsYouCard {need} primary={need.id === primaryId} />
-          {/each}
+          <Lazy name="needsCard">{#snippet children(NeedsYouCard)}
+            {#each shownNeeds as need (need.id)}
+              <NeedsYouCard {need} primary={need.id === primaryId} />
+            {/each}
+          {/snippet}</Lazy>
         </div>
         {#if list.length > NEEDS_SHOWN}
           <div>

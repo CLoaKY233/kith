@@ -325,6 +325,7 @@ export function entryIsAbout(entry: Entry, netId: string, node: string, exitName
     case 'endpoint_changed':
     case 'device_joined':
     case 'device_removed':
+    case 'device_renamed':
     case 'join_requested':
       return entry.network === netId && entry.node === node;
     case 'blocked':

@@ -81,8 +81,9 @@ pub enum PolicyError {
 pub enum Selector {
     /// Every member of the network.
     Any,
-    /// One device.
-    Device(NodeId),
+    /// One device. Text formats such as TOML write its id as hex; they also read the
+    /// older array of 32 numbers.
+    Device(#[serde(with = "device_id")] NodeId),
     /// Every member carrying the tag.
     Tag(TagName),
 }
@@ -334,6 +335,66 @@ impl TryFrom<RawPolicy> for Policy {
     }
 }
 
+/// A [`Selector::Device`] id: hex in human-readable formats, raw bytes in binary ones so
+/// the ledger encoding stays the same.
+mod device_id {
+    use core::fmt;
+    use core::str::FromStr as _;
+
+    use kith_types::NodeId;
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+
+    /// Bytes in a device id.
+    const LEN: usize = 32;
+
+    pub(super) fn serialize<S: Serializer>(id: &NodeId, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.collect_str(id)
+        } else {
+            id.serialize(serializer)
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<NodeId, D::Error> {
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(IdVisitor)
+        } else {
+            NodeId::deserialize(deserializer)
+        }
+    }
+
+    struct IdVisitor;
+
+    impl<'de> Visitor<'de> for IdVisitor {
+        type Value = NodeId;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a device id: 64 hex digits, or an array of 32 bytes")
+        }
+
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<NodeId, E> {
+            NodeId::from_str(text.trim())
+                .map_err(|_| E::invalid_value(de::Unexpected::Str(text), &self))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<NodeId, A::Error> {
+            let mut bytes = [0_u8; LEN];
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                *byte = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(index, &self))?;
+            }
+            if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::invalid_length(LEN + 1, &self));
+            }
+            Ok(NodeId::from_bytes(bytes))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -370,6 +431,22 @@ mod tests {
         )
         .unwrap();
         Policy::new(vec![rule]).unwrap()
+    }
+
+    #[test]
+    fn toml_names_a_device_by_its_id_and_reads_the_old_byte_array() {
+        let text = toml::to_string(&sample()).unwrap();
+        let id = alloc::format!("{}", NodeId::from_bytes([0xab; 32]));
+        assert!(
+            text.contains(&alloc::format!("Device = \"{id}\"")),
+            "{text}"
+        );
+        assert_eq!(toml::from_str::<Policy>(&text).unwrap(), sample());
+
+        let bytes = alloc::format!("{:?}", [0xab_u8; 32]);
+        let old = text.replace(&alloc::format!("\"{id}\""), &bytes);
+        assert_eq!(toml::from_str::<Policy>(&old).unwrap(), sample());
+        assert!(toml::from_str::<Policy>(&text.replace(&id, "abc")).is_err());
     }
 
     #[test]

@@ -394,6 +394,24 @@ pub(crate) enum WgCmd {
         #[bpaf(positional("DEVICE-NAME"))]
         device_name: String,
     },
+    /// Send traffic through an imported network again
+    #[bpaf(command("use"))]
+    Use {
+        #[bpaf(positional("NAME"))]
+        name: String,
+    },
+    /// Keep an imported network but stop sending traffic through it
+    #[bpaf(command)]
+    Stop {
+        #[bpaf(positional("NAME"))]
+        name: String,
+    },
+    /// Remove an imported network and forget its config
+    #[bpaf(command)]
+    Remove {
+        #[bpaf(positional("NAME"))]
+        name: String,
+    },
 }
 
 /// `kith config …`.

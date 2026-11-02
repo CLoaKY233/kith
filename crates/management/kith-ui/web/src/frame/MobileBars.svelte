@@ -24,17 +24,14 @@ Props:
   import { live } from '../lib/live/store.svelte';
   import IconButton from '../lib/ui/IconButton.svelte';
   import RoleChip from '../lib/ui/RoleChip.svelte';
-  import Sheet from '../lib/ui/Sheet.svelte';
   import StatusDot from '../lib/ui/StatusDot.svelte';
-  import { closeOverlay, follow, href, netHref, openOverlay, setQuery } from '../router';
+  import { follow, netHref, openOverlay } from '../router';
   import { connection } from './conn.svelte';
   import ExitChip from './ExitChip.svelte';
   import { layers } from './layers.svelte';
-  import { isAdmin, membership, networkName } from './net';
-  import { OBSERVING, SETTINGS, SHAPING, type NavPage } from './nav';
-  import NavLink from './NavLink.svelte';
+  import { membership, networkName } from './net';
+  import { OBSERVING, type NavPage } from './nav';
   import { needs } from './needs.svelte';
-  import NetworkList from './NetworkList.svelte';
 
   let {
     net,
@@ -58,8 +55,12 @@ Props:
   );
 
   const openSheet = (): void => openOverlay('sheet', 'network');
-  /** Drops `?sheet` in place, so the link that follows leaves no sheet behind for Back. */
-  const dismiss = (): void => setQuery({ sheet: null }, { replace: true });
+
+  // The Network sheet loads the first time it opens, off the first load.
+  let sheetUsed = $state(false);
+  $effect(() => {
+    if (layers.network) sheetUsed = true;
+  });
 
   function tab(event: MouseEvent, to: string, current: boolean): void {
     if (current && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
@@ -103,66 +104,11 @@ Props:
     <p class="conn" class:shown={connText !== ''}>{connText}</p>
   </div>
 
-  <Sheet
-    bind:open={() => layers.network, (open) => !open && closeOverlay('sheet')}
-    title={networkName(net)}
-    closeLabel={copy.action.close}
-  >
-    {#if me}
-      <p class="identity">
-        <span class="who">{me.name}</span>
-        <span class="t-mono">{me.address}</span>
-        <span class="role">{copy.role[me.role]}</span>
-      </p>
-    {/if}
-    <div class="networks">
-      <NetworkList current={net} page={page ?? 'overview'} onPick={dismiss} />
-    </div>
-    <ul class="menu">
-      {#each SHAPING as item (item.page)}
-        <li>
-          <NavLink
-            to={netHref(net, item.page)}
-            icon={item.icon}
-            label={item.label}
-            active={page === item.page}
-            onclick={dismiss}
-          />
-        </li>
-      {/each}
-      {#if isAdmin(net)}
-        <li>
-          <NavLink
-            icon="plus"
-            label={copy.nav.addDevice}
-            strong
-            onclick={() => {
-              dismiss();
-              openOverlay('add', 'device');
-            }}
-          />
-        </li>
-      {/if}
-      <li>
-        <NavLink
-          to={netHref(net, SETTINGS.page)}
-          icon={SETTINGS.icon}
-          label={SETTINGS.label}
-          active={page === SETTINGS.page}
-          onclick={dismiss}
-        />
-      </li>
-      <li>
-        <NavLink
-          to={href({ name: 'this' })}
-          icon="laptop"
-          label={copy.nav.thisDevice}
-          active={self}
-          onclick={dismiss}
-        />
-      </li>
-    </ul>
-  </Sheet>
+  {#if sheetUsed}
+    {#await import('./NetworkSheet.svelte') then { default: NetworkSheet }}
+      <NetworkSheet {net} {page} {self} />
+    {/await}
+  {/if}
 {:else}
   <nav class="tabs" aria-label={copy.nav.primary}>
     {#each OBSERVING as item (item.page)}
@@ -248,35 +194,6 @@ Props:
   }
   .conn.shown {
     display: block;
-  }
-  .identity {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--s-1) var(--s-2);
-    margin-bottom: var(--s-3);
-    color: var(--ink-2);
-  }
-  .who {
-    font: var(--t-heading);
-    letter-spacing: var(--t-heading-tracking);
-    color: var(--ink-1);
-  }
-  .role {
-    color: var(--ink-3);
-  }
-  .networks {
-    margin-bottom: var(--s-3);
-    padding-bottom: var(--s-3);
-    border-bottom: var(--hairline) solid var(--line);
-  }
-  .networks :global(.item),
-  .menu :global(.item) {
-    min-height: var(--target-touch);
-  }
-  .menu {
-    display: grid;
-    gap: var(--s-1);
   }
   .tabs {
     position: fixed;

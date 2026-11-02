@@ -122,8 +122,6 @@ Props:
         return copy.error.permissionDenied;
       case 'daemon_down':
         return copy.conn.staleActions;
-      case 'not_implemented':
-        return copy.error.notImplemented;
       case 'not_found':
         return copy.error.notFound(subject);
       default:
@@ -712,9 +710,7 @@ Props:
     {#if loadFailure}
       <div class="load-failed">
         <p class="failed">
-          {loadFailure.code === 'not_implemented'
-            ? copy.error.notImplemented
-            : copy.error.internal(loadFailure.message)}
+          {copy.error.internal(loadFailure.message)}
         </p>
         <Button variant="secondary" onclick={retry}>{copy.names.tryAgain}</Button>
       </div>

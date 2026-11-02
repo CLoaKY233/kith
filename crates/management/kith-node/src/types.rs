@@ -238,6 +238,18 @@ pub(crate) enum Action {
         /// The parsed configuration.
         config: Box<WgQuickConfig>,
     },
+    /// Start or stop routing through an imported WireGuard network.
+    UseImport {
+        /// The imported network.
+        network: NetworkId,
+        /// Route through it when true.
+        active: bool,
+    },
+    /// Remove an imported WireGuard network.
+    RemoveImport {
+        /// The imported network.
+        network: NetworkId,
+    },
     /// Export a wg-quick file for a non-kith gateway client.
     ExportWireGuard {
         /// The network.

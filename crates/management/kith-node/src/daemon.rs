@@ -767,6 +767,12 @@ impl Daemon {
                 self.refresh(None).await?;
                 Ok(Response::Imported { network })
             }
+            Action::UseImport { network, active } => self.use_import(network, active).await,
+            Action::RemoveImport { network } => {
+                self.external.remove(&self.state, network)?;
+                self.refresh(None).await?;
+                Ok(Response::ImportRemoved)
+            }
             Action::ExportWireGuard {
                 network,
                 device_name,
@@ -964,6 +970,11 @@ impl Daemon {
                 "{node} is not an exit node"
             )));
         }
+        if node.is_some() {
+            for import in self.external.active_exits() {
+                self.external.set_active(&self.state, import, false)?;
+            }
+        }
         self.exit = node.map(|node| (network, node));
         self.dataplane.set_exit(self.exit).await?;
         self.state.save_exit(self.exit)?;
@@ -975,6 +986,33 @@ impl Daemon {
         });
         self.refresh(None).await?;
         Ok(Response::ExitSet)
+    }
+
+    /// Routes through an imported network, or stops. An import that carries all
+    /// internet traffic replaces the exit in use, and every other such import.
+    async fn use_import(
+        &mut self,
+        network: NetworkId,
+        active: bool,
+    ) -> Result<Response, NodeError> {
+        if !self.external.contains(network) {
+            return Err(NodeError::NotFound(format!("imported network {network}")));
+        }
+        self.external.set_active(&self.state, network, active)?;
+        if active && self.external.active_exits().contains(&network) {
+            for other in self.external.active_exits() {
+                if other != network {
+                    self.external.set_active(&self.state, other, false)?;
+                }
+            }
+            if self.exit.take().is_some() {
+                self.dataplane.set_exit(None).await?;
+                self.state.save_exit(None)?;
+                self.journal.push(EntryKind::ExitChanged { exit: None });
+            }
+        }
+        self.refresh(None).await?;
+        Ok(Response::ImportUsed)
     }
 
     async fn restore_exit(&mut self) -> Result<(), NodeError> {
@@ -1331,6 +1369,7 @@ impl Daemon {
                     message: message.clone(),
                 })
                 .collect(),
+            imported: self.external.infos(&stats.external, now.into()),
         }))
     }
 

@@ -4,16 +4,15 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, State};
 use kith_ipc::{Request, Response};
 use serde_json::json;
 
 use crate::Shared;
-use crate::api::{Answer, ApiError, accepted, status_of};
+use crate::api::{Answer, ApiError, accepted, network_id, status_of};
 use crate::ipc::Source;
-use crate::sim::Sim;
-use crate::wire::{ImportIn, Imported, ServerView};
+use crate::wire::{ImportIn, ImportUseIn, Imported, ServerView};
 
 /// `GET /api/server`: whether this device is an exit and a relay for others.
 pub(crate) async fn get(State(shared): State<Arc<Shared>>) -> Answer {
@@ -59,7 +58,7 @@ pub(crate) async fn import(
 ) -> Answer {
     let Json(input) = input?;
     let daemon = match &shared.source {
-        Source::Fixture(_) => return Sim::import(&input),
+        Source::Fixture(sim) => return sim.import(&shared.live, &input),
         Source::Daemon(daemon) => daemon,
     };
     shared
@@ -79,4 +78,53 @@ pub(crate) async fn import(
     Ok(Json(json!(Imported {
         network: network.to_string(),
     })))
+}
+
+/// `POST /api/wireguard/:net/use`: routes through an imported network, or stops. One
+/// that carries all internet traffic replaces the exit in use.
+pub(crate) async fn use_import(
+    State(shared): State<Arc<Shared>>,
+    Path(net): Path<String>,
+    input: Result<Json<ImportUseIn>, JsonRejection>,
+) -> Answer {
+    let Json(input) = input?;
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.use_import(&shared.live, &net, input.active),
+        Source::Daemon(daemon) => daemon,
+    };
+    let request = Request::UseImport {
+        network: network_id(&net)?,
+        active: input.active,
+    };
+    let Response::ImportUsed = daemon.ask(request).await? else {
+        return Err(ApiError::unexpected());
+    };
+    Ok(accepted())
+}
+
+/// `POST /api/wireguard/:net/remove` (tier 3): removes an imported network and its config.
+pub(crate) async fn remove_import(
+    State(shared): State<Arc<Shared>>,
+    Path(net): Path<String>,
+) -> Answer {
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.remove_import(&net),
+        Source::Daemon(daemon) => daemon,
+    };
+    let network = network_id(&net)?;
+    let name = status_of(daemon)
+        .await?
+        .imported
+        .into_iter()
+        .find(|import| import.network == network)
+        .map(|import| import.name)
+        .ok_or_else(|| ApiError::not_found("no such imported network"))?;
+    shared
+        .api
+        .confirm(&format!("remove the WireGuard network {name}"))
+        .await?;
+    let Response::ImportRemoved = daemon.ask(Request::RemoveImport { network }).await? else {
+        return Err(ApiError::unexpected());
+    };
+    Ok(accepted())
 }

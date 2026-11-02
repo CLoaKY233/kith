@@ -101,6 +101,8 @@ export function sentence(e: Entry, nameOf: NameOf, relay: string | null): string
       return copy.entry.deviceJoinedPlain(nameOf(e.node));
     case 'device_removed':
       return copy.entry.deviceRemovedPlain(nameOf(e.node));
+    case 'device_renamed':
+      return copy.entry.deviceRenamed(e.old_name, e.name);
     case 'exit_changed':
       return e.exit ? copy.entry.exitChanged(nameOf(e.exit.split('/').pop() ?? e.exit)) : copy.entry.exitCleared;
     case 'dropped':

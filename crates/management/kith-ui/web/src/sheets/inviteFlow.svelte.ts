@@ -33,10 +33,6 @@ export class InviteFlow {
       : null,
   );
   readonly pending: boolean = $derived(this.creating?.state === 'pending');
-  /** This kith cannot make invites at all: retrying would hit the same answer. */
-  readonly unsupported: boolean = $derived(
-    this.creating?.state === 'failed' && this.creating.error?.code === 'not_implemented',
-  );
 
   readonly #networkId: () => string | null;
   readonly #now: () => number;

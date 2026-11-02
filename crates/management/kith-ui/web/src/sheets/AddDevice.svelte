@@ -163,18 +163,14 @@ Props:
 
 {#snippet createInvite()}
   {#if stale}<p class="reason">{copy.conn.staleActions}</p>{/if}
-  {#if flow.unsupported}
-    <Button variant="secondary" onclick={() => (open = false)}>{copy.action.close}</Button>
-  {:else}
-    <Button
-      variant="primary"
-      pending={flow.pending}
-      disabled={stale}
-      onclick={() => (flow.expired ? flow.reset() : flow.create())}
-    >
-      {copy.invite.create}
-    </Button>
-  {/if}
+  <Button
+    variant="primary"
+    pending={flow.pending}
+    disabled={stale}
+    onclick={() => (flow.expired ? flow.reset() : flow.create())}
+  >
+    {copy.invite.create}
+  </Button>
 {/snippet}
 
 {#snippet approveLive()}

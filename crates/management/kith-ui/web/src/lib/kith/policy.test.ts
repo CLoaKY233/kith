@@ -64,7 +64,7 @@ describe('policy editing', () => {
   it('writes the TOML the daemon reads', () => {
     const toml = policyToml([sshToNas]);
     expect(toml).toContain('[[rules]]\nsources = [{ Tag = "phones" }]');
-    expect(toml).toContain(`selector = { Device = [${Array(32).fill(171).join(', ')}] }`);
+    expect(toml).toContain(`selector = { Device = "${'ab'.repeat(32)}" }`);
     expect(toml).toContain('protocol = "Tcp", ports = { Only = [{ start = 22, end = 22 }] }');
     expect(policyToml([])).toBe('rules = []\n');
   });

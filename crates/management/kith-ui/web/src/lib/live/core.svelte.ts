@@ -263,7 +263,12 @@ export class Store implements ReducerState {
   }
 
   /** Hydrates from `inline` (or GET /api/boot without one) and opens the stream. */
-  async start(inline: Boot | null): Promise<void> {
+  /**
+   * Starts from the inline snapshot, or fetches one. `signedOut` is why trading the link's
+   * token failed (used, expired): without a session the boot read can only say
+   * `unauthorized`, and the gate should say which.
+   */
+  async start(inline: Boot | null, signedOut: GateReason | null = null): Promise<void> {
     if (this.#started) return;
     this.#started = true;
     this.#deps.watchVisibility((visible) => this.#visibility(visible));
@@ -273,6 +278,7 @@ export class Store implements ReducerState {
       return;
     }
     await this.#fetchBoot();
+    if (signedOut && this.gate === 'unauthorized') this.gate = signedOut;
   }
 
   /** Closes the stream and every timer. */

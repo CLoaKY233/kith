@@ -241,6 +241,18 @@ pub enum Request {
         /// Network to list.
         network: NetworkId,
     },
+    /// Starts or stops sending traffic through an imported WireGuard network.
+    UseImport {
+        /// The imported network, as [`ImportedInfo::network`] gives it.
+        network: NetworkId,
+        /// Send its routes through it when true; leave it configured but idle when false.
+        active: bool,
+    },
+    /// Removes an imported WireGuard network and forgets its config.
+    RemoveImport {
+        /// The imported network.
+        network: NetworkId,
+    },
 }
 
 /// An invite that can still admit devices, from [`Request::ListInvites`].
@@ -477,6 +489,10 @@ pub enum Response {
     Relays(Vec<RelayInfo>),
     /// Answers [`Request::ListExits`].
     Exits(Vec<NodeId>),
+    /// Answers [`Request::UseImport`].
+    ImportUsed,
+    /// Answers [`Request::RemoveImport`].
+    ImportRemoved,
 }
 
 /// One device's report of the peers it reaches, from [`Response::Topology`].
@@ -605,6 +621,33 @@ pub struct Status {
     pub route_conflicts: Vec<String>,
     /// Recent warnings, newest last.
     pub warnings: Vec<Warning>,
+    /// Plain WireGuard networks imported from a `wg-quick` config.
+    pub imported: Vec<ImportedInfo>,
+}
+
+/// A plain WireGuard network imported from a `wg-quick` config, in [`Status`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ImportedInfo {
+    /// The id it is addressed by in [`Request::UseImport`] and [`Request::RemoveImport`].
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    pub network: NetworkId,
+    /// The name it was imported under.
+    pub name: String,
+    /// Where its server is reached, as text.
+    pub endpoint: Option<String>,
+    /// What it carries, as prefixes.
+    pub routes: Vec<String>,
+    /// Whether it carries all internet traffic, so acts as an exit.
+    pub everything: bool,
+    /// Whether its routes go through it now.
+    pub active: bool,
+    /// Seconds since anything arrived from its server, if ever.
+    pub last_seen_secs: Option<u64>,
+    /// Bytes received from it.
+    pub rx_bytes: u64,
+    /// Bytes sent to it.
+    pub tx_bytes: u64,
 }
 
 /// A warning the daemon logged, kept for `kith status` and `kith doctor`.

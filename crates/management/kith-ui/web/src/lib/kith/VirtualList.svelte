@@ -4,7 +4,9 @@ VirtualList: renders only the rows near the viewport of a long list (the Activit
 the daemon log; spec §6.5, §6.8). Rows keep normal document flow between two spacers, so
 the browser's scroll anchoring, find-in-page and focus order work as usual. Row heights
 are measured as rows render; unmeasured rows count as `estimate`. It scrolls with its
-nearest scrolling ancestor, or the page.
+nearest scrolling ancestor, or the page. Rows added at the top while the top is in view
+slide in by transform, from under the list's top edge, so rows already on screen never
+change place (spec §11.9; scroll anchoring covers the list scrolled down).
 Props:
   - items: readonly T[], in display order.
   - key: (item: T) => string, stable per item.
@@ -15,8 +17,9 @@ Exports:
   - toTop(): scrolls the scroller back to its top.
 -->
 <script lang="ts" generics="T">
-  import { onMount, type Snippet } from 'svelte';
+  import { onMount, untrack, type Snippet } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
+  import { ROW_ANIMATION_MS } from '../live/timing';
 
   let {
     items,
@@ -103,6 +106,51 @@ Exports:
     return () => observer?.unobserve(node);
   }
 
+  const reduced =
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /** Where each rendered row's top was before an update, relative to the list. */
+  let tops: Record<string, number> = {};
+  function rowTops(): Record<string, number> {
+    const out: Record<string, number> = {};
+    if (!root) return out;
+    const top = root.getBoundingClientRect().top;
+    for (const child of root.children) {
+      const id = child instanceof HTMLElement ? child.dataset['key'] : undefined;
+      if (id !== undefined) out[id] = child.getBoundingClientRect().top - top;
+    }
+    return out;
+  }
+  $effect.pre(() => {
+    void items;
+    tops = untrack(rowTops);
+  });
+  $effect(() => {
+    void items;
+    const was = tops;
+    if (!root || Object.keys(was).length === 0 || untrack(() => viewTop) > 0) return;
+    const now = untrack(rowTops);
+    const rows = [...root.children].filter((child) => child instanceof HTMLElement);
+    // A new row moves with the rows below it, so it never overlaps one of them.
+    let below = 0;
+    const moves: [Element, number][] = [];
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const child = rows[i] as HTMLElement;
+      const id = child.dataset['key'] ?? '';
+      const old = was[id];
+      const current = now[id];
+      if (current === undefined) continue;
+      const shift = old === undefined ? below : current - old;
+      if (old !== undefined) below = shift;
+      if (shift !== 0) moves.push([child, shift]);
+    }
+    for (const [child, shift] of moves) {
+      child.animate([{ transform: `translateY(${-shift}px)` }, { transform: 'translateY(0)' }], {
+        duration: reduced ? 1 : ROW_ANIMATION_MS,
+        easing: 'cubic-bezier(.2,.8,.2,1)',
+      });
+    }
+  });
+
   /** Scrolls back to the top of the scroller. */
   export function toTop(): void {
     if (scroller) scroller.scrollTo({ top: 0 });
@@ -133,10 +181,20 @@ Exports:
   });
 </script>
 
-<div bind:this={root} style:padding-top="{before}px" style:padding-bottom="{after}px">
-  {#each visible as item (key(item))}
-    <div data-key={key(item)} {@attach measure}>
-      {@render row(item)}
-    </div>
-  {/each}
+<div class="clip">
+  <div bind:this={root} style:padding-top="{before}px" style:padding-bottom="{after}px">
+    {#each visible as item (key(item))}
+      <div data-key={key(item)} {@attach measure}>
+        {@render row(item)}
+      </div>
+    {/each}
+  </div>
 </div>
+
+<style>
+  /* Rows sliding in stay under the list's top edge; focus rings still show. */
+  .clip {
+    overflow-y: clip;
+    overflow-clip-margin: var(--focus-offset);
+  }
+</style>

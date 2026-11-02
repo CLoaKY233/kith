@@ -66,6 +66,8 @@ pub(crate) struct Names {
     /// Each peer's node, unique label and the name it asked for.
     pub peers: Vec<(NodeId, String, String)>,
     pub hostname: String,
+    /// Each imported WireGuard network's id and name.
+    pub imports: Vec<(NetworkId, String)>,
 }
 
 impl Names {
@@ -85,6 +87,20 @@ impl Names {
                 "no network named `{text}`; see `kith status`"
             ))),
         }
+    }
+
+    pub(crate) fn import(&self, text: &str) -> Result<NetworkId, CliError> {
+        self.imports
+            .iter()
+            .find(|(id, name)| {
+                name == text || (text.len() >= 8 && id.to_string().starts_with(text))
+            })
+            .map(|(id, _)| *id)
+            .ok_or_else(|| {
+                CliError(format!(
+                    "no imported network named `{text}`; see `kith status`"
+                ))
+            })
     }
 
     pub(crate) fn node(&self, text: &str) -> Result<NodeId, CliError> {
@@ -289,6 +305,17 @@ fn wg_request(cmd: &WgCmd, names: &Names) -> Result<Request, CliError> {
             name: name.clone(),
             conf_text: read_wg(file)?,
         },
+        WgCmd::Use { name } => Request::UseImport {
+            network: names.import(name)?,
+            active: true,
+        },
+        WgCmd::Stop { name } => Request::UseImport {
+            network: names.import(name)?,
+            active: false,
+        },
+        WgCmd::Remove { name } => Request::RemoveImport {
+            network: names.import(name)?,
+        },
         WgCmd::Export {
             tags,
             network,
@@ -459,6 +486,11 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
             .networks
             .iter()
             .map(|n| (n.id, n.name.clone()))
+            .collect(),
+        imports: status
+            .imported
+            .iter()
+            .map(|import| (import.network, import.name.clone()))
             .collect(),
         ..Names::default()
     };

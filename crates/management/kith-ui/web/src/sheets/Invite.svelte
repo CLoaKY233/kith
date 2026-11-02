@@ -40,9 +40,7 @@ Props:
   {/if}
 
   {#snippet footer()}
-    {#if flow.unsupported}
-      <Button variant="secondary" onclick={() => (open = false)}>{copy.action.close}</Button>
-    {:else if flow.invite === null || flow.expired}
+    {#if flow.invite === null || flow.expired}
       {#if stale}<p class="reason">{copy.conn.staleActions}</p>{/if}
       <Button
         variant="primary"

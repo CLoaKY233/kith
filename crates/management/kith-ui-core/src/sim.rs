@@ -11,7 +11,9 @@ use std::sync::{Mutex, MutexGuard};
 use axum::Json;
 use axum::http::StatusCode;
 use kith_identity::{InviteToken, RequestCode};
-use kith_ipc::{EntryKind, PeerInfo, PolicyInfo, PolicyRuleInfo, SelectorInfo, Status, TargetInfo};
+use kith_ipc::{
+    EntryKind, ImportedInfo, PeerInfo, PolicyInfo, PolicyRuleInfo, SelectorInfo, Status, TargetInfo,
+};
 use kith_policy::{PortSet, Protocol, Rule, Selector, Target};
 use kith_types::{NetworkId, NodeId, Timestamp};
 use serde_json::{Value, json};
@@ -596,17 +598,130 @@ impl Sim {
         Ok(accepted())
     }
 
-    /// `POST /api/wireguard/import`: checks the config as the daemon does and names the
-    /// network it would run.
-    pub(crate) fn import(input: &ImportIn) -> Answer {
-        if input.name.trim().is_empty() {
+    /// `POST /api/wireguard/import`: checks the config as the daemon does and lists the
+    /// network in use, replacing one of the same name. One that carries all internet
+    /// traffic replaces the exit in use.
+    pub(crate) fn import(&self, live: &Live, input: &ImportIn) -> Answer {
+        let name = input.name.trim();
+        if name.is_empty() {
             return Err(ApiError::bad("import name is empty"));
         }
-        kith_config::WgQuickConfig::parse(&input.conf_text)
+        let config = kith_config::WgQuickConfig::parse(&input.conf_text)
             .map_err(|error| ApiError::bad(format!("wg-quick: {error}")))?;
+        let mut world = self.read();
+        let mut status = status(&world)?;
+        let network = status
+            .imported
+            .iter()
+            .find(|import| import.name == name)
+            .map_or_else(
+                || random_id().map(|id| NetworkId::from_bytes(id.to_bytes())),
+                |import| Ok(import.network),
+            )?;
+        let mut routes: Vec<_> = config
+            .peers
+            .iter()
+            .flat_map(|peer| peer.allowed_ips.iter().copied())
+            .collect();
+        routes.sort_unstable();
+        routes.dedup();
+        let probes = [[1, 1, 1, 1], [203, 0, 113, 1]]
+            .map(|octets| core::net::IpAddr::V4(core::net::Ipv4Addr::from(octets)));
+        let everything = probes
+            .iter()
+            .all(|probe| routes.iter().any(|route| route.contains(*probe)));
+        status.imported.retain(|import| import.name != name);
+        status.imported.push(ImportedInfo {
+            network,
+            name: name.to_owned(),
+            endpoint: config
+                .peers
+                .iter()
+                .find_map(|peer| peer.endpoint.as_ref())
+                .map(|endpoint| match endpoint {
+                    kith_config::Endpoint::Addr(addr) => addr.to_string(),
+                    kith_config::Endpoint::Host { host, port } => format!("{host}:{port}"),
+                }),
+            routes: routes.iter().map(ToString::to_string).collect(),
+            everything,
+            active: true,
+            last_seen_secs: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+        });
+        set_status(&mut world, &status)?;
+        drop(world);
+        if everything {
+            self.activate(live, network)?;
+        }
         Ok(Json(json!(Imported {
-            network: random_id()?.to_string(),
+            network: network.to_string(),
         })))
+    }
+
+    /// `POST /api/wireguard/:net/use`.
+    pub(crate) fn use_import(&self, live: &Live, net: &str, active: bool) -> Answer {
+        let network = network_id(net)?;
+        {
+            let mut world = self.read();
+            let mut status = status(&world)?;
+            let import = status
+                .imported
+                .iter_mut()
+                .find(|import| import.network == network)
+                .ok_or_else(|| ApiError::not_found("no such imported network"))?;
+            import.active = active;
+            set_status(&mut world, &status)?;
+        }
+        if active {
+            self.activate(live, network)?;
+        }
+        Ok(accepted())
+    }
+
+    /// An import that carries all internet traffic was turned on: every other such
+    /// import, and the exit in use, stop.
+    fn activate(&self, live: &Live, network: NetworkId) -> Result<(), ApiError> {
+        let mut world = self.read();
+        let mut status = status(&world)?;
+        if !status
+            .imported
+            .iter()
+            .any(|import| import.network == network && import.everything)
+        {
+            return Ok(());
+        }
+        for import in &mut status.imported {
+            if import.everything && import.network != network {
+                import.active = false;
+            }
+        }
+        let had_exit = status.exit_node.take().is_some();
+        set_status(&mut world, &status)?;
+        for exits in world.exits.values_mut() {
+            for exit in exits {
+                exit.in_use_by.clear();
+            }
+        }
+        drop(world);
+        if had_exit {
+            live.push(EntryKind::ExitChanged { exit: None });
+        }
+        Ok(())
+    }
+
+    /// `POST /api/wireguard/:net/remove`.
+    pub(crate) fn remove_import(&self, net: &str) -> Answer {
+        let network = network_id(net)?;
+        let mut world = self.read();
+        let mut status = status(&world)?;
+        let before = status.imported.len();
+        status.imported.retain(|import| import.network != network);
+        if status.imported.len() == before {
+            return Err(ApiError::not_found("no such imported network"));
+        }
+        set_status(&mut world, &status)?;
+        Ok(accepted())
     }
 
     /// `POST /api/networks`: a new network with this device as its only admin.

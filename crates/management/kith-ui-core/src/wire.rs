@@ -642,6 +642,14 @@ pub struct ImportIn {
     pub conf_text: String,
 }
 
+/// `POST /api/wireguard/:net/use`: routes through an imported network, or stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ImportUseIn {
+    /// Send its traffic through it when true.
+    pub active: bool,
+}
+
 /// The network a WireGuard import made.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

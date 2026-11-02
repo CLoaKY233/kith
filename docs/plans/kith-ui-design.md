@@ -122,7 +122,7 @@ Workstream A owns these. Each has a v1 fallback marked **[fallback]**.
    - The page then calls `history.replaceState` to drop the fragment.
    - The token is single-use, valid 2 min, compared in constant time (`subtle`), and burned on use.
 2. **Every request checks `Host`** against `127.0.0.1:<port>` and `localhost:<port>`. Every POST and `/api/events` also checks `Origin`.
-3. **CSP:** `default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'`.
+3. **CSP:** `default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`.
 4. **SPA routes are an explicit allowlist** (§4). Everything else returns 404.
 5. **Boot snapshot.** `index.html` inlines `<script type="application/json" id="boot">` with `{boot, seq, server_time_ms, status, peers, traffic_tail(150), pending, versions}`.
 6. **SSE `/api/events`:**

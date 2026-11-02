@@ -31,7 +31,7 @@ Props:
   import { go, href, setQuery } from '../../router';
   import { fullySeen } from '../../sheets/act';
   import AllowBlocked from '../../sheets/AllowBlocked.svelte';
-  import { removalLine, removalOf } from '../../sheets/RemoveDevice.svelte';
+  import { removalLine, removalOf } from '../../sheets/removals.svelte';
   import { announce } from '../announce';
   import Series from '../charts/Series.svelte';
   import { copy } from '../copy';
@@ -296,8 +296,6 @@ Props:
         return copy.error.notFound(peer?.name ?? name);
       case 'invalid_argument':
         return copy.error.nameChars;
-      case 'not_implemented':
-        return copy.error.notImplemented;
       case 'daemon_down':
         return copy.conn.staleActions;
       case 'os_auth_denied':

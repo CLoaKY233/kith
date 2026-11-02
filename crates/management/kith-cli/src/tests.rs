@@ -9,12 +9,14 @@ use crate::exec::{self, Names};
 
 const NET: NetworkId = NetworkId::from_bytes([0xaa; 32]);
 const NODE: NodeId = NodeId::from_bytes([0xbb; 32]);
+const IMPORT: NetworkId = NetworkId::from_bytes([0xee; 32]);
 
 fn names() -> Names {
     Names {
         networks: vec![(NET, "home".to_owned())],
         peers: vec![(NODE, "nas".to_owned(), "NAS".to_owned())],
         hostname: "laptop".to_owned(),
+        imports: vec![(IMPORT, "office".to_owned())],
     }
 }
 
@@ -189,6 +191,25 @@ fn every_command_parses_into_the_right_request() {
             Err(()),
         ),
         (
+            vec!["wg", "use", "office"],
+            Ok(Request::UseImport {
+                network: IMPORT,
+                active: true,
+            }),
+        ),
+        (
+            vec!["wg", "stop", "office"],
+            Ok(Request::UseImport {
+                network: IMPORT,
+                active: false,
+            }),
+        ),
+        (
+            vec!["wg", "remove", "office"],
+            Ok(Request::RemoveImport { network: IMPORT }),
+        ),
+        (vec!["wg", "remove", "nowhere"], Err(())),
+        (
             vec!["wg", "export", "home", "router"],
             Ok(Request::ExportWireGuard {
                 network: NET,
@@ -287,6 +308,17 @@ fn fake_status() -> Status {
             secs_ago: 30,
             message: "control channel: connection refused".into(),
         }],
+        imported: vec![kith_ipc::ImportedInfo {
+            network: IMPORT,
+            name: "office".into(),
+            endpoint: Some("198.51.100.1:51820".into()),
+            routes: vec!["0.0.0.0/0".into()],
+            everything: true,
+            active: false,
+            last_seen_secs: Some(9),
+            rx_bytes: 10,
+            tx_bytes: 20,
+        }],
     }
 }
 
@@ -370,6 +402,7 @@ async fn status_renders_what_the_daemon_reports() {
         run_against(&path, &["status"]).await,
         "device 12121212 (relay)\n\
          internet traffic goes through home/nas\n\
+         wireguard office (eeeeeeee): all internet traffic, not in use, heard 9s ago\n\
          \n\
          network home (aaaaaaaa)  2/3 online\n  \
          NAME   ADDRESS     PATH     ENDPOINT            LAST SEEN  RX       TX       NODE\n  \
@@ -391,6 +424,9 @@ async fn status_renders_what_the_daemon_reports() {
                 r#""exit_node":"home/nas","dns_upstreams":["192.168.1.1:53"],"#,
                 r#""route_conflicts":["100.100.100.100/32 via utun37"],"drops":{{"policy":2}},"#,
                 r#""warnings":[{{"secs_ago":30,"message":"control channel: connection refused"}}],"#,
+                r#""imported":[{{"network":"{import}","name":"office","endpoint":"198.51.100.1:51820","#,
+                r#""routes":["0.0.0.0/0"],"everything":true,"active":false,"last_seen_secs":9,"#,
+                r#""rx_bytes":10,"tx_bytes":20}}],"#,
                 r#""networks":[{{"id":"{net}","#,
                 r#""name":"home","peers_online":2,"peers_total":3,"relays":1,"#,
                 r#""problems":[{{"what":"tablet has no address","fix":"remove it and add it again"}}],"peers":["#,
@@ -412,6 +448,7 @@ async fn status_renders_what_the_daemon_reports() {
             nas = NODE,
             phone = phone,
             pixel = NodeId::from_bytes([0xdd; 32]),
+            import = IMPORT,
         )
     );
     assert_eq!(

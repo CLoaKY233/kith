@@ -154,6 +154,11 @@ fn build(config: Config, gate: osauth::Gate) -> io::Result<Router> {
         .route("/api/validate/name", get(api::validate::name))
         .route("/api/server", get(api::server::get).post(api::server::set))
         .route("/api/wireguard/import", post(api::server::import))
+        .route("/api/wireguard/{net}/use", post(api::server::use_import))
+        .route(
+            "/api/wireguard/{net}/remove",
+            post(api::server::remove_import),
+        )
         .nest("/api/networks/{net}", networks)
         .fallback(assets::serve);
     Ok(routes
