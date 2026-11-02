@@ -16,6 +16,7 @@ Props:
   import { copy } from '../copy';
   import { clockSeconds, rate } from '../format';
   import { live } from '../live/store.svelte';
+  import { SPACE } from '../tokens';
   import { sparkPainter, type SparkHandle, type SparkPainter, type SparkPoint } from './sparkPainter';
 
   let {
@@ -67,15 +68,27 @@ Props:
     handle?.hover(event.offsetX);
   }
 
+  let box = $state<HTMLSpanElement | null>(null);
+  let tipW = $state(0);
+  /** The tip's centre, kept inside the viewport with a gutter. */
+  const tipLeft = $derived.by(() => {
+    if (!tip) return 0;
+    const origin = box?.getBoundingClientRect().left ?? 0;
+    const gutter = SPACE[3];
+    const view = typeof window === 'undefined' ? Infinity : window.innerWidth;
+    const centre = Math.max(origin + tip.x, gutter + tipW / 2);
+    return Math.min(centre, view - gutter - tipW / 2) - origin;
+  });
+
   function leave(): void {
     handle?.hover(null);
   }
 </script>
 
-<span class="spark">
+<span class="spark" bind:this={box}>
   <canvas bind:this={canvas} aria-hidden="true" onpointermove={move} onpointerleave={leave}></canvas>
   {#if tip}
-    <span class="tip" style:left="{tip.x}px">{tipText}</span>
+    <span class="tip" bind:offsetWidth={tipW} style:left="{tipLeft}px">{tipText}</span>
   {/if}
 </span>
 

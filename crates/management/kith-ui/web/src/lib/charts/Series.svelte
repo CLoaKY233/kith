@@ -51,6 +51,7 @@ Props:
   import Button from '../ui/Button.svelte';
   import Tooltip from '../ui/Tooltip.svelte';
   import { curve, Tween } from './ease';
+  import { loadHistory } from './history';
   import { ink } from './ink';
   import { isRelayed, pathAt, pathSpans, pathWord, sentence, type PathSpan } from './events';
   import { bucketCount, latest, minutes, resample } from './resample';
@@ -139,9 +140,16 @@ Props:
   let scaleKey = '';
   let windowPeak = 0;
   let pointerInside = false;
+  /** Width of one slice in ms, for telling a hover over data from one over empty space. */
+  let slice: number = TICK_MS;
+  /** No sample in the window: no ticks, a dashed baseline (§5 empty state). */
+  let empty = $state(true);
+  /** The y ticks shown; held while the scale eases so they never sit at stale heights. */
+  let heldSplits: number[] = [];
+  let history = $state(0);
 
   /** The row under the cursor, and the cursor's own time for rows that hold a break. */
-  let hover = $state<{ i: number; t: number } | null>(null);
+  let hover = $state<{ i: number | null; t: number } | null>(null);
   let version = $state(0);
   let layer = $state({ left: 0, top: 0, width: 0, height: 0 });
   let pins = $state.raw<Pin[]>([]);
@@ -151,6 +159,7 @@ Props:
 
   const columns = $derived.by(() => {
     void live.trafficVersion;
+    void history;
     return live.traffic.get(peer);
   });
   /** The latest rates; none while stale (§8.5) or once the device stopped reporting. */
@@ -161,17 +170,30 @@ Props:
     return last && live.lastTickMs - last.at <= TRAFFIC_GAP_MS ? last : null;
   });
 
+  const windowWord = $derived(copy.chart.window[range]);
   const summary = $derived.by(() => {
     void version;
-    return copy.chart.summary(name, rate(windowPeak), rate(now?.rx ?? null));
+    if (empty) return copy.chart.emptySummary(name, windowWord);
+    const path = online && !frozen && isRelayed(currentPath) ? relay : null;
+    return copy.chart.summary(name, windowWord, path, rate(windowPeak), rate(now?.rx ?? null));
   });
 
   const readout = $derived.by(() => {
     void version;
+    if (empty && hover === null) return copy.chart.empty(windowWord);
     const i = hover?.i ?? null;
+    if (hover && i === null) {
+      const path = pathAt(spans, hover.t);
+      return copy.chart.readout(clockSeconds(hover.t), rate(null), rate(null), path ? pathWord(path, relay) : null);
+    }
     if (i === null || i >= model.xs.length) {
       const path = online && !frozen ? currentPath : null;
-      return copy.chart.readout(copy.chart.now, rate(now?.rx ?? null), rate(now?.tx ?? null), pathWord(path, relay));
+      return copy.chart.readout(
+        copy.chart.now,
+        rate(now?.rx ?? null),
+        rate(now?.tx ?? null),
+        path ? pathWord(path, relay) : null,
+      );
     }
     const rx = model.rx[i];
     const tx = model.tx[i];
@@ -180,7 +202,7 @@ Props:
       clockSeconds(t),
       rate(rx ?? null),
       rate(tx === null || tx === undefined ? null : -tx),
-      pathWord(pathAt(spans, t), relay),
+      ((path) => (path ? pathWord(path, relay) : null))(pathAt(spans, t)),
     );
   });
 
@@ -221,7 +243,7 @@ Props:
     }
     const plotWidth = plot ? plot.bbox.width / ratio() : width;
     const n = bucketCount(plotWidth, rangeMs);
-    const slice = Math.max(TICK_MS, Math.ceil(rangeMs / n / TICK_MS) * TICK_MS);
+    slice = Math.max(TICK_MS, Math.ceil(rangeMs / n / TICK_MS) * TICK_MS);
     const from = Math.floor((anchor - rangeMs - TICK_MS) / slice) * slice;
     const to = Math.ceil(anchor / slice) * slice;
     const b = cols ? resample(cols, from, to, Math.max(1, Math.round((to - from) / slice))) : null;
@@ -257,7 +279,14 @@ Props:
     }
     model = m;
     windowPeak = rxPeak;
-    spans = pathSpans(events, node, currentPath, from, anchor);
+    empty = !m.xs.some((t, i) => t >= anchor - rangeMs && (m.rx[i] != null || m.tx[i] != null));
+    // Path history reaches back only as far as data or the journal can back it.
+    const firstSample = m.xs.find((_, i) => m.rx[i] != null || m.tx[i] != null) ?? anchor;
+    const firstChange = events.reduce(
+      (min, e) => ('node' in e && e.node === node ? Math.min(min, e.at_ms) : min),
+      anchor,
+    );
+    spans = pathSpans(events, node, currentPath, Math.max(from, Math.min(firstSample, firstChange)), anchor);
 
     const t = performance.now();
     const key = `${peer} ${range}`;
@@ -382,8 +411,9 @@ Props:
     band(u, model.txMin, model.tx, ink(palette, 'ink-2'));
     ctx.globalAlpha = 1;
     const y0 = Math.round(u.valToPos(0, 'y', true)) + 0.5;
-    ctx.strokeStyle = palette.line;
+    ctx.strokeStyle = empty ? ink(palette, 'ink-4') : palette.line;
     ctx.lineWidth = Math.max(1, readPx('hairline') * ratio());
+    if (empty) ctx.setLineDash([SPACE[1] * ratio(), SPACE[1] * ratio()]);
     ctx.beginPath();
     ctx.moveTo(left, y0);
     ctx.lineTo(left + w, y0);
@@ -440,7 +470,12 @@ Props:
   }
 
   function ySplits(): number[] {
-    return ticks(upper.target, lower.target).sort((a, b) => a - b);
+    if (empty) return [];
+    const t = performance.now();
+    if (heldSplits.length === 0 || !(upper.moving(t) || lower.moving(t))) {
+      heldSplits = ticks(upper.target, lower.target).sort((a, b) => a - b);
+    }
+    return heldSplits;
   }
 
   function create(p: Palette): void {
@@ -500,7 +535,14 @@ Props:
           (u) => {
             const i = u.cursor.idx;
             const left = u.cursor.left ?? -1;
-            hover = i === null || i === undefined || left < 0 ? null : { i, t: u.posToVal(left, 'x') };
+            if (left < 0) {
+              hover = null;
+              return;
+            }
+            const t = u.posToVal(left, 'x');
+            const near = i !== null && i !== undefined && Math.abs((model.xs[i] ?? Infinity) - t) <= slice;
+            hover = { i: near ? i : null, t };
+            u.root.classList.toggle('far', !near);
           },
         ],
       },
@@ -582,6 +624,9 @@ Props:
     };
     fonts.addEventListener('loadingdone', redraw);
     let alive = true;
+    void loadHistory(live.traffic).then(() => {
+      if (alive) history += 1;
+    });
     void import('uplot').then(
       (module) => {
         if (!alive) return;
@@ -610,6 +655,7 @@ Props:
 
   $effect(() => {
     void live.trafficVersion;
+    void history;
     void events;
     void range;
     void peer;
@@ -637,7 +683,7 @@ Props:
       style:height="{layer.height}px"
     >
       {#each labels as label (label.left)}
-        <span class="relayed" style:left="{label.left}px" style:max-width="{label.width}px">
+        <span class="relayed" aria-hidden="true" style:left="{label.left}px" style:max-width="{label.width}px">
           {copy.chart.relayed}
         </span>
       {/each}
@@ -775,6 +821,12 @@ Props:
     display: grid;
     justify-items: start;
     gap: var(--s-2);
+  }
+  .data > :global(button) {
+    margin-inline-start: calc(-1 * var(--s-3));
+  }
+  .frame :global(.far .u-cursor-pt) {
+    display: none;
   }
   table {
     width: 100%;

@@ -41,9 +41,9 @@ Props:
     layoutInput,
     layoutKey,
     nodeLabel,
+    devicePath,
     nodeName,
     ownLink,
-    pathText,
     relayUsers,
     remember,
     report,
@@ -212,6 +212,7 @@ Props:
     zoom = 1;
     pan = { x: 0, y: 0 };
   }
+  const atFit = $derived(zoom === 1 && pan.x === 0 && pan.y === 0);
   const viewBox = $derived(
     `${pan.x - width / (2 * zoom)} ${pan.y - height / (2 * zoom)} ${width / zoom} ${height / zoom}`,
   );
@@ -229,6 +230,26 @@ Props:
   const cardDevice = $derived(model?.devices.get(known(carded) ?? '') ?? null);
   const allLinks = $derived(showAll && count < ALL_LINKS_UNDER);
   const drawn = $derived(model ? edges(model, { showAll: allLinks, focus }) : []);
+  type LegendItem = keyof typeof copy.map.legend;
+  const LEGEND_ORDER: readonly LegendItem[] = [
+    'direct',
+    'relayed',
+    'gateway',
+    'relay',
+    'offline',
+    'slow',
+    'unreachable',
+  ];
+  const legend = $derived.by((): LegendItem[] => {
+    const has: LegendItem[] = drawn.flatMap((e): LegendItem[] => [
+      e.kind,
+      ...(e.tone === 'attn' ? (['slow'] as const) : []),
+      ...(e.tone === 'danger' ? (['unreachable'] as const) : []),
+    ]);
+    if (relays.size > 0) has.push('relay');
+    if ([...(model?.devices.values() ?? [])].some((d) => !d.self && !d.online)) has.push('offline');
+    return LEGEND_ORDER.filter((i) => has.includes(i));
+  });
   const tabStop = $derived(known(keyed) ?? known(focused) ?? model?.self ?? null);
 
   function clearHoverTimer(): void {
@@ -391,7 +412,7 @@ Props:
       touch: readPx('target-touch'),
     };
     const pointer = window.matchMedia('(pointer: coarse)');
-    const small = window.matchMedia('(max-width: 40rem)');
+    const small = window.matchMedia('(width < 40rem)');
     const sync = (): void => {
       coarse = pointer.matches;
       narrow = small.matches;
@@ -452,7 +473,18 @@ Props:
     const p = pointOf(node.id) ?? node;
     // Clear of the selected and focus rings.
     const r = radiusOf(device) + SPACE[3];
-    if (device.self) return { x: 0, y: r, anchor: 'middle', baseline: 'hanging' };
+    if (device.self) {
+      const a = selfLabelAngle;
+      const sin = Math.sin(a);
+      const cos = Math.cos(a);
+      const side = Math.abs(cos) > 0.5;
+      return {
+        x: cos * r,
+        y: sin * r,
+        anchor: side ? (cos > 0 ? 'start' : 'end') : 'middle',
+        baseline: side ? 'central' : sin < 0 ? 'auto' : 'hanging',
+      };
+    }
     const g = node.gateway ? pointOf(node.gateway) : null;
     const out = g ? Math.atan2(p.y - g.y, p.x - g.x) : Math.atan2(p.y, p.x);
     // A gateway's phones hang outward, so its own label goes to the side instead.
@@ -470,6 +502,31 @@ Props:
     };
   }
 
+  /** The centre label goes in the widest gap between the edges leaving the centre. */
+  const selfLabelAngle = $derived.by(() => {
+    const self = model?.self;
+    const angles = drawn
+      .filter((e) => e.a === self || e.b === self)
+      .map((e) => {
+        const next = e.a === self ? (e.via ?? e.b) : (e.via ?? e.a);
+        const p = placed?.nodes.get(next);
+        return p ? Math.atan2(p.y, p.x) : null;
+      })
+      .filter((a): a is number => a !== null)
+      .sort((x, y) => x - y);
+    if (angles.length === 0) return Math.PI / 2;
+    let best = Math.PI / 2;
+    let widest = -1;
+    angles.forEach((a, i) => {
+      const next = i + 1 < angles.length ? (angles[i + 1] ?? a) : (angles[0] ?? a) + 2 * Math.PI;
+      if (next - a > widest + 1e-6) {
+        widest = next - a;
+        best = a + widest / 2;
+      }
+    });
+    return best;
+  });
+
   const gateways = $derived(
     new Set([...(placed?.nodes.values() ?? [])].flatMap((n) => (n.gateway ? [n.gateway] : []))),
   );
@@ -483,10 +540,15 @@ Props:
     const sx = (p.x - pan.x) * zoom + width / 2;
     const sy = (p.y - pan.y) * zoom + height / 2;
     const gap = size.node + SPACE[3];
-    const left = sx < width / 2 ? sx + gap : sx - gap - cardW;
+    // Outward, away from the centre, so the card does not cover the links it explains.
+    const outward = sx < width / 2 ? sx - gap - cardW : sx + gap;
+    const inward = sx < width / 2 ? sx + gap : sx - gap - cardW;
+    const fits = outward >= SPACE[3] && outward + cardW <= width - SPACE[3];
+    const left = fits ? outward : inward;
+    const top = sy < height / 2 ? sy - cardH + size.node : sy - size.node;
     return {
       left: Math.max(SPACE[3], Math.min(width - cardW - SPACE[3], left)),
-      top: Math.max(SPACE[3], Math.min(height - cardH - SPACE[3], sy - cardH / 2)),
+      top: Math.max(SPACE[3], Math.min(height - cardH - SPACE[3], top)),
     };
   });
 
@@ -496,7 +558,6 @@ Props:
     const own = ownLink(model, d.id);
     const heard = report(model, d.id);
     const numbers = live.numbers[`${netId}/${d.id}`];
-    const relayName = own?.relay ? (model.devices.get(own.relay)?.name ?? null) : null;
     const status = d.self
       ? copy.device.thisDevice
       : !d.online
@@ -504,8 +565,10 @@ Props:
         : stale
           ? copy.status.stale
           : copy.status.online;
-    const path =
-      d.online && !d.self ? pathText(own?.path ?? d.peer?.path ?? null, relayName) : null;
+    const path = d.online && !d.self ? devicePath(model, d) : null;
+    const direct = !d.gateway && (own?.path ?? d.peer?.path) === 'direct';
+    const endpoint = d.peer?.endpoint && d.peer.endpoint !== 'relay' && direct ? d.peer.endpoint : null;
+    const ms = stale ? null : (own?.rtt_ms ?? numbers?.rttMs ?? null);
     const lastSeen = d.peer?.last_seen_secs;
     const band = numbers?.band ?? null;
     return {
@@ -514,8 +577,8 @@ Props:
       band: stale ? null : band,
       down: rate(stale || !numbers ? null : numbers.rx),
       up: rate(stale || !numbers ? null : numbers.tx),
-      rtt: rtt(stale ? null : (own?.rtt_ms ?? numbers?.rttMs ?? null)),
-      endpoint: d.peer?.endpoint ?? null,
+      rtt: ms === null ? null : rtt(ms),
+      endpoint,
       reason: d.peer?.path_reason ?? null,
       seen:
         d.online || d.self
@@ -564,13 +627,13 @@ Props:
           {/if}
           {#if netId}<Spark peer={`${netId}/${cardDevice.id}`} />{/if}
         </div>
-        <div class="line">
-          <span>{cardFacts.rtt}</span>
-          {#if cardFacts.endpoint}
-            <span class="sep">{DOT}</span>
-            <span class="mono">{cardFacts.endpoint}</span>
-          {/if}
-        </div>
+        {#if cardFacts.rtt || cardFacts.endpoint}
+          <div class="line">
+            {#if cardFacts.rtt}<span>{cardFacts.rtt}</span>{/if}
+            {#if cardFacts.rtt && cardFacts.endpoint}<span class="sep">{DOT}</span>{/if}
+            {#if cardFacts.endpoint}<span class="mono">{cardFacts.endpoint}</span>{/if}
+          </div>
+        {/if}
         {#if cardFacts.reason}<p class="line reason">{cardFacts.reason}</p>{/if}
       {/if}
       {#if cardFacts.seen}<p class="line meta">{cardFacts.seen}</p>{/if}
@@ -600,14 +663,16 @@ Props:
         <IconButton
           icon="plus"
           label={copy.map.zoomIn}
+          disabled={zoom >= ZOOM_MAX}
           triggerProps={{ onclick: () => zoomTo(zoom * ZOOM_STEP) }}
         />
         <IconButton
           icon="minus"
           label={copy.map.zoomOut}
+          disabled={zoom <= 1}
           triggerProps={{ onclick: () => zoomTo(zoom / ZOOM_STEP) }}
         />
-        <Button variant="ghost" onclick={fit}>{copy.map.fit}</Button>
+        <Button variant="ghost" class="fit" disabled={atFit} onclick={fit}>{copy.map.fit}</Button>
       </div>
     </div>
     <div class="canvas" class:panning={zoom > 1} class:dragging bind:this={canvas}>
@@ -616,6 +681,7 @@ Props:
       <svg
         bind:this={svg}
         class="map"
+        style:--zoom={zoom}
         role="group"
         aria-label={copy.devices.map}
         viewBox={width > 0 ? viewBox : undefined}
@@ -665,7 +731,9 @@ Props:
                 onclick={() => activate(id)}
                 onkeydown={(e) => move(id, e)}
               >
-                <circle class="halo" r={r + SPACE[2]} />
+                {#key netId !== null && live.changed.get(`${netId}/${id}`)}
+                  <circle class="halo" r={r + SPACE[2]} />
+                {/key}
                 <circle class="hit" r={hit} />
                 {#if node.ring === 'relay'}
                   <rect
@@ -709,6 +777,28 @@ Props:
 
       {#if !narrow}{@render focusCard()}{/if}
     </div>
+    {#if legend.length > 0}
+      <ul class="legend" aria-hidden="true">
+        {#each legend as item (item)}
+          <li>
+            <svg width="16" height="10" viewBox="0 0 16 10">
+              {#if item === 'relay'}
+                <rect class="dot" x="4" y="1" width="8" height="8" />
+              {:else if item === 'offline'}
+                <circle class="dot hollow" cx="8" cy="5" r="4" />
+              {:else}
+                <path
+                  class="edge {item === 'slow' ? 'attn' : item === 'unreachable' ? 'danger' : item}"
+                  d="M1 5H15"
+                  stroke-width="1.5"
+                />
+              {/if}
+            </svg>
+            {copy.map.legend[item]}
+          </li>
+        {/each}
+      </ul>
+    {/if}
     {#if narrow}{@render focusCard()}{/if}
   </div>
   {#if model && netId}<MapTable net={netId} />{/if}
@@ -837,6 +927,10 @@ Props:
   .label.strong {
     fill: var(--ink-1);
   }
+  .label,
+  .rtt {
+    font-size: calc(12px / var(--zoom, 1));
+  }
   .rtt {
     fill: var(--ink-2);
     stroke: var(--surface);
@@ -893,7 +987,7 @@ Props:
     font: var(--t-small);
     animation: map-card-in var(--d-pop-in) var(--e-pop);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .well {
       aspect-ratio: auto;
     }
@@ -949,6 +1043,40 @@ Props:
   .rates {
     display: inline-flex;
     gap: var(--s-2);
+    min-width: 0;
+  }
+  .rates > span {
+    white-space: nowrap;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    margin: 0;
+    padding: var(--s-1) var(--s-3) var(--s-2);
+    list-style: none;
+    color: var(--ink-3);
+    font: var(--t-micro);
+    letter-spacing: var(--t-micro-tracking);
+  }
+  .legend li {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+  }
+  .legend .dot.hollow {
+    fill: var(--surface);
+    stroke: var(--ink-3);
+    stroke-width: var(--dot-ring);
+  }
+  @media (pointer: coarse) {
+    .tools-start,
+    .tools-end :global(.fit) {
+      display: inline-flex;
+      align-items: center;
+      min-height: var(--target-touch);
+      min-width: var(--target-touch);
+    }
   }
   .mono {
     font: var(--t-mono);
