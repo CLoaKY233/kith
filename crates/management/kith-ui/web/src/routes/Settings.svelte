@@ -386,7 +386,7 @@ Props:
     white-space: nowrap;
   }
 
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .screen {
       padding: var(--s-4) var(--gutter-mobile);
     }

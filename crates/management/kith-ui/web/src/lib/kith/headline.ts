@@ -2,13 +2,29 @@
 // priority table is tested without a page.
 
 import { copy } from '../copy';
-import { ago, clock, rate } from '../format';
+import { ago, clock, rate, rateParts, type Parts } from '../format';
 import type { ExitState, PeerInfo, Problem } from '../types.gen';
+
+/**
+ * Where a network problem's fix leads: the device it names, the command it gives (to copy),
+ * or This device when neither.
+ */
+export type ProblemTarget =
+  | { readonly kind: 'device'; readonly node: string }
+  | { readonly kind: 'command'; readonly command: string }
+  | { readonly kind: 'this' };
 
 export type HeadlineAction =
   | { readonly kind: 'add_device'; readonly label: string }
   | { readonly kind: 'why'; readonly label: string; readonly node: string }
-  | { readonly kind: 'fix'; readonly label: string; readonly need: string };
+  | { readonly kind: 'fix'; readonly label: string; readonly target: ProblemTarget };
+
+/** The default sub-line in parts, so the rate units can sit in `--ink-3` (§3.3). */
+export type HeadlineSub = {
+  readonly counts: string;
+  readonly down: Parts;
+  readonly up: Parts;
+};
 
 export type HeadlineView = {
   readonly text: string;
@@ -17,6 +33,7 @@ export type HeadlineView = {
   readonly action: HeadlineAction | null;
   /** The default sub-line: `9 direct · 2 via vps · ↓ 3.4 MB/s ↑ 220 kB/s`. */
   readonly sub: string | null;
+  readonly subParts: HeadlineSub | null;
 };
 
 export type HeadlineInput = {
@@ -43,7 +60,24 @@ export function problemId(netId: string, what: string): string {
   return `problem:${netId}:${what}`;
 }
 
-function subline(input: HeadlineInput): string {
+/** A fix that is a command: quoted in backticks, or the whole fix is one. */
+const QUOTED = /`([^`]+)`/;
+const WHOLE = /^(?:sudo )?kith [^.]*$/;
+
+/** What a problem's fix should do (see ProblemTarget). */
+export function problemTarget(
+  problem: Problem,
+  peers: readonly Pick<PeerInfo, 'name' | 'node'>[],
+): ProblemTarget {
+  const words = new Set(problem.what.split(/[^\w.-]+/).map((w) => w.replace(/\.$/, '')));
+  const named = peers.find((p) => words.has(p.name));
+  if (named) return { kind: 'device', node: named.node };
+  const text = QUOTED.exec(problem.fix)?.[1] ?? (WHOLE.test(problem.fix) ? problem.fix : null);
+  if (text) return { kind: 'command', command: text };
+  return { kind: 'this' };
+}
+
+function counts(input: HeadlineInput): string {
   const online = input.peers.filter((p) => p.online && p.path !== null);
   const direct = online.filter((p) => p.path === 'direct').length;
   const relayed = online.filter((p) => p.path !== 'direct');
@@ -56,7 +90,6 @@ function subline(input: HeadlineInput): string {
   for (const [relay, n] of [...counts].sort((a, b) => b[1] - a[1])) {
     parts.push(copy.overview.via(n, relay));
   }
-  parts.push(copy.overview.rates(rate(input.down), rate(input.up)));
   return parts.join(copy.overview.sep);
 }
 
@@ -66,6 +99,7 @@ export function headline(input: HeadlineInput): HeadlineView {
     tone: 'plain',
     action,
     sub: null,
+    subParts: null,
   });
 
   if (input.pausedUntilMs !== null) return plain(copy.overview.paused(clock(input.pausedUntilMs)));
@@ -75,8 +109,9 @@ export function headline(input: HeadlineInput): HeadlineView {
     return {
       text: problem.what,
       tone: 'danger',
-      action: { kind: 'fix', label: problem.fix, need: problemId(input.netId, problem.what) },
+      action: { kind: 'fix', label: problem.fix, target: problemTarget(problem, input.peers) },
       sub: null,
+      subParts: null,
     };
   }
 
@@ -116,10 +151,12 @@ export function headline(input: HeadlineInput): HeadlineView {
 
   const total = input.peers.length + 1;
   const online = input.peers.filter((p) => p.online).length + 1;
+  const line = counts(input);
   return {
     text: copy.overview.allGood(online, total),
     tone: 'plain',
     action: null,
-    sub: subline(input),
+    sub: [line, copy.overview.rates(rate(input.down), rate(input.up))].join(copy.overview.sep),
+    subParts: { counts: line, down: rateParts(input.down), up: rateParts(input.up) },
   };
 }

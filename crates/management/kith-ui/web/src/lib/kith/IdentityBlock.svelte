@@ -16,7 +16,7 @@ Props:
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { membership, networkName } from '../../frame/net';
-  import { follow, href } from '../../router';
+  import { follow, href, subscribe } from '../../router';
   import { copy, DOT } from '../copy';
   import Icon from '../icons/Icon.svelte';
   import { live } from '../live/store.svelte';
@@ -34,13 +34,24 @@ Props:
   const many = $derived((live.status?.networks.length ?? 0) > 1);
   const thisHref = href({ name: 'this' });
 
+  let onThis = $state(false);
+  $effect(() =>
+    subscribe((route) => {
+      onThis = route.name === 'this';
+    }),
+  );
+
   let switchOpen = $state(false);
   let compactOpen = $state(false);
 </script>
 
 {#snippet block(close: () => void)}
   <div class="block">
-    <a class="name" href={thisHref} onclick={(e) => { close(); follow(e, thisHref); }}>{name}</a>
+    <a
+      class="name"
+      href={thisHref}
+      aria-current={onThis ? 'page' : undefined}
+      onclick={(e) => { close(); follow(e, thisHref); }}>{name}</a>
     {#if me && net}
       {#if many && switcher && !compact}
         <Popover bind:open={switchOpen} label={copy.nav.switchNetwork}>
@@ -112,7 +123,8 @@ Props:
     min-height: var(--target-fine);
     align-content: center;
   }
-  .name:hover {
+  .name:hover,
+  .name[aria-current='page'] {
     text-decoration: underline;
     text-decoration-thickness: var(--hairline);
     text-underline-offset: var(--s-1);

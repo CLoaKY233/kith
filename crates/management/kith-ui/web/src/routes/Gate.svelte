@@ -32,11 +32,12 @@ Props:
   {#if reason === 'daemon_down'}
     <h1 id="gate-title" class="title">{copy.gate.downTitle}</h1>
     <p>{copy.gate.downBody}</p>
-    <CopyField value={copy.gate.downCommand} />
+    <CopyField label={copy.gate.commandLabel} value={copy.gate.downCommand} />
     <p class="meta" role="status">{copy.gate.checking}</p>
   {:else if reason === 'not_in_group'}
     <h1 id="gate-title" class="title">{copy.gate.groupTitle}</h1>
-    <CopyField value={mac ? copy.gate.groupMac : copy.gate.groupLinux} />
+    <p>{copy.gate.groupBody}</p>
+    <CopyField label={copy.gate.commandLabel} value={mac ? copy.gate.groupMac : copy.gate.groupLinux} />
     <p>{copy.gate.groupThen}</p>
   {:else if reason === 'version_skew'}
     <h1 id="gate-title" class="title">
@@ -45,7 +46,7 @@ Props:
   {:else}
     <h1 id="gate-title" class="title">{authTitle}</h1>
     <p>{copy.gate.authBody}</p>
-    <CopyField value={copy.gate.authCommand} />
+    <CopyField label={copy.gate.commandLabel} value={copy.gate.authCommand} />
     <p class="meta">{copy.gate.authOnce}</p>
   {/if}
 </section>

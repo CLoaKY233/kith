@@ -189,7 +189,7 @@ Props:
     justify-content: flex-end;
     gap: var(--s-3);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .choices {
       grid-template-columns: 1fr;
     }

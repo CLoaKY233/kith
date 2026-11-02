@@ -3,8 +3,10 @@
 Overview (spec §6.2): the 8-second answer. Top to bottom, 48 px apart:
   1. Headline.
   2. Needs you: up to 3 cards, then `View all (5)` (the header popover). Absent when empty.
+     The first join card holds the view's one primary; the problem the headline already
+     shows is not repeated.
   3. Devices: up to 8 rows, this device first, then by name, then `All 12 devices →`.
-  4. Recent: the last 5 changes and joins, then `All activity →`.
+  4. Recent: the last 5 changes and joins, then `All activity →`. Absent when empty.
 At ≥1600 px Recent becomes a 360 px right column with the whole feed. Phones keep the order.
 Props:
   - net: string, the network id.
@@ -12,12 +14,13 @@ Props:
 <script lang="ts">
   import { MediaQuery } from 'svelte/reactivity';
   import { layers } from '../frame/layers.svelte';
-  import { peers, selfPeer } from '../frame/net';
+  import { peers, selfPeer, summary } from '../frame/net';
   import { needs } from '../frame/needs.svelte';
   import { copy } from '../lib/copy';
   import DeviceRow from '../lib/kith/DeviceRow.svelte';
   import EventRow from '../lib/kith/EventRow.svelte';
   import Headline from '../lib/kith/Headline.svelte';
+  import { problemId } from '../lib/kith/headline';
   import NeedsYouCard from '../lib/kith/NeedsYouCard.svelte';
   import { live } from '../lib/live/store.svelte';
   import type { Entry } from '../lib/types.gen';
@@ -43,8 +46,15 @@ Props:
 
   const wide = new MediaQuery('min-width: 100rem');
 
-  const list = $derived(needs.forNet(net));
+  /** The problem the headline shows (priority 2) has its fix there already. */
+  const headlined = $derived.by(() => {
+    if ((live.status?.paused_until ?? null) !== null) return null;
+    const first = summary(net)?.problems[0];
+    return first ? problemId(net, first.what) : null;
+  });
+  const list = $derived(needs.forNet(net).filter((n) => n.id !== headlined));
   const shownNeeds = $derived(list.slice(0, NEEDS_SHOWN));
+  const primaryId = $derived(shownNeeds.find((n) => n.kind === 'join')?.id ?? null);
 
   const others = $derived(peers(net).sort((a, b) => a.name.localeCompare(b.name)));
   const me = $derived(selfPeer(net));
@@ -105,16 +115,16 @@ Props:
   }
 </script>
 
-<div class="overview" class:wide={wide.current}>
+<div class="overview" class:wide={wide.current && recent.length > 0}>
   <div class="main">
     <Headline {net} />
 
     {#if shownNeeds.length > 0}
-      <section class="section" aria-labelledby="needs-title">
-        <h2 id="needs-title" class="heading">{copy.overview.needsYou}</h2>
+      <section class="section" aria-labelledby="needs-title" data-needs>
+        <h2 id="needs-title" class="heading" tabindex="-1" data-needs-heading>{copy.overview.needsYou}</h2>
         <div class="cards">
           {#each shownNeeds as need (need.id)}
-            <NeedsYouCard {need} primary={shownNeeds.length === 1} />
+            <NeedsYouCard {need} primary={need.id === primaryId} />
           {/each}
         </div>
         {#if list.length > NEEDS_SHOWN}
@@ -144,14 +154,12 @@ Props:
       </div>
     </section>
 
-    {#if !wide.current}
+    {#if !wide.current && recent.length > 0}
       <section class="section" aria-labelledby="recent-title">
         <h2 id="recent-title" class="heading">{copy.overview.recent}</h2>
-        {#if recent.length > 0}
-          <div class="feed">
-            {#each recent as entry (entry.seq)}<EventRow {entry} />{/each}
-          </div>
-        {/if}
+        <div class="feed">
+          {#each recent as entry (entry.seq)}<EventRow {entry} />{/each}
+        </div>
         <div>
           <a class="more" href={activityHref} onclick={(e) => follow(e, activityHref)}>
             {copy.overview.allActivity}
@@ -161,7 +169,7 @@ Props:
     {/if}
   </div>
 
-  {#if wide.current}
+  {#if wide.current && recent.length > 0}
     <aside class="column" aria-labelledby="recent-title">
       <h2 id="recent-title" class="heading">{copy.overview.recent}</h2>
       <div class="feed">
@@ -219,11 +227,14 @@ Props:
   .feed {
     display: grid;
   }
+  /* The same size container as DeviceList, so rows take the desktop grid (§5 DeviceRow). */
+  .rows {
+    container: devices / inline-size;
+  }
+  .heading:focus {
+    outline: none;
+  }
   .more {
-    display: inline-flex;
-    align-items: center;
-    justify-self: start;
-    min-height: var(--target-fine);
     color: var(--ink-2);
     border-radius: var(--r-1);
     cursor: pointer;
@@ -235,12 +246,7 @@ Props:
     text-decoration-thickness: var(--hairline);
     text-underline-offset: var(--s-1);
   }
-  @media (pointer: coarse) {
-    .more {
-      min-height: var(--target-touch);
-    }
-  }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .overview {
       padding: var(--s-4) var(--gutter-mobile) var(--s-7);
     }

@@ -13,7 +13,7 @@ Props: none.
 <div class="scrim">
   <div class="card" role="alertdialog" aria-modal="true" aria-labelledby="unauth-title">
     <h2 id="unauth-title" class="title">{copy.conn.unauth}</h2>
-    <CopyField value={copy.gate.authCommand} />
+    <CopyField label={copy.gate.commandLabel} value={copy.gate.authCommand} />
     <p class="meta">{copy.gate.authOnce}</p>
   </div>
 </div>

@@ -1092,7 +1092,7 @@ Props:
   .danger-row {
     margin-top: var(--s-5);
   }
-  @media (max-width: 40rem) {
+  @media (width < 40rem) {
     .detail {
       padding-inline: var(--gutter-mobile);
     }

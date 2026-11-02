@@ -86,7 +86,24 @@ class Needs {
 
   /** How many live needs this person has in a network (held outcomes do not count). */
   count(net: string): number {
-    return this.live.filter((n) => n.network === net || n.network === ANY_NETWORK).length;
+    const now = live.now();
+    return this.live.filter(
+      (n) =>
+        (n.network === net || n.network === ANY_NETWORK) &&
+        !(n.kind === 'join' && now >= n.join.expires_at_ms),
+    ).length;
+  }
+
+  /**
+   * Join requests in a network still asking: not expired, and not one the person is
+   * approving or denying here (held while Undo runs or the outcome shows).
+   */
+  asking(net: string): readonly JoinNeed[] {
+    const now = live.now();
+    return this.live.filter(
+      (n): n is JoinNeed =>
+        n.kind === 'join' && n.network === net && now < n.join.expires_at_ms && !this.#held.has(n.id),
+    );
   }
 
   /** One need by id, live or held; null once it is gone. */
