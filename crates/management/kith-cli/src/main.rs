@@ -42,7 +42,8 @@ fn main() -> ExitCode {
         Cmd::Ui { args } => ui::run(opts.socket.as_deref(), args),
         Cmd::Status { .. }
         | Cmd::Create { .. }
-        | Cmd::Invite { .. }
+        | Cmd::Invite(_)
+        | Cmd::Rename { .. }
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }

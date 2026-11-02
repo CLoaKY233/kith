@@ -12,10 +12,10 @@ use tokio::io::AsyncWriteExt;
 use crate::codec::{Framed, decode, encode};
 use crate::message::ServerMessage;
 use crate::{
-    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, IpcError, LinkInfo, LinkReport,
-    MAX_FRAME_LEN, MAX_RESPONSE_LEN, NetworkSummary, PROTOCOL_VERSION, PathKind, PeerInfo,
-    PendingJoin, Problem, RecordInfo, Request, Response, Status, TrafficSample, TrafficSeries,
-    Warning,
+    BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, InviteInfo, IpcError, LinkInfo,
+    LinkReport, MAX_FRAME_LEN, MAX_RESPONSE_LEN, NetworkSummary, PROTOCOL_VERSION, PathKind,
+    PeerInfo, PendingJoin, PolicyInfo, PolicyRuleInfo, Problem, RecordInfo, RelayInfo, Request,
+    Response, SelectorInfo, Status, TargetInfo, TrafficSample, TrafficSeries, Warning,
 };
 #[cfg(unix)]
 use crate::{IpcClient, IpcServer};
@@ -32,7 +32,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 12, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 13, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -42,7 +42,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 12, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 13, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -60,7 +60,7 @@ fn golden_bytes() {
         gateway: Some("e".to_owned()),
         path_mtu: Some(1216),
     }]));
-    let mut expected = vec![64, b'k', b't', 0x70, 12, 0, 6, 1];
+    let mut expected = vec![64, b'k', b't', 0x70, 13, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,
@@ -527,6 +527,11 @@ fn request_index(request: &Request) -> u8 {
         Request::DenyJoin { .. } => 27,
         Request::Blocked { .. } => 28,
         Request::AllowBlocked { .. } => 29,
+        Request::RenameDevice { .. } => 30,
+        Request::ListInvites { .. } => 31,
+        Request::RevokeInvite { .. } => 32,
+        Request::GetPolicy { .. } => 33,
+        Request::ListRelays { .. } => 34,
     }
 }
 
@@ -564,6 +569,11 @@ fn response_index(response: &Response) -> u8 {
         Response::JoinRequestDenied => 29,
         Response::Blocked(_) => 30,
         Response::BlockedAllowed => 31,
+        Response::DeviceRenamed => 32,
+        Response::Invites(_) => 33,
+        Response::InviteRevoked => 34,
+        Response::Policy(_) => 35,
+        Response::Relays(_) => 36,
     }
 }
 
@@ -590,6 +600,7 @@ fn entry_index(kind: &EntryKind) -> u8 {
         EntryKind::Log { .. } => 9,
         EntryKind::JoinRequested { .. } => 10,
         EntryKind::Blocked { .. } => 11,
+        EntryKind::DeviceRenamed { .. } => 12,
     }
 }
 
@@ -695,6 +706,18 @@ fn requests() -> Vec<Request> {
             protocol: s("tcp"),
             port: Some(22),
         },
+        Request::RenameDevice {
+            network: NET,
+            node: NODE,
+            name: s("nas"),
+        },
+        Request::ListInvites { network: NET },
+        Request::RevokeInvite {
+            network: NET,
+            invite: s("ab"),
+        },
+        Request::GetPolicy { network: NET },
+        Request::ListRelays { network: NET },
     ]
 }
 
@@ -826,6 +849,38 @@ fn responses() -> Vec<Response> {
             rule: s("[[rule]]"),
         }]),
         Response::BlockedAllowed,
+        Response::DeviceRenamed,
+        Response::Invites(vec![InviteInfo {
+            id: s("ab"),
+            expires_at_ms: 1_762_000_000_000,
+            uses_left: Some(1),
+            created_at_ms: 1_761_000_000_000,
+        }]),
+        Response::InviteRevoked,
+        Response::Policy(PolicyInfo {
+            toml: s("[[rules]]"),
+            rules: vec![PolicyRuleInfo {
+                sources: vec![SelectorInfo {
+                    kind: s("any"),
+                    value: None,
+                    name: None,
+                }],
+                destinations: vec![TargetInfo {
+                    selector: SelectorInfo {
+                        kind: s("tag"),
+                        value: Some(s("server")),
+                        name: None,
+                    },
+                    protocol: s("tcp"),
+                    ports: vec![s("22"), s("8000-8080")],
+                }],
+            }],
+        }),
+        Response::Relays(vec![RelayInfo {
+            name: s("r"),
+            address: s("relay:443"),
+            node: NODE,
+        }]),
     ]
 }
 
@@ -932,6 +987,12 @@ fn entry_kinds() -> Vec<EntryKind> {
             port: None,
             count: 1,
         },
+        EntryKind::DeviceRenamed {
+            network: NET,
+            node: NODE,
+            from: s("tv"),
+            name: s("lounge"),
+        },
     ]
 }
 
@@ -999,7 +1060,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (12, 0x4064_20d5_fdb3_e6c4),
+        (13, 0x5d91_d5f6_cd4a_392b),
         "the wire format changed"
     );
 }

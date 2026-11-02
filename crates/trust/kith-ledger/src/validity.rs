@@ -170,6 +170,7 @@ impl Authority {
             | OpBody::RevokeInvite { .. }
             | OpBody::SetRecord { .. }
             | OpBody::AddClient { .. }
+            | OpBody::RenameDevice { .. }
             | OpBody::Join(_) => return None,
         }
         Some(next)
@@ -277,6 +278,7 @@ impl Chain {
                 | OpBody::RevokeInvite { .. }
                 | OpBody::SetRecord { .. }
                 | OpBody::AddClient { .. }
+                | OpBody::RenameDevice { .. }
                 | OpBody::Join(_) => None,
             })
             .collect();
@@ -347,6 +349,7 @@ struct InviteState<'a> {
     max_uses: u16,
     tags: &'a [String],
     uses: u16,
+    created: Timestamp,
 }
 
 /// Stage B's working state.
@@ -362,6 +365,8 @@ struct StageB<'a> {
     adds: BTreeMap<NodeId, Vec<usize>>,
     /// Valid `SetRecord` ops, in order.
     set_records: Vec<(&'a String, &'a Option<Vec<u8>>)>,
+    /// Valid `RenameDevice` ops, in order: (index, device, name).
+    renames: Vec<(usize, NodeId, &'a String)>,
     /// Tags granted to each valid join, from its invite.
     joined_tags: BTreeMap<usize, &'a [String]>,
 }
@@ -405,6 +410,7 @@ impl<'a> StageB<'a> {
                             max_uses: *max_uses,
                             tags,
                             uses: 0,
+                            created: op.op().timestamp,
                         });
                 }
                 OpBody::RevokeInvite { invite_key } => self
@@ -413,6 +419,9 @@ impl<'a> StageB<'a> {
                     .or_default()
                     .push(Removal::new(graph, index)),
                 OpBody::SetRecord { key, value } => self.set_records.push((key, value)),
+                OpBody::RenameDevice { device, name } => {
+                    self.renames.push((index, *device, name));
+                }
                 OpBody::Genesis { .. }
                 | OpBody::AddAdmin { .. }
                 | OpBody::RemoveAdmin { .. }
@@ -508,8 +517,16 @@ impl<'a> StageB<'a> {
                 | OpBody::RemoveDevice { .. }
                 | OpBody::CreateInvite { .. }
                 | OpBody::RevokeInvite { .. }
-                | OpBody::SetRecord { .. } => continue,
+                | OpBody::SetRecord { .. }
+                | OpBody::RenameDevice { .. } => continue,
             };
+            // Last writer wins among renames ordered after the admitting add.
+            let name = self
+                .renames
+                .iter()
+                .rev()
+                .find(|(index, target, _)| target == device && *index > add)
+                .map_or(name, |(_, _, renamed)| (*renamed).clone());
             devices.insert(
                 *device,
                 Device {
@@ -539,6 +556,7 @@ impl<'a> StageB<'a> {
                     max_uses: invite.max_uses,
                     uses: invite.uses,
                     tags: invite.tags.to_vec(),
+                    created: invite.created,
                 };
                 (*key, entry)
             })

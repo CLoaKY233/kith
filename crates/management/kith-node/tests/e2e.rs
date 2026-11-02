@@ -1749,4 +1749,68 @@ mod tests {
         }
         shutdown([admin, asker]).await
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_admin_renames_a_device_and_every_member_sees_it() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let c = start().await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "beta").await?;
+        join(&a, &c, network, "gamma").await?;
+        let beta = peer_info(&a, network, "beta").await?.node;
+
+        let rename = |name: &str| Request::RenameDevice {
+            network,
+            node: beta,
+            name: name.into(),
+        };
+        if c.request(rename("sneaky")).await == Response::DeviceRenamed {
+            return Err("a non-admin renamed a device".into());
+        }
+        let renamed = a.request(rename("lounge")).await;
+        if renamed != Response::DeviceRenamed {
+            return Err(format!("rename failed: {renamed:?}").into());
+        }
+        let seen = peer_info(&c, network, "lounge").await?;
+        if seen.node != beta {
+            return Err("gamma sees another device as lounge".into());
+        }
+        shutdown([a, b, c]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_revoked_invite_is_unlisted_and_cannot_join() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let network = create(&a, "alpha").await?;
+        let link = invite(&a, network).await?;
+        let Response::Invites(open) = a.request(Request::ListInvites { network }).await else {
+            return Err("listing invites failed".into());
+        };
+        let [listed] = open.as_slice() else {
+            return Err(format!("expected one invite, got {open:?}").into());
+        };
+        if listed.uses_left != Some(1) || listed.expires_at_ms <= listed.created_at_ms {
+            return Err(format!("the invite is described wrongly: {listed:?}").into());
+        }
+        let revoked = a
+            .request(Request::RevokeInvite {
+                network,
+                invite: listed.id.clone(),
+            })
+            .await;
+        if revoked != Response::InviteRevoked {
+            return Err(format!("revoke failed: {revoked:?}").into());
+        }
+        if let Response::Invites(open) = a.request(Request::ListInvites { network }).await
+            && !open.is_empty()
+        {
+            return Err(format!("a revoked invite is still listed: {open:?}").into());
+        }
+        if join_with(&b, link, network, "beta").await.is_ok() {
+            return Err("a revoked invite admitted a device".into());
+        }
+        shutdown([a, b]).await
+    }
 }

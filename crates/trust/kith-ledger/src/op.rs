@@ -143,6 +143,13 @@ pub enum OpBody {
         /// Its IPv6 address, fixed for good.
         v6: Ipv6Addr,
     },
+    /// Admin op: renames a member device. The latest rename after its admission wins.
+    RenameDevice {
+        /// The device to rename.
+        device: NodeId,
+        /// Its new name, at most [`MAX_NAME_LEN`] bytes.
+        name: String,
+    },
 }
 
 /// The hash context that turns a WireGuard key into a member id.
@@ -175,7 +182,8 @@ impl OpBody {
             | Self::CreateInvite { .. }
             | Self::RevokeInvite { .. }
             | Self::SetRecord { .. }
-            | Self::AddClient { .. } => Kind::Admin,
+            | Self::AddClient { .. }
+            | Self::RenameDevice { .. } => Kind::Admin,
             Self::Join(_) => Kind::Join,
         }
     }
@@ -263,6 +271,7 @@ impl OpBody {
                 check_name(name)?;
                 check_tags(tags)
             }
+            Self::RenameDevice { device: _, name } => check_name(name),
         }
     }
 }

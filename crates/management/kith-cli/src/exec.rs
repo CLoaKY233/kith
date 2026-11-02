@@ -8,7 +8,7 @@ use kith_config::{Config, ConfigError};
 use kith_ipc::{DnsRecord, IpcClient, IpcError, Request, Response};
 use kith_types::{NetworkId, NodeId};
 
-use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, Opts, RelayCmd, WgCmd};
+use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, InviteCmd, Opts, RelayCmd, WgCmd};
 use crate::{doctor, render};
 
 /// A failure worth one line on stderr.
@@ -141,14 +141,30 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             name: name.clone(),
             device_name: names.device(device_name.as_ref()),
         },
-        Cmd::Invite {
+        Cmd::Invite(InviteCmd::Create {
             expires,
             uses,
             network,
-        } => Request::CreateInvite {
+        }) => Request::CreateInvite {
             network: names.network(network)?,
             expires_in_secs: *expires,
             max_uses: *uses,
+        },
+        Cmd::Invite(InviteCmd::List { network }) => Request::ListInvites {
+            network: names.network(network)?,
+        },
+        Cmd::Invite(InviteCmd::Revoke { network, id }) => Request::RevokeInvite {
+            network: names.network(network)?,
+            invite: id.clone(),
+        },
+        Cmd::Rename {
+            network,
+            device,
+            name,
+        } => Request::RenameDevice {
+            network: names.network(network)?,
+            node: names.node(device)?,
+            name: name.clone(),
         },
         Cmd::Join { device_name, link } => Request::Join {
             invite_link: link.clone(),
@@ -372,7 +388,8 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         }
         Cmd::Status { .. }
         | Cmd::Create { .. }
-        | Cmd::Invite { .. }
+        | Cmd::Invite(_)
+        | Cmd::Rename { .. }
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
@@ -402,7 +419,8 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
     match &opts.cmd {
         Cmd::Status { json } => return status(&mut client, *json, out).await,
         Cmd::Create { .. }
-        | Cmd::Invite { .. }
+        | Cmd::Invite(_)
+        | Cmd::Rename { .. }
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
@@ -459,6 +477,7 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
         | ExitCmd::Deny { network, .. },
     )
     | Cmd::Remove { network, .. }
+    | Cmd::Rename { network, .. }
     | Cmd::Allow { network, .. }
     | Cmd::Relay(RelayCmd::Advertise {
         network,

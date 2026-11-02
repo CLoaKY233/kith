@@ -154,6 +154,23 @@ impl NetworkRuntime {
         })?
     }
 
+    /// Signs and inserts an admin op authored by `identity`.
+    pub(crate) fn append(
+        &mut self,
+        identity: &DeviceIdentity,
+        body: OpBody,
+        now: Timestamp,
+    ) -> Result<(), NodeError> {
+        let author = identity.node_id();
+        self.with_ledger(|ledger| {
+            let op = ledger
+                .draft(author, body, now)
+                .sign(identity.signing_key())?;
+            ledger.insert(op)?;
+            Ok(())
+        })?
+    }
+
     /// Signs and inserts a `RemoveDevice` op.
     pub(crate) fn remove_device(
         &mut self,

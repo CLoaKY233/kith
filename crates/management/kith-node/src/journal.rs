@@ -251,6 +251,14 @@ pub(crate) fn changes(
             });
             continue;
         };
+        if old.name != peer.name {
+            kinds.push(EntryKind::DeviceRenamed {
+                network,
+                node,
+                from: old.name.clone(),
+                name: name.clone(),
+            });
+        }
         match (old.online, peer.online) {
             (false, true) => kinds.push(EntryKind::PeerOnline {
                 network,

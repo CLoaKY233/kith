@@ -275,6 +275,12 @@ pub(crate) fn describe(kind: &EntryKind, names: &NetworkNames) -> String {
                 "{network}/{name} asks to join; kith approve {network} {name}, or kith deny {network} {name}"
             )
         }
+        EntryKind::DeviceRenamed {
+            network,
+            from,
+            name,
+            ..
+        } => format!("{} renamed to {name}", who(network, from)),
         _ => "something the daemon knows and this kith does not; update kith".to_owned(),
     }
 }
