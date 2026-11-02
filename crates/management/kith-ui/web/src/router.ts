@@ -5,7 +5,8 @@
 // collide; `parse` and `href` translate with the list App.svelte passes to `setNetworks`.
 //
 // Overlays are query parameters so Back closes them: `?add=device|phone|invite`,
-// `?need=<id>`, `?remove=<dev>`, and on Welcome `?flow=start|join`.
+// `?need=<id>`, `?remove=<dev>`, `?sheet=network` (the phone Network sheet), and on
+// Welcome `?flow=start|join`.
 
 export type Route =
   | { name: 'root' }
@@ -24,7 +25,7 @@ export type Route =
 export type NetPage = Extract<Route, { net: string }>['name'];
 
 /** The query keys that open overlays; closing one goes Back when the page opened it. */
-export type OverlayKey = 'add' | 'need' | 'remove' | 'flow';
+export type OverlayKey = 'add' | 'need' | 'remove' | 'flow' | 'sheet';
 
 const NET_PAGES = ['devices', 'activity', 'names', 'exits', 'settings'] as const;
 /** Characters of the id used when two networks share a name. */

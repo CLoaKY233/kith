@@ -73,6 +73,9 @@ export function score(target: string, query: string): number {
   return 0.3 * (q.length / t.length);
 }
 
+/** Below this a match is letters in order: recency does not lift it over real matches. */
+const STRONG = 0.5;
+
 export type Rankable = { readonly id: string; readonly label: string; readonly keywords?: readonly string[] };
 
 /** A keyword match counts slightly less than the same match on the label. */
@@ -80,14 +83,22 @@ const KEYWORD_WEIGHT = 0.95;
 
 export type Ranked<T> = { readonly item: T; readonly index: number; readonly best: number; readonly seen: number };
 
-/** Recent first (most recent first), then better matches, then the caller's order. */
+const strong = (best: number): number => (best >= STRONG ? 0 : 1);
+
+/**
+ * Real matches before letters in order; within each, recent first (most recent first),
+ * then better matches, then the caller's order.
+ */
 export function compareRanked<T>(a: Ranked<T>, b: Ranked<T>): number {
-  return a.seen - b.seen || b.best - a.best || a.index - b.index;
+  return (
+    strong(a.best) - strong(b.best) || a.seen - b.seen || b.best - a.best || a.index - b.index
+  );
 }
 
 /**
- * The items that match `text`: recently picked ones first (most recent first), then the
- * rest by match quality, ties kept in the caller's order.
+ * The items that match `text`: prefix, word and substring matches before letters in order;
+ * within each, recently picked ones first (most recent first), then by match quality, ties
+ * kept in the caller's order.
  */
 export function rank<T extends Rankable>(items: readonly T[], text: string, recent: readonly string[]): T[] {
   return rankScored(items, text, recent).map((entry) => entry.item);

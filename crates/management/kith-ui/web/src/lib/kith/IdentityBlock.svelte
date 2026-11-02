@@ -10,6 +10,7 @@ The RoleChip reads only its props, so it changes before the content when the net
 Props:
   - net: string | null, the network id (null on This device).
   - compact?: boolean (default false).
+  - current?: boolean, true on This device: the name link is the active location.
   - switcher?: Snippet<[() => void]>, the network list; it gets a function that closes the
     popover it sits in.
 -->
@@ -26,8 +27,14 @@ Props:
   let {
     net,
     compact = false,
+    current = false,
     switcher,
-  }: { net: string | null; compact?: boolean; switcher?: Snippet<[() => void]> } = $props();
+  }: {
+    net: string | null;
+    compact?: boolean;
+    current?: boolean;
+    switcher?: Snippet<[() => void]>;
+  } = $props();
 
   const me = $derived(net ? membership(net) : null);
   const name = $derived(me?.name ?? live.status?.host.name ?? '');
@@ -88,7 +95,7 @@ Props:
 {#if compact}
   <Popover bind:open={compactOpen} side="right" label={copy.nav.identity(name)}>
     {#snippet trigger(props)}
-      <button type="button" class="initial" aria-label={copy.nav.identity(name)} {...props}>
+      <button type="button" class="initial" class:current aria-label={copy.nav.identity(name)} {...props}>
         {name.slice(0, 1).toUpperCase()}
       </button>
     {/snippet}
@@ -171,6 +178,9 @@ Props:
     font: var(--t-heading);
     cursor: pointer;
     transition: background-color var(--d-hover) var(--e-linear);
+  }
+  .initial.current {
+    box-shadow: 0 0 0 var(--s-1) var(--sunken);
   }
   .initial:hover,
   .initial[aria-expanded='true'] {

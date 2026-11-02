@@ -57,7 +57,7 @@ Props:
   import StatusDot from '../ui/StatusDot.svelte';
   import { toast } from '../ui/Toast.svelte';
   import AskAdminSheet from './AskAdminSheet.svelte';
-  import { askRequest as rowAsk, renameRequest, snapshotSeenAt } from './deviceState.svelte';
+  import { askRenameRequest, askRequest as rowAsk, renameRequest, snapshotSeenAt } from './deviceState.svelte';
   import {
     agoMs,
     blockedTo,
@@ -568,6 +568,10 @@ Props:
         onSelect: () => askAdmin(copy.askAdmin.request.remove(networkName, peer.name)),
       },
     ];
+    items.push({
+      label: copy.deviceView.askRename(peer.name),
+      onSelect: () => askAdmin(copy.deviceView.renameCommand(networkName, peer.name)),
+    });
     if (!exitView && !isPhone(peer)) {
       items.push({
         label: copy.deviceView.askAllowExit(peer.name),
@@ -575,6 +579,13 @@ Props:
       });
     }
     return items;
+  });
+
+  $effect(() => {
+    if (askRenameRequest.key !== key || !peer) return;
+    askRenameRequest.key = null;
+    const name = peer.name;
+    untrack(() => (askRequest = copy.deviceView.renameCommand(networkName, name)));
   });
 
   function verdictAction(): void {

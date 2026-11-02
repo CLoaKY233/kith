@@ -162,7 +162,10 @@ Module exports, for DeviceRow (spec §5 Removing state):
     });
   });
 
-  /** §7.9 step 4: removed by someone else while this was open. */
+  /**
+   * §7.9 step 4: removed by someone else while this was open. Only a device that was here
+   * once can vanish; an id that never resolved closes nothing and says nothing.
+   */
   $effect(() => {
     if (!open || self || handle !== null) return;
     if (peer !== null) {

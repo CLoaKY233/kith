@@ -18,10 +18,24 @@ Props:
 
   const count = $derived(needs.count(net));
   const list = $derived(needs.forNet(net));
+
+  // Focus the heading, not the first card's name field: a stray key must not replace the
+  // name, and A / D must reach the card (§10).
+  let heading = $state<HTMLElement | null>(null);
+  function focusHeading(event: Event): void {
+    event.preventDefault();
+    heading?.focus();
+  }
 </script>
 
 {#if count > 0 || layers.needs}
-  <Popover bind:open={layers.needs} align="end" width="card" label={copy.header.needsYouTitle}>
+  <Popover
+    bind:open={layers.needs}
+    align="end"
+    width="card"
+    label={copy.header.needsYouTitle}
+    onOpenAutoFocus={focusHeading}
+  >
     {#snippet trigger(props)}
       <button type="button" class="needs" aria-label={copy.header.needsYou(count)} {...props}>
         <StatusDot state="needs_you" />
@@ -29,7 +43,7 @@ Props:
       </button>
     {/snippet}
     <div class="list">
-      <h2 class="heading">{copy.header.needsYouTitle}</h2>
+      <h2 class="heading" tabindex="-1" bind:this={heading}>{copy.header.needsYouTitle}</h2>
       {#each list as need (need.id)}
         <NeedsYouCard {need} layered primary={need.id === list.find((n) => n.kind === 'join')?.id} />
       {/each}
@@ -61,6 +75,7 @@ Props:
     overflow-y: auto;
   }
   .heading {
+    outline: none;
     font: var(--t-heading);
     letter-spacing: var(--t-heading-tracking);
   }

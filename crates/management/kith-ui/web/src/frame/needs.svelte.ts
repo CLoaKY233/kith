@@ -84,7 +84,10 @@ class Needs {
     return [...own, ...held];
   }
 
-  /** How many live needs this person has in a network (held outcomes do not count). */
+  /**
+   * How many live needs this person has in a network. Held outcomes do not count, and
+   * neither does an expired join request: its card stays to say so, but nothing waits.
+   */
   count(net: string): number {
     const now = live.now();
     return this.live.filter(

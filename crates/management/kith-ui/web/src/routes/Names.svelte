@@ -11,6 +11,7 @@ Members fill in the same row; its button becomes `Ask an admin…` with the exac
 The row sits in the table under the column headers, its fields in the columns they fill.
 Props:
   - net: string, the network's id or name (as in the URL).
+  - query?: URLSearchParams. `?new=1` (the palette's `Add name`) opens the new row.
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte';
@@ -39,8 +40,9 @@ Props:
   import Input from '../lib/ui/Input.svelte';
   import Switch from '../lib/ui/Switch.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
+  import { setQuery } from '../router';
 
-  let { net }: { net: string } = $props();
+  let { net, query = null }: { net: string; query?: URLSearchParams | null } = $props();
 
   function findNetwork(list: readonly NetworkSummary[], ref: string): NetworkSummary | null {
     return (
@@ -221,6 +223,17 @@ Props:
     await tick();
     nameRef?.focus();
   }
+
+  // The palette's `Add name` lands here with `?new=1` (§10): open the editor, then drop it.
+  $effect(() => {
+    if (!ready || adding) return;
+    if (query?.get('new') !== '1') return;
+    untrack(() => {
+      setQuery({ new: null }, { replace: true });
+      adding = true;
+      void tick().then(() => nameRef?.focus());
+    });
+  });
 
   function reset(): void {
     adding = false;
@@ -716,7 +729,7 @@ Props:
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
+    margin: 0;
     padding: var(--s-6) var(--content-pad);
   }
   .toolbar {

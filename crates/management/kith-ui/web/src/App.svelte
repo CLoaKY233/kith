@@ -1,8 +1,8 @@
 <!--
 @component
 The shell (spec §4, §6.9, §10). Picks a Gate, Welcome, or the frame around a screen for
-the current route; opens the overlays the URL names (`?add=`, `?need=`, `?remove=`,
-`?flow=`); owns the palette, the global shortcuts, the theme on <html>, the browser
+the current route; opens the overlays the URL names (`?add=`, `?need=`, `?sheet=`,
+`?flow=`; Devices owns `?remove=`); owns the palette, the global shortcuts, the theme on <html>, the browser
 title and the live regions. Screens receive the network id as `net`.
 -->
 <script lang="ts">
@@ -21,9 +21,9 @@ title and the live regions. Screens receive the network id as `net`.
   import { attachAnnouncer } from './lib/announce';
   import { copy } from './lib/copy';
   import Sprite from './lib/icons/Sprite.svelte';
-  import { live, start } from './lib/live/store.svelte';
-  import { DAEMON_POLL_MS, MOTION, TOOLTIP_DELAY_MS } from './lib/live/timing';
-  import Toast from './lib/ui/Toast.svelte';
+  import { live } from './lib/live/store.svelte';
+  import { MOTION, TOOLTIP_DELAY_MS } from './lib/live/timing';
+  import Toast, { toast } from './lib/ui/Toast.svelte';
   import {
     closeOverlay,
     go,
@@ -35,7 +35,6 @@ title and the live regions. Screens receive the network id as `net`.
     type Route,
   } from './router';
   import Activity from './routes/Activity.svelte';
-  import Device from './routes/Device.svelte';
   import Devices from './routes/Devices.svelte';
   import Exits from './routes/Exits.svelte';
   import Gate from './routes/Gate.svelte';
@@ -80,10 +79,21 @@ title and the live regions. Screens receive the network id as `net`.
       : (networks.find((n) => n.id === prefs.lastNetwork)?.id ?? networks[0]?.id ?? null),
   );
 
-  // `/` → the last network, or Welcome; an unknown path or network → `/`.
+  // `/` → the last network, or Welcome; an unknown path or network → `/`, saying so when
+  // the URL named a network this device is not in.
   $effect(() => {
     if (!live.ready) return;
     if (route.name === 'not_found') {
+      const slug = /^\/n\/([^/]+)/.exec(location.pathname)?.[1];
+      if (slug) {
+        let name = slug;
+        try {
+          name = decodeURIComponent(slug);
+        } catch {
+          // Keep it as typed.
+        }
+        toast.done(copy.error.noNetwork(name));
+      }
       go('/', { replace: true });
     } else if (route.name === 'root') {
       go(net ? href({ name: 'overview', net }) : href({ name: 'welcome' }), { replace: true });
@@ -103,18 +113,36 @@ title and the live regions. Screens receive the network id as `net`.
     else delete root.dataset['density'];
   });
 
-  // §4.1: `(n) laptop · home — kith`.
+  // §4.1: `(n) laptop · home — kith`; a gate is just `kith`, Welcome has no network.
+  // The gates poll again on their own (core.svelte.ts #poll).
   $effect(() => {
-    const me = net ? membership(net) : null;
-    const device = me?.name ?? live.status?.host.name ?? copy.brand;
-    document.title = copy.documentTitle(device, net ? networkName(net) : null, live.unseen);
+    if (live.gate || !live.status) {
+      document.title = copy.brand;
+      return;
+    }
+    const welcome = route.name === 'welcome' || net === null;
+    const me = net && !welcome ? membership(net) : null;
+    const device = me?.name ?? live.status.host.name;
+    document.title = copy.documentTitle(
+      device,
+      net && !welcome ? networkName(net) : null,
+      live.unseen,
+    );
   });
 
-  // §6.9: the daemon-down and group gates check again every 2 s.
+  // The phone Network sheet is `?sheet=network`, so Back closes it (§4.1).
   $effect(() => {
-    if (live.gate !== 'daemon_down' && live.gate !== 'not_in_group') return;
-    const timer = setInterval(() => void start(), DAEMON_POLL_MS);
-    return () => clearInterval(timer);
+    layers.network = query.get('sheet') === 'network';
+  });
+
+  // 401 (§6.9): nothing behind the overlay can be used, so close what is open over it.
+  const unauth = $derived(connection.shown === 'unauth');
+  $effect(() => {
+    if (!unauth) return;
+    layers.palette = false;
+    layers.shortcuts = false;
+    layers.needs = false;
+    layers.exit = false;
   });
 
   // The gate cross-fades into the app (§6.9); the first paint never fades (§8.1).
@@ -171,23 +199,42 @@ title and the live regions. Screens receive the network id as `net`.
     if (layers.shortcuts) shortcutsUsed = true;
   });
 
-  // §10 global shortcuts. ⌘K always works; single keys respect Settings and stay quiet
-  // while typing or while a layer is open.
-  let chord = false;
+  // §10 global shortcuts. ⌘K works unless another layer is open (no modal opens from
+  // another, §5); single keys respect Settings and stay quiet while typing or while a layer
+  // is open. Nothing works under the 401 overlay. `g` waits CHORD_MS for its second key.
+  const CHORD_MS = 1000;
+  const OPEN_LAYER = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
+  let chordAt: number | null = null;
+  $effect(() => {
+    void route;
+    chordAt = null;
+  });
   function keys(event: KeyboardEvent): void {
+    if (unauth) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
-      layers.palette = !layers.palette;
+      if (layers.palette) {
+        layers.palette = false;
+        return;
+      }
+      if (layers.shortcuts || layers.needs || layers.network || layers.exit) return;
+      if (document.querySelector(OPEN_LAYER)) return;
+      layers.palette = true;
       return;
     }
     if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
     if (!prefs.shortcuts || !live.ready || !net) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest('input, textarea, select, [contenteditable], [role="dialog"], [role="alertdialog"]')) return;
-    if (layers.any || document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+    if (layers.any || document.querySelector(OPEN_LAYER)) return;
     const key = event.key;
-    if (chord) {
-      chord = false;
+    if (chordAt !== null) {
+      const fresh = performance.now() - chordAt < CHORD_MS;
+      chordAt = null;
+      if (!fresh) {
+        if (key === 'g') chordAt = performance.now();
+        return;
+      }
       const page = key === 'o' ? 'overview' : key === 'd' ? 'devices' : key === 'a' ? 'activity' : null;
       if (page) {
         event.preventDefault();
@@ -196,7 +243,7 @@ title and the live regions. Screens receive the network id as `net`.
       return;
     }
     if (key === 'g') {
-      chord = true;
+      chordAt = performance.now();
     } else if (key === '/') {
       const filter = document.querySelector<HTMLElement>('[data-filter]');
       if (filter) {
@@ -210,11 +257,11 @@ title and the live regions. Screens receive the network id as `net`.
   }
 </script>
 
-<svelte:window onkeydown={keys} />
+<svelte:window onkeydown={keys} onblur={() => (chordAt = null)} />
 
 <Sprite />
 <Tooltip.Provider delayDuration={TOOLTIP_DELAY_MS}>
-  <a class="skip" href="#content">{copy.skipToContent}</a>
+  <a class="skip" href="#content" inert={unauth}>{copy.skipToContent}</a>
   <div class="stack">
     {#if live.gate}
       <div class="layer" transition:fade={crossfade}>
@@ -222,22 +269,29 @@ title and the live regions. Screens receive the network id as `net`.
       </div>
     {:else if live.ready}
       <div class="layer" transition:fade={crossfade}>
+        <div class="app" inert={unauth}>
         {#if route.name === 'welcome' || net === null}
           <main id="content"><Welcome flow={query.get('flow')} /></main>
         {:else if route.name !== 'root' && route.name !== 'not_found'}
-          <Frame title={title(route)} quietTitle={route.name === 'overview'} {net} page={section(route)}>
+          <Frame
+            title={title(route)}
+            quietTitle={route.name === 'overview' || route.name === 'device'}
+            {net}
+            page={section(route)}
+            self={route.name === 'this'}
+          >
             {#if route.name === 'this'}
               <ThisDevice />
             {:else if route.name === 'overview'}
               <Overview net={route.net} />
-            {:else if route.name === 'devices'}
-              <Devices net={route.net} {query} />
-            {:else if route.name === 'device'}
-              <Device net={route.net} dev={route.dev} {query} />
+            {:else if route.name === 'devices' || route.name === 'device'}
+              <!-- One Devices for the list and a device open in it, so the map, the list's
+                   scroll and focus survive opening and closing the detail. -->
+              <Devices net={route.net} dev={route.name === 'device' ? route.dev : null} {query} />
             {:else if route.name === 'activity'}
               <Activity net={route.net} {query} />
             {:else if route.name === 'names'}
-              <Names net={route.net} />
+              <Names net={route.net} {query} />
             {:else if route.name === 'exits'}
               <Exits net={route.net} />
             {:else if route.name === 'settings'}
@@ -270,7 +324,8 @@ title and the live regions. Screens receive the network id as `net`.
             {/await}
           {/if}
         {/if}
-        {#if connection.shown === 'unauth'}<UnauthOverlay />{/if}
+        </div>
+        {#if unauth}<UnauthOverlay />{/if}
       </div>
     {/if}
   </div>

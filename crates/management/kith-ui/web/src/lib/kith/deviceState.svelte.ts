@@ -35,6 +35,8 @@ export const askRequest = $state<{ key: string | null; request: string | null }>
   key: null,
   request: null,
 });
+/** A member's `Ask an admin to rename…` from the palette; the detail opens the sheet. */
+export const askRenameRequest = $state<{ key: string | null }>({ key: null });
 
 /** Whether the detail was opened from the list, so its back arrow can go back in history. */
 export const openedFromList = $state<{ value: boolean }>({ value: false });

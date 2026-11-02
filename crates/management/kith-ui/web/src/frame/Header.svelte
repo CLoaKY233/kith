@@ -3,7 +3,10 @@
 The header (spec §4.2): sticky, 56 px, `--bg`, hairline bottom. The screen title at
 `--t-title`, then on the right, in order: ExitChip (only with an exit), NeedsYouButton
 (only when the count is above 0), the connection indicator (nothing when live,
-`Reconnecting…`, or `as of 14:02` once stale), and `Search ⌘K`.
+`Reconnecting…`, or `as of 14:02` once stale), and `Search ⌘K`. The connection text hangs
+to the left of the cluster without taking room, so nothing moves when it appears, and it is
+not a live region (frame/conn announces what matters). The bar's contents share the
+content's max width, so the controls end at the content's right edge.
 Props:
   - title: string, the screen title (from copy.ts).
   - net: string | null, the network id; null hides the network parts.
@@ -20,25 +23,38 @@ Props:
   import NeedsYouButton from './NeedsYouButton.svelte';
 
   let { title, net }: { title: string; net: string | null } = $props();
+
+  const connText = $derived(
+    connection.shown === 'reconnecting'
+      ? copy.header.reconnecting
+      : connection.shown === 'stale'
+        ? copy.header.staleAsOf(clock(connection.asOf))
+        : '',
+  );
 </script>
 
 <header class="header">
-  <h1 class="title">{title}</h1>
-  <div class="right">
-    {#if net}
-      <ExitChip {net} />
-      <NeedsYouButton {net} />
-    {/if}
-    {#if connection.shown === 'reconnecting'}
-      <span class="conn" role="status">{copy.header.reconnecting}</span>
-    {:else if connection.shown === 'stale'}
-      <span class="conn" role="status">{copy.header.staleAsOf(clock(connection.asOf))}</span>
-    {/if}
-    <button type="button" class="search" onclick={() => (layers.palette = true)}>
-      <Icon name="search" />
-      <span>{copy.header.search}</span>
-      <Kbd>{apple ? copy.header.searchShortcut : copy.header.searchShortcutOther}</Kbd>
-    </button>
+  <div class="bar">
+    <h1 id="page-title" class="title">{title}</h1>
+    <div class="right">
+      <span class="conn">{connText}</span>
+      {#if net}
+        <ExitChip {net} />
+        <NeedsYouButton {net} />
+      {/if}
+      <button
+        type="button"
+        class="search"
+        aria-keyshortcuts={apple ? 'Meta+K' : 'Control+K'}
+        onclick={() => (layers.palette = true)}
+      >
+        <Icon name="search" />
+        <span>{copy.header.search}</span>
+        <span aria-hidden="true">
+          <Kbd>{apple ? copy.header.searchShortcut : copy.header.searchShortcutOther}</Kbd>
+        </span>
+      </button>
+    </div>
   </div>
 </header>
 
@@ -47,14 +63,18 @@ Props:
     position: sticky;
     top: 0;
     z-index: var(--z-header);
+    height: var(--header);
+    background: var(--bg);
+    border-bottom: var(--hairline) solid var(--line);
+  }
+  .bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--s-4);
-    height: var(--header);
+    height: 100%;
+    max-width: calc(var(--content-max) + 2 * var(--content-pad));
     padding: 0 var(--content-pad);
-    background: var(--bg);
-    border-bottom: var(--hairline) solid var(--line);
   }
   .title {
     font: var(--t-title);
@@ -65,12 +85,16 @@ Props:
     white-space: nowrap;
   }
   .right {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--s-2);
     flex: none;
   }
   .conn {
+    position: absolute;
+    right: 100%;
+    margin-right: var(--s-2);
     font: var(--t-small);
     color: var(--ink-3);
     white-space: nowrap;

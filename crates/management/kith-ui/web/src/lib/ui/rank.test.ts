@@ -28,6 +28,7 @@ describe('palette queries (spec §10)', () => {
     expect(inside).toBeGreaterThan(letters);
     expect(letters).toBeGreaterThan(0);
     expect(score('laptop', 'nas')).toBe(0);
+    expect(score('Rename vps', 'nas')).toBe(0);
   });
 
   it('matches letters in order only at word starts or in runs', () => {
@@ -43,6 +44,11 @@ describe('palette queries (spec §10)', () => {
     expect(rank(items, 'nas', ['rename']).map((i) => i.id)).toEqual(['rename', 'nas']);
     expect(rank(items, '100.64.0.3', []).map((i) => i.id)).toEqual(['laptop']);
     expect(rank(items, '', ['add']).map((i) => i.id)).toEqual(['add', 'nas', 'laptop', 'rename']);
+    const loose = [
+      { id: 'weak', label: 'drive vault cache' },
+      { id: 'strong', label: 'dvc box' },
+    ];
+    expect(rank(loose, 'dvc', ['weak']).map((i) => i.id)).toEqual(['strong', 'weak']);
   });
 
   it('keeps the recency list unique and bounded', () => {

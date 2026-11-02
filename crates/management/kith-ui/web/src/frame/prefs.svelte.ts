@@ -1,8 +1,8 @@
 // Per-viewer preferences (spec §6.8): theme, compact rows, single-key shortcuts, the last
-// network and hidden needs; palette recency lives with the palette (lib/ui/Command). Kept
-// in localStorage, every access wrapped in try/catch: a private window or blocked storage
-// just means defaults.
-// App.svelte applies the theme and density to <html>; Settings writes through `prefs`.
+// network and hidden needs; the notification switch lives in lib/live/notifications. This
+// is the only writer of `kith.prefs`. Kept in localStorage, every access wrapped in
+// try/catch: a private window or blocked storage just means defaults. App.svelte applies
+// the theme and density to <html>; Settings writes through `prefs`.
 
 import { IGNORE_BLOCKED_MS } from '../lib/live/timing';
 import type { Density, Theme } from '../lib/types';
@@ -26,15 +26,31 @@ const DEFAULTS: Stored = {
   ignored: {},
 };
 
+const THEMES: readonly Theme[] = ['system', 'light', 'dark'];
+const DENSITIES: readonly Density[] = ['comfortable', 'compact'];
+
 function read(): Stored {
+  let parsed: Partial<Record<keyof Stored, unknown>>;
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULTS };
-    const parsed = JSON.parse(raw) as Partial<Stored>;
-    return { ...DEFAULTS, ...parsed };
+    parsed = JSON.parse(raw) as Partial<Record<keyof Stored, unknown>>;
   } catch {
     return { ...DEFAULTS };
   }
+  const ignored: Record<string, number> = {};
+  if (parsed.ignored && typeof parsed.ignored === 'object') {
+    for (const [id, at] of Object.entries(parsed.ignored as Record<string, unknown>)) {
+      if (typeof at === 'number') ignored[id] = at;
+    }
+  }
+  return {
+    theme: THEMES.find((t) => t === parsed.theme) ?? DEFAULTS.theme,
+    density: DENSITIES.find((d) => d === parsed.density) ?? DEFAULTS.density,
+    shortcuts: typeof parsed.shortcuts === 'boolean' ? parsed.shortcuts : DEFAULTS.shortcuts,
+    lastNetwork: typeof parsed.lastNetwork === 'string' ? parsed.lastNetwork : null,
+    ignored,
+  };
 }
 
 class Prefs {
@@ -99,3 +115,4 @@ class Prefs {
 }
 
 export const prefs = new Prefs();
+

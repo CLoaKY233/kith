@@ -8,6 +8,7 @@ Props:
   - net: string, the network id the nav points into.
   - page: NavPage | null, the active page.
   - rail?: boolean (default false).
+  - self?: boolean, true on This device (the identity block is the active item).
 -->
 <script lang="ts">
   import IdentityBlock from '../lib/kith/IdentityBlock.svelte';
@@ -18,8 +19,12 @@ Props:
   import NavLink from './NavLink.svelte';
   import NetworkList from './NetworkList.svelte';
 
-  let { net, page, rail = false }: { net: string; page: NavPage | null; rail?: boolean } =
-    $props();
+  let {
+    net,
+    page,
+    rail = false,
+    self = false,
+  }: { net: string; page: NavPage | null; rail?: boolean; self?: boolean } = $props();
 
   const devices = $derived(peers(net).length + 1);
 </script>
@@ -39,7 +44,7 @@ Props:
 
 <aside class="side" class:rail>
   <div class="identity">
-    <IdentityBlock {net} compact={rail}>
+    <IdentityBlock {net} compact={rail} current={self}>
       {#snippet switcher(close)}
         <NetworkList current={net} page={page ?? 'overview'} onPick={close} />
       {/snippet}

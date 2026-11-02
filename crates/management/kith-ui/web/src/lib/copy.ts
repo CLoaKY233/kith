@@ -46,6 +46,12 @@ export const copy = {
     /** The rail's identity circle: its accessible name. */
     identity: (device: string): string => `This device, ${device}`,
     otherNetwork: 'Start or join another network',
+    /** The phone top bar's network button. */
+    networkMenu: (network: string): string => `${network}, network menu`,
+    /** Read after the Overview tab's label: "Overview, 2 need you". */
+    needsYouSuffix: (n: number): string => `, ${n} need${n === 1 ? 's' : ''} you`,
+    /** A rail item with a count: "Devices, 12". */
+    withCount: (label: string, n: number): string => `${label}, ${n}`,
   },
 
   header: {
@@ -57,6 +63,8 @@ export const copy = {
     exitChip: (exit: string): string => `Exit${DOT}${exit}`,
     exitOfflineBlocked: (exit: string): string => `${exit} offline${DOT}traffic blocked`,
     exitOfflineDirect: (exit: string): string => `${exit} offline${DOT}going direct`,
+    /** The phone top bar's short form; the popover says the rest. */
+    exitOffline: (exit: string): string => `${exit} offline`,
     reconnecting: 'Reconnecting…',
     staleAsOf: (time: string): string => `as of ${time}`,
   },
@@ -228,6 +236,7 @@ export const copy = {
     nameLabel: "This device's name",
     nameHelper: (name: string): string => `Other devices will see it as ${name}.`,
     save: 'Save name',
+    back: (network: string): string => `← Back to ${network}`,
   },
 
   /** §6.2 Overview, headline in priority order. */
@@ -562,6 +571,8 @@ export const copy = {
     reset: (time: string): string => `kith restarted at ${time}. Everything is up to date.`,
     daemonLost: 'kith stopped on this device.',
     daemonBack: 'kith is running again.',
+    /** The landmark around the connection banner. */
+    bannerLabel: 'Connection',
   },
 
   /** §8.6 action progress. */
@@ -585,6 +596,7 @@ export const copy = {
     /** A name that was never in the network this session. */
     noDevice: (device: string, network: string): string =>
       `No device called ${device} in ${network}.`,
+    noNetwork: (slug: string): string => `${slug} isn't one of this device's networks.`,
     conflict: (who: string): string => `${who} changed this a moment ago. Showing the latest.`,
     nameChars: 'Names can use a–z, 0–9 and hyphens.',
     nameEmpty: 'Give it a name.',
@@ -872,6 +884,10 @@ export const copy = {
       dnsSet: (network: string, name: string, type: string, value: string): string =>
         `kith dns set ${network} ${name} ${type} ${/\s/.test(value) ? `'${value}'` : value}`,
       dnsRm: (network: string, name: string): string => `kith dns rm ${network} ${name}`,
+      invite: (network: string): string => `kith invite ${network}`,
+      /** Phones have no CLI flow; the admin uses Add a phone here. */
+      addPhone: (network: string): string => `Add a phone to ${network} (kith-ui › Add a phone)`,
+      addName: (network: string): string => `kith dns set ${network} <name> <address>`,
     },
   },
 
@@ -917,7 +933,16 @@ export const copy = {
     rename: (device: string): string => `Rename ${device}`,
     copyAddress: (device: string): string => `Copy ${device} address`,
     askRename: (device: string): string => `Ask an admin to rename ${device}…`,
+    askAddDevice: 'Ask an admin to add a device…',
+    askAddPhone: 'Ask an admin to add a phone…',
+    askInvite: 'Ask an admin for an invite…',
+    askAddName: 'Ask an admin to add a name…',
     copied: (device: string): string => `Copied ${device}'s address`,
+    copyFailed: (device: string): string =>
+      `Couldn't copy ${device}'s address. Select it on the device page instead.`,
+    /** The device hint once `name:port` was understood. */
+    withPort: (address: string, port: number): string => `${address} :${port}`,
+    you: (address: string): string => `${address}${DOT}you`,
     /** Typed first, these limit the palette to one group (§10). */
     prefix: { actions: '>', devices: '@' },
   },
@@ -937,6 +962,10 @@ export const copy = {
     goActivity: 'Go to Activity',
     close: 'Close the topmost layer',
     approveDeny: 'Approve or deny the focused join request',
+    rowMenu: "Open the focused row's menu",
+    prefixActions: 'In the palette: actions only',
+    prefixDevices: 'In the palette: devices only',
+    done: 'Done',
     keys: {
       palette: '⌘K',
       paletteOther: 'Ctrl K',
@@ -947,6 +976,9 @@ export const copy = {
       goActivity: 'g a',
       close: 'Esc',
       approveDeny: 'A / D',
+      rowMenu: '.',
+      prefixActions: '>',
+      prefixDevices: '@',
     },
   },
 
@@ -1000,6 +1032,10 @@ export const copy = {
     askRemove: (device: string, network: string): string =>
       `Ask an admin to remove ${device} from ${network}…`,
     askAllowExit: (device: string): string => `Ask an admin to allow ${device} as an exit…`,
+    askRename: (device: string): string => `Ask an admin to rename ${device}…`,
+    /** The CLI has no rename, so the request is a sentence; the admin renames it here. */
+    renameCommand: (network: string, device: string): string =>
+      `Rename ${device} in ${network} (kith-ui › Devices › ${device} › Rename).`,
     allowExitTitle: (device: string): string => `Allow ${device} as an exit?`,
     allowExitBody: (device: string, network: string): string =>
       `Devices in ${network} that may use it can send all their internet traffic through ${device}. Websites see ${device}'s address instead of theirs.`,
