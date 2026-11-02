@@ -3,21 +3,29 @@
 Settings (spec §6.8). Appearance (theme, compact rows on a fine pointer, keyboard
 shortcuts) and the notification switch are this viewer's, kept in localStorage. Privacy
 shows whether this device shares link reports. Network lists the admins and, for admins,
-the open invites with Revoke. The danger zone holds `Leave home…`, tier 3: the network's
+the open invites (expiry, uses left) with Revoke, then the relays: each with the device
+that runs it, Remove (tier 0, with Undo) and an inline `Add relay` row; members get
+`Ask an admin…` there. The danger zone holds `Leave home…`, tier 3: the network's
 name typed, then confirmation on this computer.
 Props:
   - net: string, the network as the route names it.
+  - query?: URLSearchParams. `?relay=new` (the palette's `Add relay`) focuses the new relay.
 -->
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
-  import { go } from '../router';
+  import { onMount, tick, untrack } from 'svelte';
+  import { go, setQuery } from '../router';
+  import { announce } from '../lib/announce';
+  import { errorText } from '../lib/api';
   import { copy, copyScreens, DOT } from '../lib/copy';
+  import AskAdminSheet from '../lib/kith/AskAdminSheet.svelte';
   import { clock, weekdayClock } from '../lib/format';
   import { devicesByName, findNetwork, membershipOf } from '../lib/kith/network';
   import { actions, live, notifications } from '../lib/live/store.svelte';
   import { prefs } from '../frame/prefs.svelte';
-  import type { ActionHandle, ApiFailure } from '../lib/types';
-  import type { Invite, Outcome } from '../lib/types.gen';
+  import { UNDO_MS } from '../lib/live/timing';
+  import type { ActionHandle, ApiFailure, OpenInvite, Relay } from '../lib/types';
+  import type { Outcome } from '../lib/types.gen';
+  import Combobox from '../lib/ui/Combobox.svelte';
   import AlertDialog from '../lib/ui/AlertDialog.svelte';
   import Badge from '../lib/ui/Badge.svelte';
   import Button from '../lib/ui/Button.svelte';
@@ -28,7 +36,7 @@ Props:
   import Switch from '../lib/ui/Switch.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
 
-  let { net }: { net: string } = $props();
+  let { net, query }: { net: string; query?: URLSearchParams } = $props();
 
   const network = $derived(findNetwork(live.status, net));
   const self = $derived(network ? membershipOf(live.status, network.id) : null);
@@ -72,7 +80,7 @@ Props:
   let finePointer = $state(false);
 
   // Invites.
-  let loadInvites = $state<ActionHandle<Invite[]> | null>(null);
+  let loadInvites = $state<ActionHandle<OpenInvite[]> | null>(null);
   const now = $derived(live.lastTickMs || live.now());
   const invites = $derived(
     network ? (live.invites[network.id] ?? []).filter((i) => i.expires_at_ms > now) : [],
@@ -85,25 +93,105 @@ Props:
     return sameDay ? clock(ms) : weekdayClock(ms);
   }
 
-  function inviteStatus(invite: Invite): string {
-    if (invite.used_by.length === 0) return copy.invite.notUsed(expiry(invite.expires_at_ms));
-    const used = copyScreens.settings.inviteUsedBy(invite.used_by);
-    if (invite.uses === null) return used;
-    const left = Math.max(0, invite.uses - invite.used_by.length);
-    return `${used}${DOT}${copyScreens.settings.inviteUsesLeft(left)}`;
+  function inviteStatus(invite: OpenInvite): string {
+    return copyScreens.settings.inviteRow(expiry(invite.expires_at_ms), invite.uses_left);
   }
 
-  async function revoke(invite: Invite): Promise<void> {
+  async function revoke(invite: OpenInvite): Promise<void> {
     if (!network || frozen) return;
     const id = network.id;
     const handle = actions.revokeInvite(id, invite.id);
     revoking = { ...revoking, [invite.id]: handle };
     const done = await handle.done;
-    if (done.state === 'accepted') {
-      toast.done(copy.invite.revoked);
-      loadInvites = actions.loadInvites(id);
-    }
+    if (done.state === 'accepted' || done.state === 'seen') toast.done(copy.invite.revoked);
   }
+
+  // Relays.
+  let loadRelays = $state<ActionHandle<Relay[]> | null>(null);
+  const relays = $derived(
+    network ? [...(live.relays[network.id] ?? [])].sort((a, b) => a.name.localeCompare(b.name)) : [],
+  );
+  const selfNode = $derived(live.status?.node ?? null);
+  function runner(node: string | null): string {
+    if (node === null || !network) return copy.relays.outside;
+    if (node === selfNode) return copy.relays.runBy(self?.name ?? node);
+    return copy.relays.runBy(live.peers[network.id]?.[node]?.name ?? node.slice(0, 8));
+  }
+  let relayName = $state('');
+  let relayAddress = $state('');
+  let relayNode = $state('');
+  let relayNameError = $state<string | null>(null);
+  let relayAddressError = $state<string | null>(null);
+  let relayAdding = $state<ActionHandle<Outcome> | null>(null);
+  let relayRemoving = $state<Record<string, ActionHandle<Outcome>>>({});
+  let relayNameRef = $state<HTMLInputElement | null>(null);
+  const runnerOptions = $derived([
+    { value: '', label: copy.relays.runsOnNone },
+    ...(self && selfNode ? [{ value: selfNode, label: self.name }] : []),
+    ...peers.map((p) => ({ value: p.node, label: p.name })),
+  ]);
+
+  async function addRelay(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    if (!network || frozen || relayAdding?.state === 'pending') return;
+    const name = relayName.trim().toLowerCase();
+    const address = relayAddress.trim();
+    relayNameError = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)
+      ? relays.some((r) => r.name === name)
+        ? copy.relays.taken(name)
+        : null
+      : name === ''
+        ? copy.error.nameEmpty
+        : copy.error.nameChars;
+    relayAddressError = /^(\[[0-9a-fA-F:.]+\]|[^\s:/]+):\d{1,5}$/.test(address) &&
+      Number(address.slice(address.lastIndexOf(':') + 1)) <= 65535
+      ? null
+      : copy.relays.addressInvalid;
+    const problem = relayNameError ?? relayAddressError;
+    if (problem) {
+      announce(problem);
+      return;
+    }
+    const handle = actions.addRelay(network.id, name, address, relayNode === '' ? null : relayNode);
+    relayAdding = handle;
+    await handle.done;
+    if (handle.state === 'failed' && handle.error) {
+      announce(errorText(handle.error));
+      return;
+    }
+    if (handle.state === 'conflict') return;
+    relayName = '';
+    relayAddress = '';
+    relayNode = '';
+    toast.done(copy.relays.added(name));
+  }
+
+  async function removeRelay(relay: Relay): Promise<void> {
+    if (!network || frozen) return;
+    const id = network.id;
+    const handle = actions.removeRelay(id, relay.name);
+    relayRemoving = { ...relayRemoving, [relay.name]: handle };
+    await handle.done;
+    if (handle.state === 'failed' && handle.error) {
+      toast.failed(errorText(handle.error));
+      return;
+    }
+    toast.done(copy.relays.removed(relay.name), {
+      undoMs: UNDO_MS,
+      undo: () => void actions.addRelay(id, relay.name, relay.address, relay.node),
+    });
+  }
+
+  let askRelay = $state(false);
+
+  // `?relay=new` from the palette: focus the new relay's name, then drop the parameter.
+  $effect(() => {
+    if (query?.get('relay') !== 'new' || !admin || !relayNameRef) return;
+    untrack(() => {
+      setQuery({ relay: null }, { replace: true });
+      void tick().then(() => relayNameRef?.focus());
+    });
+  });
 
   // Leave (tier 3, §13).
   let leaving = $state(false);
@@ -149,6 +237,10 @@ Props:
   $effect(() => {
     const id = network?.id;
     if (id && admin) loadInvites = untrack(() => actions.loadInvites(id));
+  });
+  $effect(() => {
+    const id = network?.id;
+    if (id) loadRelays = untrack(() => actions.loadRelays(id));
   });
 </script>
 
@@ -243,7 +335,7 @@ Props:
               <li class="item invite">
                 <div class="text">
                   <span>{inviteStatus(invite)}</span>
-                  <code class="link">{invite.link}</code>
+                  <span class="quiet">{copyScreens.settings.inviteMade(expiry(invite.created_at_ms))}</span>
                   {#if handle?.state === 'failed'}
                     <p class="error">{failureText(handle.error)}</p>
                   {/if}
@@ -263,6 +355,98 @@ Props:
         {/if}
       {/if}
       {#if frozen}<p class="quiet">{copy.conn.staleActions}</p>{/if}
+    </section>
+
+    <section class="group" aria-labelledby="settings-relays">
+      <h2 class="t-heading" id="settings-relays">{copy.relays.heading}</h2>
+      <p class="quiet">{copy.relays.intro}</p>
+      {#if loadRelays?.state === 'failed'}
+        <p class="error">{failureText(loadRelays.error)}</p>
+      {:else if loadRelays?.state === 'accepted' && relays.length === 0}
+        <p class="quiet">{copy.relays.none}</p>
+      {/if}
+      {#if relays.length > 0}
+        <ul class="list">
+          {#each relays as relay (relay.name)}
+            {@const handle = relayRemoving[relay.name]}
+            <li class="item invite">
+              <div class="text">
+                <span class="name">{relay.name}</span>
+                <span class="quiet"><code class="mono">{relay.address}</code>{DOT}{runner(relay.node)}</span>
+              </div>
+              {#if admin}
+                <Button
+                  variant="secondary"
+                  pending={handle?.state === 'pending'}
+                  disabled={frozen}
+                  aria-label={copy.relays.removeLabel(relay.name)}
+                  onclick={() => void removeRelay(relay)}
+                >
+                  {copy.relays.remove}
+                </Button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if admin}
+        <form class="relay-form" novalidate onsubmit={(e) => void addRelay(e)}>
+          <Field label={copy.relays.name} error={relayNameError}>
+            {#snippet children(control)}
+              <Input
+                {...control}
+                kind="name"
+                bind:value={relayName}
+                bind:ref={relayNameRef}
+                oninput={() => (relayNameError = null)}
+              />
+            {/snippet}
+          </Field>
+          <Field label={copy.relays.address} helper={copy.relays.addressHelp} error={relayAddressError}>
+            {#snippet children(control)}
+              <Input
+                {...control}
+                kind="mono"
+                bind:value={relayAddress}
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck={false}
+                oninput={() => (relayAddressError = null)}
+              />
+            {/snippet}
+          </Field>
+          <div class="pick">
+            <span class="field-label" aria-hidden="true">{copy.relays.runsOn}</span>
+            <Combobox
+              value={relayNode}
+              options={runnerOptions}
+              label={copy.relays.runsOn}
+              empty={copy.access.noDevices}
+              onValueChange={(v) => (relayNode = v)}
+            />
+          </div>
+          {#if relayAdding?.state === 'failed' && relayAdding.error}
+            <p class="error">{errorText(relayAdding.error)}</p>
+          {/if}
+          <div>
+            <Button
+              type="submit"
+              pending={relayAdding?.state === 'pending'}
+              pendingLabel={copy.action.signing}
+              disabled={frozen}
+            >
+              {copy.relays.add}
+            </Button>
+          </div>
+        </form>
+      {:else}
+        <div><Button onclick={() => (askRelay = true)}>{copy.relays.ask}</Button></div>
+        <AskAdminSheet
+          bind:open={askRelay}
+          net={network.id}
+          request={copy.askAdmin.request.addRelay(network.name)}
+        />
+      {/if}
     </section>
 
     <section class="group" aria-labelledby="settings-danger">
@@ -377,12 +561,21 @@ Props:
     color: var(--ink-2);
     font: var(--t-small);
   }
-  .link {
-    overflow: hidden;
-    color: var(--ink-3);
+  .mono {
     font: var(--t-mono);
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+  .relay-form {
+    display: grid;
+    gap: var(--s-3);
+    padding-top: var(--s-3);
+  }
+  .pick {
+    display: grid;
+    justify-items: start;
+    gap: var(--s-1);
+  }
+  .field-label {
+    font-weight: 600;
   }
 
   @media (width < 40rem) {

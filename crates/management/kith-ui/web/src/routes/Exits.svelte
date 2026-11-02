@@ -6,13 +6,20 @@ may be used offers `Stop offering…`; one that may not offers `Allow as exit…
 `Not allowed yet`. Both are tier 2: an AlertDialog with the consequences, and the button
 names the exit. This device is `This device` in the lists, first. `Allow device…` (§6.7)
 waits for the API: an exit grant is network-wide today.
+Below them: this device offered as an exit or relay, and `Import a WireGuard config…`,
+which turns a wg-quick config into an exit (`?sheet=wireguard`).
 Props:
   - net: string, the network's id or name (as in the URL).
+  - query?: URLSearchParams, for `?sheet=wireguard`.
 -->
 <script lang="ts">
   import { announce } from '../lib/announce';
   import { copy } from '../lib/copy';
   import ExitPicker from '../lib/kith/ExitPicker.svelte';
+  import OfferThisDevice from '../lib/kith/OfferThisDevice.svelte';
+  import ImportWireguard from '../sheets/ImportWireguard.svelte';
+  import Button from '../lib/ui/Button.svelte';
+  import { closeOverlay, openOverlay } from '../router';
   import Rate from '../lib/kith/Rate.svelte';
   import { actions, live } from '../lib/live/store.svelte';
   import { BANNER_DELAY_MS } from '../lib/live/timing';
@@ -23,7 +30,9 @@ Props:
   import IconButton from '../lib/ui/IconButton.svelte';
   import StatusDot from '../lib/ui/StatusDot.svelte';
 
-  let { net }: { net: string } = $props();
+  let { net, query }: { net: string; query?: URLSearchParams } = $props();
+
+  const importing = $derived(query?.get('sheet') === 'wireguard');
 
   function findNetwork(list: readonly NetworkSummary[], ref: string): NetworkSummary | null {
     return (
@@ -238,9 +247,21 @@ Props:
           {#if frozen}<p class="reason" id={reasonId}>{copy.conn.staleActions}</p>{/if}
         </section>
       {/if}
+
+      <section class="network" aria-labelledby="{headingId}-wg">
+        <h2 class="t-heading" id="{headingId}-wg">{copy.wgImport.heading}</h2>
+        <p class="reason">{copy.wgImport.intro}</p>
+        <div>
+          <Button onclick={() => openOverlay('sheet', 'wireguard')}>{copy.wgImport.open}</Button>
+        </div>
+      </section>
+
+      <OfferThisDevice />
     </div>
   {/if}
 </section>
+
+<ImportWireguard bind:open={() => importing, (open) => !open && closeOverlay('sheet')} />
 
 {#if change && network}
   <AlertDialog

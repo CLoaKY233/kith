@@ -31,6 +31,8 @@ const SCREENS: readonly (readonly [string, string])[] = [
   ['Activity logs', `${net}/activity?kind=logs`],
   ['Names', `${net}/names`],
   ['Exits', `${net}/exits`],
+  ['Import a WireGuard config', `${net}/exits?sheet=wireguard`],
+  ['Access', `${net}/access`],
   ['Settings', `${net}/settings`],
   ['Add device', `${net}?add=device`],
   ['Add a phone', `${net}?add=phone`],
