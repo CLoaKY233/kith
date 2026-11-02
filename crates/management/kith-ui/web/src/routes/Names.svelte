@@ -8,22 +8,26 @@ shown, and what it points to. The type is inferred: an IP gives A or AAAA, a hos
 CNAME; `More` reveals a text record. A name typed bare (`nas`, `nas.home`) becomes the full
 `nas.home.kith.internal`. Adding and removing are tier 0: instant, removal with Undo.
 Members fill in the same row; its button becomes `Ask an admin…` with the exact command.
+The row sits in the table under the column headers, its fields in the columns they fill.
 Props:
   - net: string, the network's id or name (as in the URL).
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte';
-  import { SvelteSet } from 'svelte/reactivity';
+  import { flip } from 'svelte/animate';
+  import { slide } from 'svelte/transition';
   import { announce } from '../lib/announce';
   import { copy, DOT } from '../lib/copy';
   import Icon from '../lib/icons/Icon.svelte';
   import AskAdminSheet from '../lib/kith/AskAdminSheet.svelte';
+  import { tintKey } from '../lib/live/keys';
   import { actions, live } from '../lib/live/store.svelte';
   import {
     BANNER_DELAY_MS,
     COPIED_MS,
+    ROW_ANIMATION_MS,
+    SEEN_TIMEOUT_MS,
     SPACES_HINT_MS,
-    TINT_MS,
     UNDO_MS,
   } from '../lib/live/timing';
   import type { ActionHandle, ApiFailure } from '../lib/types';
@@ -33,7 +37,6 @@ Props:
   import Field from '../lib/ui/Field.svelte';
   import IconButton from '../lib/ui/IconButton.svelte';
   import Input from '../lib/ui/Input.svelte';
-  import Sheet from '../lib/ui/Sheet.svelte';
   import Switch from '../lib/ui/Switch.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
 
@@ -61,6 +64,10 @@ Props:
     full.endsWith(fullSuffix) ? full.slice(0, -fullSuffix.length) : full.replace(/\.$/, '');
   const short = (full: string): string =>
     full.endsWith(fullSuffix) ? `${label(full)}${copy.names.suffix(netName)}` : label(full);
+  const escaped = $derived(netName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  /** A name as typed, without the `.home` or `.home.kith.internal` the field already shows. */
+  const bare = (typed: string): string =>
+    typed.replace(new RegExp(`\\.${escaped}(\\.kith\\.internal)?\\.?$`), '');
 
   const names = $derived(
     (records ?? []).filter((r) => !r.device).sort((a, b) => a.name.localeCompare(b.name)),
@@ -84,25 +91,24 @@ Props:
     return () => clearTimeout(timer);
   });
 
-  // §8.4: a name added or restored here gets the 4 s change tint.
-  const tinted = new SvelteSet<string>();
-  function flash(full: string): void {
-    tinted.add(full);
-    setTimeout(() => tinted.delete(full), TINT_MS);
-  }
+  // §3.5: rows grow in and collapse out over 160 ms, at once with reduced motion.
+  const reduced =
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const rowMs = reduced ? 0 : ROW_ANIMATION_MS;
 
+  // §8.4: the store tints names added, changed or removed when the list reloads.
   let loadFailure = $state<ApiFailure | null>(null);
-  function reload(id: string, tint: string | null = null): void {
-    const handle = actions.loadRecords(id);
-    void handle.done.then((h) => {
-      loadFailure = h.state === 'failed' ? h.error : null;
-      if (tint !== null && h.state !== 'failed') flash(tint);
-    });
+  async function reload(id: string): Promise<void> {
+    const handle = await actions.loadRecords(id).done;
+    loadFailure = handle.state === 'failed' ? handle.error : null;
   }
   $effect(() => {
     const id = netId;
-    if (id !== null) untrack(() => reload(id));
+    if (id !== null) untrack(() => void reload(id));
   });
+  function retry(): void {
+    if (netId !== null) void reload(netId);
+  }
   const ready = $derived(records !== null || loadFailure !== null);
 
   function failure(handle: ActionHandle<Outcome>, subject: string): string {
@@ -198,10 +204,15 @@ Props:
   let opener: HTMLElement | null = null;
 
   const existing = $derived(
-    names.find((r) => nameText !== '' && r.name === copy.detail.fqdn(nameText, netName)) ?? null,
+    names.find((r) => nameText !== '' && r.name === copy.detail.fqdn(bare(nameText), netName)) ??
+      null,
   );
   const nameHelp = $derived(
-    existing ? copy.names.replaces(short(existing.name), target(existing).text) : undefined,
+    existing === null
+      ? undefined
+      : existing.type === 'TXT'
+        ? copy.names.replacesText(short(existing.name), existing.value)
+        : copy.names.replaces(short(existing.name), target(existing).text),
   );
 
   async function open(event: MouseEvent): Promise<void> {
@@ -235,7 +246,7 @@ Props:
   async function checkName(): Promise<string | null> {
     nameAttempt += 1;
     const mine = nameAttempt;
-    const handle = actions.validateName(netId, nameText);
+    const handle = actions.validateName(netId, bare(nameText));
     await handle.done;
     if (mine !== nameAttempt) return nameError;
     const result = handle.result;
@@ -279,6 +290,7 @@ Props:
 
   async function nameBlur(): Promise<void> {
     if (nameText === '' || pending) return;
+    nameText = bare(nameText);
     nameChecked = true;
     nameError = await checkName();
   }
@@ -301,7 +313,8 @@ Props:
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (pending || netId === null) return;
+    if (pending || netId === null || (frozen && admin)) return;
+    nameText = bare(nameText);
     nameChecked = true;
     valueChecked = true;
     valueError = checkValue();
@@ -316,10 +329,9 @@ Props:
       return;
     }
     if (!admin) {
-      openAsk(copy.askAdmin.request.dnsSet(netName, nameText, parsed.type, parsed.value));
+      openAsk(copy.names.setCommand(netName, nameText, parsed.type, parsed.value));
       return;
     }
-    if (frozen) return;
     const id = netId;
     const full = copy.detail.fqdn(nameText, netName);
     const handle = actions.setRecord(id, nameText, parsed.type, parsed.value);
@@ -328,15 +340,15 @@ Props:
     const settled = await handle.done;
     if (saving !== handle) return;
     if (settled.state === 'accepted' || settled.state === 'awaiting_os_auth') {
-      ops = { ...ops, [full]: handle };
+      follow(full, handle);
       announce(progress(handle, short(full)));
-      reload(id, full);
+      void reload(id);
       await close();
     } else {
       formError = failure(settled, short(full));
       announce(formError);
       saving = null;
-      if (settled.state === 'conflict') reload(id);
+      if (settled.state === 'conflict') void reload(id);
     }
   }
 
@@ -357,7 +369,26 @@ Props:
 
   // ---- Rows: copy, remove with Undo ----
 
+  // The row's progress text (§8.6) shows while its action is under way, then gives way
+  // to `set by …` again: once every device has it, or SEEN_TIMEOUT after `Waiting…`.
   let ops = $state<Record<string, ActionHandle<Outcome>>>({});
+
+  function drop(key: string, handle: ActionHandle<Outcome>): void {
+    if (ops[key] !== handle) return;
+    ops = Object.fromEntries(Object.entries(ops).filter(([name]) => name !== key));
+  }
+
+  function follow(key: string, handle: ActionHandle<Outcome>): void {
+    ops = { ...ops, [key]: handle };
+    setTimeout(() => drop(key, handle), 2 * SEEN_TIMEOUT_MS);
+  }
+
+  $effect(() => {
+    const heard = Object.entries(ops).filter(
+      ([, h]) => h.state === 'seen' && (h.seen === null || h.seen.by >= h.seen.of),
+    );
+    if (heard.length > 0) untrack(() => heard.forEach(([key, h]) => drop(key, h)));
+  });
 
   let copied = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -378,37 +409,70 @@ Props:
     const handle = actions.setRecord(id, label(record.name), record.type, record.value);
     ops = { ...ops, [record.name]: handle };
     void handle.done.then((h) => {
-      if (h.state === 'accepted' || h.state === 'awaiting_os_auth') reload(id, record.name);
-      else toast.failed(failure(h, short(record.name)));
+      if (h.state === 'accepted' || h.state === 'awaiting_os_auth') {
+        follow(record.name, handle);
+        void reload(id);
+      } else {
+        drop(record.name, handle);
+        toast.failed(failure(h, short(record.name)));
+      }
     });
   }
 
+  /** §10: focus goes back where the removed row's ⋯ was, or to Add name. */
+  function refocus(removed: string, index: number): void {
+    const active = document.activeElement;
+    const lost =
+      active === null ||
+      active === document.body ||
+      !active.isConnected ||
+      active.closest(`[data-name="${CSS.escape(removed)}"]`) !== null;
+    if (!lost) return;
+    const next = names[index] ?? names[index - 1];
+    const target = next
+      ? document.querySelector<HTMLElement>(`[data-name="${CSS.escape(next.name)}"] .more button`)
+      : document.getElementById(addId);
+    target?.focus();
+  }
+
   function remove(record: RecordView): void {
-    if (netId === null) return;
+    if (netId === null || frozen || ops[record.name]?.state === 'pending') return;
     const id = netId;
+    const index = names.findIndex((r) => r.name === record.name);
     const handle = actions.deleteRecord(id, label(record.name));
     ops = { ...ops, [record.name]: handle };
-    void handle.done.then((h) => {
+    void handle.done.then(async (h) => {
       if (h.state === 'accepted' || h.state === 'awaiting_os_auth') {
-        reload(id);
         toast.done(copy.names.removed(short(record.name)), {
           undo: () => restore(record),
           undoMs: UNDO_MS,
         });
+        await reload(id);
+        drop(record.name, handle);
+        await tick();
+        refocus(record.name, index);
       } else {
-        announce(failure(h, short(record.name)));
-        if (h.state === 'conflict') reload(id);
+        drop(record.name, handle);
+        toast.failed(failure(h, short(record.name)));
+        if (h.state === 'conflict') void reload(id);
       }
     });
   }
 
   function items(record: RecordView): MenuItem[] {
     return admin
-      ? [{ label: copy.names.remove, tone: 'danger', onSelect: () => remove(record) }]
+      ? [
+          {
+            label: copy.names.remove,
+            tone: 'danger',
+            disabled: frozen,
+            onSelect: () => remove(record),
+          },
+        ]
       : [
           {
             label: copy.names.askRemove(short(record.name)),
-            onSelect: () => openAsk(copy.askAdmin.request.dnsRm(netName, label(record.name))),
+            onSelect: () => openAsk(copy.names.removeCommand(netName, label(record.name))),
           },
         ];
   }
@@ -426,129 +490,158 @@ Props:
   const formId = `${id}-form`;
   const reasonId = `${id}-reason`;
   const moreId = `${id}-more`;
+  const memberId = `${id}-member`;
+
+  const showAdd = $derived(
+    network !== null && ready && !adding && (names.length > 0 || loadFailure !== null),
+  );
+  const addLabel = $derived(admin ? copy.names.add : copy.names.askAdd);
+  const submitLabel = $derived(
+    !admin ? copy.detail.askAdmin : existing ? copy.names.replace : copy.names.add,
+  );
 </script>
 
 <section class="screen">
-  <div class="title">
-    <h1 class="t-title">{copy.nav.names}</h1>
-    {#if ready && names.length > 0 && !adding}
-      <Button id={addId} onclick={open}>{copy.names.add}</Button>
-    {/if}
-  </div>
+  {#if showAdd || (frozen && admin)}
+    <div class="toolbar">
+      {#if frozen && admin}<p class="reason" id={reasonId}>{copy.conn.staleActions}</p>{/if}
+      {#if showAdd}
+        <Button
+          id={addId}
+          disabled={frozen && admin}
+          aria-describedby={frozen && admin ? reasonId : undefined}
+          onclick={open}
+        >
+          {addLabel}
+        </Button>
+      {/if}
+    </div>
+  {/if}
 
   {#if network && ready}
-    {#if adding}
-      <form
-        class="add"
-        id={formId}
-        aria-label={copy.names.add}
-        novalidate
-        onsubmit={submit}
-        bind:this={formRef}
-      >
-        <div class="fields">
-          <Field
-            label={copy.names.name}
-            error={nameError}
-            helper={nameHelp}
-            hint={spacesHint ? copy.createNetwork.spaces : null}
-          >
-            {#snippet children(control)}
-              <Input
-                {...control}
-                kind="name"
-                suffix={copy.names.suffix(netName)}
-                bind:value={nameText}
-                bind:ref={nameRef}
-                readonly={pending}
-                oninput={nameInput}
-                onblur={nameBlur}
-              />
-            {/snippet}
-          </Field>
-          <Field
-            label={copy.names.value}
-            error={valueError}
-            helper={text ? copy.names.textHelp : copy.names.valueHelp(netName)}
-          >
-            {#snippet children(control)}
-              <Input
-                {...control}
-                kind={text ? 'text' : 'mono'}
-                bind:value={valueText}
-                bind:ref={valueRef}
-                readonly={pending}
-                autocapitalize="none"
-                autocorrect="off"
-                spellcheck={false}
-                enterkeyhint="done"
-                oninput={valueInput}
-                onblur={valueBlur}
-              />
-            {/snippet}
-          </Field>
-        </div>
-
-        {#if more}
-          <div id={moreId}>
-            <Switch label={copy.names.txt} bind:checked={text} disabled={pending} />
-          </div>
-        {/if}
-
-        <div class="actions">
-          <Button
-            variant="ghost"
-            aria-expanded={more}
-            aria-controls={moreId}
-            onclick={() => (more = !more)}
-          >
-            {copy.names.more}
-          </Button>
-          <span class="status" class:failed={formError !== null} aria-live="off">
-            {#if formError}{formError}{:else if frozen && admin}<span id={reasonId}
-                >{copy.conn.staleActions}</span
-              >{:else if pending}{copy.action.signing}{/if}
-          </span>
-          <Button variant="ghost" disabled={pending} onclick={() => void close()}>
-            {copy.action.cancel}
-          </Button>
-          <Button
-            variant="primary"
-            type="submit"
-            {pending}
-            disabled={frozen && admin}
-            aria-describedby={frozen && admin ? reasonId : undefined}
-          >
-            {admin ? copy.names.add : copy.detail.askAdmin}
-          </Button>
-        </div>
-      </form>
-    {/if}
-
-    {#if names.length > 0}
+    {#if names.length > 0 || adding}
       <div class="table" role="table" aria-label={copy.nav.names}>
         <div class="row head t-micro" role="row">
           <span role="columnheader">{copy.names.name}</span>
           <span role="columnheader">{copy.names.value}</span>
-          <span role="columnheader">{copy.names.setByColumn}</span>
+          <span role="columnheader"><span class="sr-only">{copy.names.setByColumn}</span></span>
           <span role="columnheader"><span class="sr-only">{copy.copyField.copy}</span></span>
           <span role="columnheader"><span class="sr-only">{copy.device.columns.actions}</span></span>
         </div>
+
+        {#if adding}
+          <form class="add-form" id={formId} novalidate onsubmit={submit} bind:this={formRef}>
+            <div class="row add" role="row" aria-label={copy.names.add}>
+            <div class="c-name" role="cell">
+              <Field
+                label={copy.names.name}
+                hideLabel
+                error={nameError}
+                helper={nameHelp}
+                hint={spacesHint ? copy.createNetwork.spaces : null}
+              >
+                {#snippet children(control)}
+                  <Input
+                    {...control}
+                    kind="name"
+                    class="name-box"
+                    suffix={copy.names.suffix(netName)}
+                    bind:value={nameText}
+                    bind:ref={nameRef}
+                    readonly={pending}
+                    oninput={nameInput}
+                    onblur={nameBlur}
+                  />
+                {/snippet}
+              </Field>
+            </div>
+            <div class="c-value" role="cell">
+              <Field
+                label={copy.names.value}
+                hideLabel
+                error={valueError}
+                helper={text ? copy.names.textHelp : copy.names.valueHelp(netName)}
+              >
+                {#snippet children(control)}
+                  <Input
+                    {...control}
+                    kind={text ? 'text' : 'mono'}
+                    bind:value={valueText}
+                    bind:ref={valueRef}
+                    readonly={pending}
+                    autocapitalize="none"
+                    autocorrect="off"
+                    spellcheck={false}
+                    enterkeyhint="done"
+                    oninput={valueInput}
+                    onblur={valueBlur}
+                  />
+                {/snippet}
+              </Field>
+              <div class="more-opts">
+                <Button
+                  variant="ghost"
+                  aria-expanded={more}
+                  aria-controls={more ? moreId : undefined}
+                  onclick={() => (more = !more)}
+                >
+                  {copy.names.more}
+                </Button>
+                {#if more}
+                  <div class="txt" id={moreId}>
+                    <Switch label={copy.names.txt} bind:checked={text} disabled={pending} />
+                  </div>
+                {/if}
+              </div>
+            </div>
+            <div class="c-actions" role="cell">
+              <Button variant="ghost" disabled={pending} onclick={() => void close()}>
+                {copy.action.cancel}
+              </Button>
+              <Button
+                variant="primary"
+                type="submit"
+                {pending}
+                disabled={frozen && admin}
+                aria-describedby={frozen && admin ? reasonId : !admin ? memberId : undefined}
+              >
+                {submitLabel}
+              </Button>
+            </div>
+            {#if formError || pending || !admin}
+              <p class="c-note" class:failed={formError !== null}>
+                {#if formError}{formError}{:else if pending}{copy.action.signing}{:else}<span
+                    id={memberId}>{copy.error.permissionDenied}</span
+                  >{/if}
+              </p>
+            {/if}
+            </div>
+          </form>
+        {/if}
+
         {#each names as record (record.name)}
           {@const to = target(record)}
           {@const op = ops[record.name]}
           {@const busy = op?.state === 'pending'}
-          <div class="row" class:tint={tinted.has(record.name)} role="row" aria-busy={busy || undefined}>
+          <div
+            class="row"
+            class:tint={netId !== null && live.changed.has(tintKey.record(netId, record.name))}
+            role="row"
+            aria-busy={busy || undefined}
+            data-name={record.name}
+            animate:flip={{ duration: rowMs }}
+            transition:slide={{ duration: rowMs }}
+          >
             <span class="name t-mono" role="cell">{short(record.name)}</span>
             <span class="target" role="cell">
-              <span class:t-mono={to.mono}>{copy.names.target(to.text)}</span>
+              {#if record.type !== 'TXT'}<span class="arrow">{copy.names.arrow}</span>{/if}<span
+                class:t-mono={to.mono}>{to.text}</span
+              >
               {#if to.address}<span class="address t-mono">{DOT}{to.address}</span>{/if}
             </span>
             <span class="by" role="cell">
               {#if op}
-                <span class:failed={op.state === 'failed' || op.state === 'conflict'}>
-                  {progress(op, short(record.name))}
-                </span>
+                <span>{progress(op, short(record.name))}</span>
               {:else if record.set_by}
                 <span>{copy.names.setBy(record.set_by)}</span>
                 <Icon name="seal" />
@@ -558,6 +651,7 @@ Props:
               <button
                 type="button"
                 class="copy-btn"
+                disabled={busy}
                 aria-label={copy.names.copyName(record.name)}
                 onclick={() => copyName(record.name)}
               >
@@ -575,6 +669,7 @@ Props:
                   <IconButton
                     icon="ellipsis"
                     label={copy.names.moreFor(short(record.name))}
+                    disabled={busy}
                     triggerProps={props}
                   />
                 {/snippet}
@@ -584,27 +679,37 @@ Props:
         {/each}
       </div>
       <span class="sr-only" aria-live="polite">{copied ? copy.copyField.copied : ''}</span>
-      {#if frozen && admin && !adding}<p class="reason">{copy.conn.staleActions}</p>{/if}
-    {:else if !adding && loadFailure === null}
+    {:else if loadFailure === null}
       <div class="empty">
         <p>{copy.names.empty(netName)}</p>
-        <div><Button id={addId} variant="primary" onclick={open}>{copy.names.add}</Button></div>
+        <div>
+          <Button
+            id={addId}
+            variant="primary"
+            disabled={frozen && admin}
+            aria-describedby={frozen && admin ? reasonId : undefined}
+            onclick={open}
+          >
+            {addLabel}
+          </Button>
+        </div>
       </div>
     {/if}
 
     {#if loadFailure}
-      <p class="failed">
-        {loadFailure.code === 'not_implemented'
-          ? copy.error.notImplemented
-          : copy.error.internal(loadFailure.message)}
-      </p>
+      <div class="load-failed">
+        <p class="failed">
+          {loadFailure.code === 'not_implemented'
+            ? copy.error.notImplemented
+            : copy.error.internal(loadFailure.message)}
+        </p>
+        <Button variant="secondary" onclick={retry}>{copy.names.tryAgain}</Button>
+      </div>
     {/if}
   {/if}
 </section>
 
-<Sheet bind:open={askOpen} title={copy.askAdmin.title} closeLabel={copy.action.close}>
-  <AskAdminSheet {net} request={askRequest} />
-</Sheet>
+<AskAdminSheet bind:open={askOpen} {net} request={askRequest} />
 
 <style>
   .screen {
@@ -614,39 +719,16 @@ Props:
     margin: 0 auto;
     padding: var(--s-6) var(--content-pad);
   }
-  .title {
+  .toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: var(--s-4);
     min-height: var(--control);
   }
-  .add {
-    display: grid;
-    gap: var(--s-3);
-    padding: var(--s-4);
-    border-radius: var(--r-3);
-    border: var(--hairline) solid var(--line);
-    background: var(--surface);
-  }
-  .fields {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
-    align-items: start;
-    gap: var(--s-4);
-  }
-  .actions {
-    display: flex;
-    align-items: center;
-    gap: var(--s-3);
-  }
-  .actions .status {
+  .toolbar .reason {
     flex: 1;
     min-width: 0;
-    color: var(--ink-3);
-  }
-  .actions .status.failed {
-    color: var(--danger);
   }
   .table {
     /* Wide enough for `Copied` with its check, so the row never shifts. */
@@ -665,8 +747,49 @@ Props:
     border-radius: var(--r-2);
     transition: background-color var(--d-hover) var(--e-linear);
   }
-  .row:not(.head):hover {
+  .row:not(.head):not(.add):hover {
     background: var(--sunken);
+  }
+  .add-form {
+    display: contents;
+  }
+  .add {
+    align-items: start;
+    row-gap: var(--s-2);
+    padding-top: var(--s-2);
+    padding-bottom: var(--s-2);
+    background: var(--surface);
+  }
+  .c-name,
+  .c-value {
+    display: grid;
+    gap: var(--s-1);
+    min-width: 0;
+  }
+  .add :global(.name-box input) {
+    font-family: var(--ff-mono);
+  }
+  .more-opts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-3);
+  }
+  .txt {
+    display: inline-flex;
+    max-width: var(--measure);
+  }
+  .c-actions {
+    grid-column: 3 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--s-2);
+  }
+  .c-note {
+    grid-column: 1 / -1;
+    font: var(--t-small);
+    color: var(--ink-3);
   }
   .tint {
     animation: tint var(--d-tint) var(--e-linear);
@@ -690,6 +813,7 @@ Props:
   .target {
     color: var(--ink-2);
   }
+  .arrow,
   .address {
     color: var(--ink-3);
   }
@@ -710,13 +834,20 @@ Props:
     height: var(--control);
     padding: 0 var(--s-2);
     border-radius: var(--r-2);
-    font-weight: 600;
-    color: var(--ink-1);
+    font-weight: 400;
+    color: var(--ink-2);
     cursor: pointer;
-    transition: background-color var(--d-hover) var(--e-linear);
+    transition:
+      background-color var(--d-hover) var(--e-linear),
+      color var(--d-hover) var(--e-linear);
   }
-  .copy-btn:hover {
+  .copy-btn:not(:disabled):hover {
     background: var(--surface);
+    color: var(--ink-1);
+  }
+  .copy-btn:disabled {
+    color: var(--ink-3);
+    cursor: default;
   }
   .more {
     display: flex;
@@ -728,25 +859,29 @@ Props:
     max-width: var(--measure);
     color: var(--ink-2);
   }
+  .load-failed {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-3);
+  }
   .failed {
+    color: var(--danger);
+  }
+  .c-note.failed {
     color: var(--danger);
   }
   .reason {
     color: var(--ink-3);
   }
-  @media (width < 40rem) {
+  @media (pointer: coarse) {
+    .copy-btn {
+      height: var(--target-touch);
+    }
+  }
+  @media (max-width: 40rem) {
     .screen {
       padding: var(--s-4) var(--gutter-mobile);
-    }
-    .fields {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .actions {
-      flex-wrap: wrap;
-    }
-    .actions .status {
-      flex-basis: 100%;
-      order: -1;
     }
     .head {
       display: none;
@@ -759,6 +894,25 @@ Props:
       gap: 0 var(--s-3);
       min-height: var(--row-mobile);
       padding: var(--s-2) 0;
+    }
+    .add {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: none;
+      gap: var(--s-3);
+      padding: var(--s-3);
+    }
+    .add > * {
+      grid-column: 1 / -1;
+    }
+    /* No column headers on a phone: the labels show above the fields again. */
+    .add :global(.hidden-label) {
+      position: static;
+      width: auto;
+      height: auto;
+      margin: 0;
+      overflow: visible;
+      clip-path: none;
+      white-space: normal;
     }
     .name {
       grid-area: name;

@@ -32,6 +32,7 @@ import type {
 } from '../types.gen';
 import type { ActionHandle, InvitePreview } from '../types';
 import type { Runner, RunnerHost } from './runner';
+import { tintKey } from './keys';
 
 /** The store fields actions read and fill. */
 export interface ActionsHost extends RunnerHost {
@@ -42,6 +43,8 @@ export interface ActionsHost extends RunnerHost {
   invites: Record<string, Invite[]>;
   /** Refetches /api/pending in the background; calls while one runs coalesce. */
   refreshPending(): void;
+  /** The change tints (§8.4), when the host keeps them. */
+  readonly tints?: { mark(key: string): void };
 }
 
 const enc = encodeURIComponent;
@@ -76,8 +79,21 @@ export function createActions(host: ActionsHost, runner: Runner) {
     const list = await api.get<PeerInfo[]>(networkPath(net, '/peers'));
     host.peers[net] = Object.fromEntries(list.map((p) => [p.node, p]));
   };
+  /** Stores a records list; after the first, every name added, changed or removed tints. */
+  const putRecords = (net: string, list: RecordView[]): void => {
+    const before = host.records[net];
+    host.records[net] = list;
+    if (!before || !host.tints) return;
+    const old = new Map(before.map((r) => [r.name, r]));
+    for (const r of list) {
+      const was = old.get(r.name);
+      old.delete(r.name);
+      if (!was || was.type !== r.type || was.value !== r.value) host.tints.mark(tintKey.record(net, r.name));
+    }
+    for (const name of old.keys()) host.tints.mark(tintKey.record(net, name));
+  };
   const loadRecords = async (net: string): Promise<void> => {
-    host.records[net] = await api.get<RecordView[]>(networkPath(net, '/records'));
+    putRecords(net, await api.get<RecordView[]>(networkPath(net, '/records')));
   };
   const loadExits = async (net: string): Promise<void> => {
     host.exits[net] = await api.get<ExitView[]>(networkPath(net, '/exits'));
@@ -93,7 +109,7 @@ export function createActions(host: ActionsHost, runner: Runner) {
   return {
     // Reads that are not in the boot snapshot.
     loadRecords: (net: string) =>
-      read<RecordView[]>(networkPath(net, '/records'), (v) => (host.records[net] = v)),
+      read<RecordView[]>(networkPath(net, '/records'), (v) => putRecords(net, v)),
     loadExits: (net: string) =>
       read<ExitView[]>(networkPath(net, '/exits'), (v) => (host.exits[net] = v)),
     loadInvites: (net: string) =>
