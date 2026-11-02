@@ -560,19 +560,18 @@ Props:
     untrack(() => askAdmin(request));
   });
   let allowBlockedOpen = $state(false);
-  const portText = $derived(blocked?.port === null || !blocked ? '' : String(blocked.port));
   const askItems: MenuItem[] = $derived.by(() => {
     if (!peer) return [];
     const items: MenuItem[] = [
       {
         label: copy.deviceView.askRemove(peer.name, networkName),
-        onSelect: () => askAdmin(copy.deviceView.removeCommand(networkName, peer.name)),
+        onSelect: () => askAdmin(copy.askAdmin.request.remove(networkName, peer.name)),
       },
     ];
     if (!exitView && !isPhone(peer)) {
       items.push({
         label: copy.deviceView.askAllowExit(peer.name),
-        onSelect: () => askAdmin(copy.deviceView.allowExitCommand(networkName, peer.name)),
+        onSelect: () => askAdmin(copy.askAdmin.request.exitAllow(networkName, peer.name)),
       });
     }
     return items;
@@ -582,7 +581,7 @@ Props:
     if (!verdict?.action || !peer) return;
     if (verdict.action === 'remove') {
       if (admin) setQuery({ remove: peer.name });
-      else askAdmin(copy.deviceView.removeCommand(networkName, peer.name));
+      else askAdmin(copy.askAdmin.request.remove(networkName, peer.name));
       return;
     }
     if (!blocked) return;
@@ -591,12 +590,12 @@ Props:
       allowBlockedOpen = true;
       return;
     }
-    askAdmin(copy.deviceView.allowCommand(
+    askAdmin(copy.askAdmin.request.allow(
       networkName,
       blocked.from_name,
       blocked.to_name,
       blocked.protocol,
-      portText,
+      blocked.port ?? null,
     ));
   }
 

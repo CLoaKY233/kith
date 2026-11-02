@@ -617,6 +617,8 @@ export const copy = {
     spaces: 'Spaces become hyphens.',
     taken: (network: string): string => `You already have a network called ${network}.`,
     submit: (network: string): string => `Create ${quotedShort(network)}`,
+    submitEmpty: 'Create network',
+    useSuggestion: (network: string): string => `Use ${network}`,
     pending: 'Creating…',
     ready: (network: string): string => `${network} is ready. You're its admin.`,
     next: 'Add your next device:',
@@ -632,6 +634,10 @@ export const copy = {
     parsed: (network: string, by: string, minutes: number): string =>
       `Join ${network}, invited by ${by}. Link valid for ${minutes} more ${plural(minutes, 'minute', 'minutes')}.`,
     submit: (network: string): string => `Join ${network}`,
+    helper: 'Paste the link from kith invite or from the person who invited you.',
+    joining: 'Joining…',
+    asking: 'Asking…',
+    expiredPlain: 'This invite has expired. Ask for a new one.',
     expired: (ago: string, by: string): string =>
       `This invite expired ${ago}. Ask ${by} for a new one.`,
     used: 'This invite has already been used. Ask for a new one.',
@@ -641,6 +647,7 @@ export const copy = {
       `Still no answer. Is one of ${network}'s devices online?`,
     noLink: "I don't have a link — ask to join",
     request: (command: string): string => `Your request: ${command}`,
+    requestLabel: 'Your request:',
     requestCommand: (network: string, admin: string): string => `kith join ${network}@${admin}`,
     waiting: (network: string): string => `Waiting for an admin of ${network}…`,
     joined: (online: number): string =>
@@ -704,9 +711,24 @@ export const copy = {
     useCounts: { one: '1', five: '5', unlimited: 'Unlimited' },
     create: 'Create invite',
     link: 'Invite link',
-    orRun: (link: string): string => `Or run: kith join ${link}`,
+    orRun: 'Or run:',
+    runCommand: (link: string): string => `kith join ${link}`,
     notUsed: (time: string): string => `Not used yet${DOT}expires ${time}`,
     usedBy: (device: string, path: string): string => `Used by ${device}${DOT}online${DOT}${path}`,
+    usedOffline: (device: string): string => `Used by ${device}${DOT}offline`,
+    /** A multi-use invite: who used it, the uses left, then whether the latest is online. */
+    usedByMany: (devices: readonly string[], left: number | null, latestOnline: string | null): string =>
+      [
+        `Used by ${devices.join(', ')}`,
+        left === null ? null : `${left} ${plural(left, 'use', 'uses')} left`,
+        latestOnline,
+      ]
+        .filter((part) => part !== null)
+        .join(DOT),
+    latestOnline: (device: string, path: string): string => `${device} online${DOT}${path}`,
+    expired: (time: string): string => `Expired at ${time}`,
+    created: 'Invite created',
+    show: 'Show',
     revoke: 'Revoke invite',
     revoked: 'Invite revoked',
   },
@@ -1010,8 +1032,24 @@ export const copyScreens = {
     glyphs: { blocked: 'blocked', warning: 'warning', signed: 'signed' },
     noMatch: (q: string): string => `Nothing matches ${quoted(q)}.`,
     noneOfKind: 'Nothing of this kind has happened here yet.',
+    unknownDevice: (device: string, network: string): string =>
+      `No device called ${device} in ${network}.`,
+    /** Gap dividers with one end unknown (§6.5 shows the two-ended one). */
+    gapBefore: (to: string): string => `Some events before ${to} aren't available.`,
+    gapSince: (from: string): string => `Some events since ${from} aren't available.`,
+    gapUnknown: "Some events aren't available.",
+    /** The ⋯ menu on a feed row (§11.4). */
+    rowMore: 'More',
+    openDevice: 'Open device',
+    copyLine: 'Copy line',
+    lineCopied: 'Copied',
+    copyFailed: "Couldn't copy. Select the line and copy it instead.",
+    noDevice: 'No devices match.',
     /** The `12 new ↑` pill's accessible name. */
     newerLabel: (n: number): string => `${n} new ${plural(n, 'event', 'events')}. Show them.`,
+    notifyBlocked:
+      'This browser blocks notifications from this page. Allow them in its site settings.',
+    notifyTurnedOn: 'Notifications are on in this browser.',
   },
 
   /** §12.3 templates that `copy.entry` does not cover. */

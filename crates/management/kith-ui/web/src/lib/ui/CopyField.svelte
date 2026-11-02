@@ -9,6 +9,7 @@ Props:
   - display?: string, the text shown when it differs from what is copied (a shortened
     key). Defaults to `value`.
   - label?: string (from copy.ts), the accessible name of the group, such as "Invite link".
+  - labelledby?: string, the id of visible text that names the group, instead of `label`.
   - onCopy?: () => void, after a successful copy.
 States: rest, hover, :focus-visible, copied.
 -->
@@ -22,8 +23,15 @@ States: rest, hover, :focus-visible, copied.
     value,
     display,
     label,
+    labelledby,
     onCopy,
-  }: { value: string; display?: string; label?: string; onCopy?: () => void } = $props();
+  }: {
+    value: string;
+    display?: string;
+    label?: string;
+    labelledby?: string;
+    onCopy?: () => void;
+  } = $props();
 
   let copied = $state(false);
   /** A shell command stays on one line that scrolls, so a break never strands a `|`. */
@@ -62,7 +70,12 @@ States: rest, hover, :focus-visible, copied.
   }
 </script>
 
-<div class="copy-field" role={label ? 'group' : undefined} aria-label={label}>
+<div
+  class="copy-field"
+  role={label || labelledby ? 'group' : undefined}
+  aria-label={labelledby ? undefined : label}
+  aria-labelledby={labelledby}
+>
   <!-- The one-line command scrolls, so the keyboard must reach it. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <code class="value" class:command bind:this={shown} tabindex={command ? 0 : undefined}>{display ?? value}</code>

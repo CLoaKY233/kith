@@ -128,7 +128,7 @@ Module exports, for DeviceRow (spec §5 Removing state):
     return [copy.device.thisDevice, ...users.filter((n) => n !== me)];
   });
   const exitLine = $derived.by(() => {
-    const line = copy.remove.exitUsers(copy.remove.andList(exitUsers), name);
+    const line = copy.remove.exitUsers(exitUsers, name);
     return exitUsers[0] === copy.device.thisDevice
       ? line.charAt(0).toUpperCase() + line.slice(1)
       : line;

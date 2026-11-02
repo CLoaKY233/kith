@@ -278,13 +278,13 @@ Props:
       items.push({
         label: copy.deviceView.askRemove(peer.name, name),
         disabled,
-        onSelect: () => ask(copy.deviceView.removeCommand(name, peer.name)),
+        onSelect: () => ask(copy.askAdmin.request.remove(name, peer.name)),
       });
       if (!isPhone(peer)) {
         items.push({
           label: copy.deviceView.askAllowExit(peer.name),
           disabled,
-          onSelect: () => ask(copy.deviceView.allowExitCommand(name, peer.name)),
+          onSelect: () => ask(copy.askAdmin.request.exitAllow(name, peer.name)),
         });
       }
     }
