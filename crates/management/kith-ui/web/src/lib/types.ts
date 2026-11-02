@@ -13,6 +13,16 @@ import type {
   Role,
 } from './types.gen';
 
+/**
+ * What an invite link says before joining with it (§7.2 step 2), from
+ * `POST /api/join/preview`. Not generated yet: the server side is still to come.
+ */
+export type InvitePreview = {
+  readonly network_name: string;
+  readonly invited_by: string;
+  readonly expires_at_ms: number;
+};
+
 /** §8.2: the page's connection to kith-ui and the daemon. */
 export type ConnState = 'live' | 'catching_up' | 'stale' | 'daemon_down' | 'ui_gone' | 'unauth';
 

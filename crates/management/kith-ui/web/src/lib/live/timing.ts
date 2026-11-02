@@ -94,6 +94,8 @@ export const FLAP_GROUP_MS = 10 * MINUTE;
 
 /** §7 flows. */
 export const SPACES_HINT_MS = SECOND;
+/** A typed name is checked this long after the last keystroke. */
+export const VALIDATE_DEBOUNCE_MS = 250;
 export const JOIN_RETRY_HINT_MS = 60 * SECOND;
 export const SHEET_CLOSE_AFTER_ONLINE_MS = 2000;
 export const PHONE_NOT_CONNECTED_MS = 90 * SECOND;

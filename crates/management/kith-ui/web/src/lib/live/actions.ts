@@ -30,7 +30,7 @@ import type {
   RequestJoinIn,
   StatusView,
 } from '../types.gen';
-import type { ActionHandle } from '../types';
+import type { ActionHandle, InvitePreview } from '../types';
 import type { Runner, RunnerHost } from './runner';
 
 /** The store fields actions read and fill. */
@@ -132,6 +132,14 @@ export function createActions(host: ActionsHost, runner: Runner) {
             invite_link: inviteLink,
             device_name: deviceName,
           } satisfies JoinIn),
+      }),
+    /** §7.2 step 2: which network a link joins, who sent it and until when. */
+    previewInvite: (inviteLink: string) =>
+      runner.run<InvitePreview>({
+        read: true,
+        latest: 'join-preview',
+        run: (signal) =>
+          api.post<InvitePreview>('/api/join/preview', { invite_link: inviteLink }, { signal }),
       }),
     requestJoin: (requestCode: string, deviceName: string) =>
       runner.run<JoinRequestState>({
