@@ -2193,7 +2193,11 @@ impl Daemon {
     /// relay within seconds; and a gateway says whether its phones are online.
     async fn tick_peers_if_due(&mut self) {
         let now = Instant::now();
-        if self.peer_tick_deadline().is_none_or(|due| due > now) {
+        let Some(due) = self.peer_tick_deadline() else {
+            self.activity.note_no_peers();
+            return;
+        };
+        if due > now {
             return;
         }
         self.presence.due = now + PEER_TICK;

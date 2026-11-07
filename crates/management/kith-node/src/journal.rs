@@ -143,6 +143,14 @@ impl PeerView {
 impl Activity {
     /// Takes a new look at every peer and the drop counters, records the changes in
     /// `journal`, and keeps a traffic sample of each peer.
+    /// Notes that no network has any peer, so the first device to join one is recorded as
+    /// joining rather than taken as the starting point.
+    pub(crate) fn note_no_peers(&mut self) {
+        if self.peers.is_none() {
+            self.peers = Some(BTreeMap::new());
+        }
+    }
+
     pub(crate) fn observe(
         &mut self,
         peers: &[(NetworkId, Vec<PeerInfo>)],
@@ -422,6 +430,36 @@ mod tests {
                 reason: "policy".into(),
                 count: 3
             }]
+        );
+    }
+
+    #[test]
+    fn the_first_device_in_an_empty_network_is_recorded_as_joining() {
+        let journal = Journal::new();
+        let mut activity = Activity::default();
+        activity.note_no_peers();
+        let info = PeerInfo {
+            node: A,
+            name: "laptop".into(),
+            address: "100.64.0.2".into(),
+            path: None,
+            path_reason: None,
+            last_seen_secs: None,
+            endpoint: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            online: false,
+            display_name: "laptop".into(),
+            gateway: None,
+            path_mtu: None,
+        };
+        activity.observe(&[(NET, vec![info])], &BTreeMap::new(), &journal);
+        assert!(
+            journal.entries().iter().any(
+                |e| matches!(&e.kind, EntryKind::DeviceJoined { name, .. } if name == "laptop")
+            ),
+            "{:?}",
+            journal.entries()
         );
     }
 
