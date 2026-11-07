@@ -36,7 +36,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 16, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 17, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -1241,7 +1241,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (16, 0x1f31550e177cc3b2),
+        (17, 15032426758558944659),
         "the wire format changed"
     );
 }

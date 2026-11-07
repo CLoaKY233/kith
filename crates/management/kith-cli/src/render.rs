@@ -4,8 +4,8 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 use kith_ipc::{
-    AccountRole, AccountsInfo, BlockedInfo, DeviceSettingsInfo, DnsRecord, ImportedInfo, IpcError, LinkReport,
-    PathKind, PeerInfo, RecordInfo, Response, Status,
+    AccountRole, AccountsInfo, BlockedInfo, DeviceSettingsInfo, DnsRecord, ImportedInfo, IpcError,
+    LinkReport, PathKind, PeerInfo, RecordInfo, Response, Status,
 };
 use kith_types::NodeId;
 

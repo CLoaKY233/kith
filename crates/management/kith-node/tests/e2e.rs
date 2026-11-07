@@ -11,8 +11,8 @@ mod tests {
     use kith_crypto::webauthn::sha256;
     use kith_identity::{BootstrapAddr, InviteToken};
     use kith_ipc::{
-        AccountRole, AuthorityChange, DeviceSettingsInfo, EntryKind, PasskeyAssertion, PasskeyCredential, PeerInfo,
-        Request, Response,
+        AccountRole, AuthorityChange, DeviceSettingsInfo, EntryKind, PasskeyAssertion,
+        PasskeyCredential, PeerInfo, Request, Response,
     };
     use kith_node::{Node, NodeHandle, NodeOptions, TunMode};
     use kith_sys::NoopSystem;
@@ -1299,7 +1299,9 @@ mod tests {
         if exported.device != "phone" {
             return Err(format!("the phone is called {}", exported.device).into());
         }
-        if !conf_value(&exported.mesh, "Endpoint")?.starts_with("localhost:") {
+        // localhost resolving to both IPv4 and IPv6 is written as its IPv4 address.
+        let endpoint = conf_value(&exported.mesh, "Endpoint")?;
+        if !endpoint.starts_with("localhost:") && !endpoint.starts_with("127.0.0.1:") {
             return Err(format!("the config skips the public hostname: {}", exported.mesh).into());
         }
         let address = conf_value(&exported.mesh, "Address")?;

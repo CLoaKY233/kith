@@ -1294,7 +1294,12 @@ impl State {
                             ) {
                                 if self.tun_out.push(packet).is_err() {
                                     count(&mut self.out.drops.overflow);
-                                } else if is_internet(&self.router, &self.meshes, &self.local, packet) {
+                                } else if is_internet(
+                                    &self.router,
+                                    &self.meshes,
+                                    &self.local,
+                                    packet,
+                                ) {
                                     entry.exit_used = Some(now.monotonic);
                                 }
                             }

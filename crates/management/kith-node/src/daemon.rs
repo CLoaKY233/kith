@@ -15,8 +15,8 @@ use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
 use kith_ipc::{
-    DeviceSettingsInfo, EntryKind, Event, LinkInfo, LinkReport, NetworkSummary, PeerInfo, Problem, Request, Response,
-    Status, Warning,
+    DeviceSettingsInfo, EntryKind, Event, LinkInfo, LinkReport, NetworkSummary, PeerInfo, Problem,
+    Request, Response, Status, Warning,
 };
 use kith_ledger::{AdmissionRequest, JoinProof, Ledger};
 use kith_policy::{Addresses, Policy, Rule};
@@ -1333,8 +1333,8 @@ impl Daemon {
             }
             exit => exit,
         };
-        let label = exit
-            .and_then(|node| Some(format!("{}/{}", map.name(), map.peers().get(&node)?.label)));
+        let label =
+            exit.and_then(|node| Some(format!("{}/{}", map.name(), map.peers().get(&node)?.label)));
         if exit.is_some() {
             for import in self.external.active_exits() {
                 self.external.set_active(&self.state, import, false)?;

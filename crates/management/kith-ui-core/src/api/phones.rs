@@ -17,7 +17,7 @@ use crate::api::{
 };
 use crate::ipc::Source;
 use crate::wire::{PhoneConfig, PhoneConfigIn, PhoneCreated, PhoneIn};
-use crate::{Shared, now_ms};
+use crate::{Shared, json, now_ms};
 
 /// The most phone configs held at once; past it the oldest is dropped, and that phone
 /// has to be made again to show its config.
@@ -84,14 +84,14 @@ pub(crate) async fn create(
 /// default first.
 pub(crate) async fn gateways(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
     let daemon = match &shared.source {
-        Source::Fixture(sim) => return Ok(Json(json!(sim.gateways(&net)?))),
+        Source::Fixture(sim) => return Ok(Json(json::to_value(&sim.gateways(&net)?)?)),
         Source::Daemon(daemon) => daemon,
     };
     let network = network_id(&net)?;
     let Response::Gateways(list) = daemon.ask(Request::Gateways { network }).await? else {
         return Err(ApiError::unexpected());
     };
-    Ok(Json(json!(list)))
+    Ok(Json(json::to_value(&list)?))
 }
 
 /// Gives a new phone to the signed-in person who made it. Best effort: a daemon without

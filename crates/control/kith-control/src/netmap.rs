@@ -227,6 +227,7 @@ impl NetMap {
             dns_changed: old.dns_records() != new.dns_records(),
             exit_nodes_changed: old.exit_nodes() != new.exit_nodes(),
             clients_changed: old.clients != new.clients,
+            device_settings_changed: old.device_settings() != new.device_settings(),
             ..NetMapDiff::default()
         };
         for (node, peer) in &new.peers {
@@ -261,6 +262,7 @@ impl NetMap {
             dns_changed: true,
             exit_nodes_changed: true,
             clients_changed: true,
+            device_settings_changed: true,
             ..NetMapDiff::default()
         }
     }
@@ -295,6 +297,8 @@ pub struct NetMapDiff {
     pub exit_nodes_changed: bool,
     /// Whether any plain WireGuard member was added, removed or changed.
     pub clients_changed: bool,
+    /// Whether the settings chosen for any device changed.
+    pub device_settings_changed: bool,
 }
 
 impl NetMapDiff {
@@ -311,6 +315,7 @@ impl NetMapDiff {
             && !self.dns_changed
             && !self.clients_changed
             && !self.exit_nodes_changed
+            && !self.device_settings_changed
     }
 
     /// Applies the peer changes to `peers`, turning the old map's peers into the new one's.

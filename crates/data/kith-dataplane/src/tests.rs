@@ -207,7 +207,13 @@ async fn exit_traffic_and_its_replies_cross_the_exit_peer() {
         b.handle.exit_users(NETWORK, now, window).await.unwrap(),
         BTreeSet::from([a.id])
     );
-    assert!(a.handle.exit_users(NETWORK, now, window).await.unwrap().is_empty());
+    assert!(
+        a.handle
+            .exit_users(NETWORK, now, window)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         b.handle
             .exit_users(NETWORK, now + window + Duration::from_secs(1), window)
