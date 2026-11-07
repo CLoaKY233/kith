@@ -383,12 +383,22 @@ fn refuse(
     None
 }
 
+/// `/api/networks/:net/devices/:node/settings`: a member may change their own devices; the
+/// handler checks whose it is.
+fn is_device_settings(path: &str) -> bool {
+    matches!(
+        path.split('/').collect::<Vec<_>>().as_slice(),
+        ["", "api", "networks", _, "devices", _, "settings"]
+    )
+}
+
 /// Whether a signed-in person needs to be an owner or admin for this request.
 fn needs_admin(principal: Option<&Principal>, method: &Method, path: &str) -> bool {
     matches!(principal, Some(Principal::Person { .. }))
         && !matches!(*method, Method::GET | Method::HEAD)
         && path.starts_with("/api/")
         && !SELF_SERVICE.iter().any(|prefix| path.starts_with(prefix))
+        && !is_device_settings(path)
 }
 
 /// Refuses requests that do not come from this server's page, then those without a

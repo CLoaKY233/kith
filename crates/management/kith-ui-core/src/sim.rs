@@ -269,6 +269,44 @@ impl Sim {
         Ok(accepted())
     }
 
+    /// `POST /api/networks/:net/devices/:node/settings`: the record is kept on the device
+    /// as a daemon would, and nothing else in the recording moves.
+    pub(crate) fn set_device_settings(
+        &self,
+        net: &str,
+        node: NodeId,
+        settings: &kith_ipc::DeviceSettingsInfo,
+    ) -> Answer {
+        let local = self.local(net)?;
+        let mut world = self.read();
+        let network = known(&world, net)?;
+        let mut peers = peers(&world, net)?;
+        if let Some(exit) = settings.exit
+            && exit != local
+            && !peers.iter().any(|peer| peer.node == exit)
+        {
+            return Err(ApiError::bad("no such exit in this network"));
+        }
+        if node == local {
+            let mut status = status(&world)?;
+            let summary = status
+                .networks
+                .iter_mut()
+                .find(|summary| summary.id == network)
+                .ok_or_else(|| ApiError::not_found("this device is not in that network"))?;
+            summary.my_settings = Some(*settings);
+            set_status(&mut world, &status)?;
+        } else {
+            let peer = peers
+                .iter_mut()
+                .find(|peer| peer.node == node)
+                .ok_or_else(|| ApiError::not_found("no such device in this network"))?;
+            peer.settings = Some(*settings);
+            set_peers(&mut world, net, &peers)?;
+        }
+        Ok(accepted())
+    }
+
     /// `POST /api/networks/:net/records`.
     pub(crate) fn set_record(&self, net: &str, input: &RecordIn) -> Answer {
         let mut guard = self.read();
