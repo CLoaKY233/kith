@@ -33,6 +33,8 @@ struct World {
     services: Vec<(String, String)>,
     /// What `ip route show table all` or `netstat -rn` prints, by address family.
     route_table: BTreeMap<bool, String>,
+    /// Files the fake refuses to write, like a read-only `/etc` under systemd.
+    read_only: BTreeSet<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -308,6 +310,12 @@ impl System for Fake {
     }
 
     fn write(&mut self, path: &Path, contents: &str) -> Result<(), Error> {
+        if self.world.read_only.contains(path) {
+            return Err(Error::Io {
+                path: path.to_owned(),
+                source: std::io::Error::from(std::io::ErrorKind::ReadOnlyFilesystem),
+            });
+        }
         self.world
             .files
             .insert(path.to_owned(), contents.to_owned());
@@ -942,4 +950,26 @@ fn group_lookups_find_root_and_reject_unknown_names() {
 fn utc_offset_is_within_a_day() {
     let offset = crate::utc_offset_secs(1_800_000_000);
     assert!(offset.abs() <= 14 * 3600, "{offset}");
+}
+
+#[test]
+fn a_dns_failure_on_debian_keeps_routes_and_the_exit() {
+    let mut world = base_world();
+    world.read_only.insert(PathBuf::from("/etc/resolv.conf"));
+    let mut sys = Sys::new(
+        Fake {
+            world,
+            ..Fake::default()
+        },
+        Platform::Linux,
+        "/var/lib/kith/sys",
+    );
+    sys.apply(&full_plan(true)).unwrap();
+    let w = &sys.system().world;
+    assert!(w.nft.is_some(), "NAT was rolled back");
+    assert!(
+        w.routes.keys().any(|route| route.contains("100.64.0.0/10")),
+        "routes were rolled back: {:?}",
+        w.routes
+    );
 }
