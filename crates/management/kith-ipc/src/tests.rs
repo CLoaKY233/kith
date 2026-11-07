@@ -553,6 +553,11 @@ fn request_index(request: &Request) -> u8 {
         Request::RecoverAuthority { .. } => 43,
         Request::RecoveryKey { .. } => 44,
         Request::AsActor { .. } => 45,
+        Request::Gateways { .. } => 46,
+        Request::ExportWireGuardVia { .. } => 47,
+        Request::Pause { .. } => 48,
+        Request::Resume => 49,
+        Request::PauseState => 50,
     }
 }
 
@@ -604,6 +609,8 @@ fn response_index(response: &Response) -> u8 {
         Response::AuthorityPrepared { .. } => 43,
         Response::AuthorityApplied => 44,
         Response::RecoveryKey { .. } => 45,
+        Response::Gateways(_) => 46,
+        Response::PauseState { .. } => 47,
     }
 }
 
@@ -800,6 +807,18 @@ fn requests() -> Vec<Request> {
                 name: s("nas"),
             }),
         },
+        Request::Gateways { network: NET },
+        Request::ExportWireGuardVia {
+            network: NET,
+            device_name: s("phone"),
+            tags: vec![s("phones")],
+            gateway: Some(NODE),
+        },
+        Request::Pause {
+            for_secs: Some(3600),
+        },
+        Request::Resume,
+        Request::PauseState,
     ]
 }
 
@@ -1009,6 +1028,17 @@ fn responses() -> Vec<Response> {
         Response::AuthorityApplied,
         Response::RecoveryKey {
             words: s("acorn actor"),
+        },
+        Response::Gateways(vec![crate::GatewayInfo {
+            node: NODE,
+            name: s("vps"),
+            endpoint: s("vpn.example.com:41641"),
+            exit: true,
+            default: true,
+        }]),
+        Response::PauseState {
+            paused: true,
+            resume_in_secs: Some(60),
         },
     ]
 }

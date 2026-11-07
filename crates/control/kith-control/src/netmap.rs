@@ -119,6 +119,7 @@ struct TypedRecords {
     relays: Vec<Relay>,
     dns: Vec<DnsRecords>,
     exit_nodes: BTreeSet<NodeId>,
+    gateways: BTreeMap<NodeId, records::Gateway>,
 }
 
 impl NetMap {
@@ -192,6 +193,11 @@ impl NetMap {
     /// Members that may act as exit nodes. May include the local device.
     pub const fn exit_nodes(&self) -> &BTreeSet<NodeId> {
         &self.records.exit_nodes
+    }
+
+    /// Members that serve plain WireGuard devices, with their key and endpoint.
+    pub const fn gateways(&self) -> &BTreeMap<NodeId, records::Gateway> {
+        &self.records.gateways
     }
 
     /// The local device's inbound packet filter.
@@ -521,6 +527,9 @@ fn typed_records(view: &NetworkView, warnings: &mut Vec<Warning>) -> TypedRecord
             Record::Dns(dns) => records.dns.push(dns),
             Record::Exit(node) => {
                 records.exit_nodes.insert(node);
+            }
+            Record::Gateway(gateway) => {
+                records.gateways.insert(gateway.node, gateway);
             }
         }
     }

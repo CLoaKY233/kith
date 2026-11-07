@@ -266,6 +266,15 @@ pub(crate) fn changes(
                 address: peer.address.clone(),
                 invite: peer.invite.clone(),
             });
+            if peer.online {
+                kinds.push(EntryKind::PeerOnline {
+                    network,
+                    node,
+                    name: peer.name.clone(),
+                    path: peer.path,
+                    gateway: peer.gateway.clone(),
+                });
+            }
             continue;
         };
         if old.name != peer.name {

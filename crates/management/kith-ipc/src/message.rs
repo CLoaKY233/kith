@@ -324,6 +324,32 @@ pub enum Request {
         /// The request; not itself an `AsActor`.
         request: Box<Self>,
     },
+    /// Lists the devices a plain WireGuard device can connect through, default first.
+    Gateways {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Like [`Request::ExportWireGuard`], through a chosen gateway.
+    ExportWireGuardVia {
+        /// The network to add the device to.
+        network: NetworkId,
+        /// The name the device asks for.
+        device_name: String,
+        /// Its policy tags.
+        tags: Vec<String>,
+        /// The gateway; `None` picks the default from [`Request::Gateways`].
+        gateway: Option<NodeId>,
+    },
+    /// Stops carrying traffic, with routes and DNS taken back, while the daemon keeps
+    /// syncing; for `for_secs` seconds, or until [`Request::Resume`].
+    Pause {
+        /// How long; `None` until resumed.
+        for_secs: Option<u64>,
+    },
+    /// Carries traffic again after [`Request::Pause`].
+    Resume,
+    /// Whether the tunnel is paused.
+    PauseState,
 }
 
 /// A person's role in a network, from [`Request::Accounts`].
@@ -710,6 +736,32 @@ pub enum Response {
         /// The recovery code, as space-separated words.
         words: String,
     },
+    /// Answers [`Request::Gateways`]: the default first.
+    Gateways(Vec<GatewayInfo>),
+    /// Answers [`Request::Pause`], [`Request::Resume`] and [`Request::PauseState`].
+    PauseState {
+        /// Whether traffic is paused.
+        paused: bool,
+        /// Seconds until it resumes on its own, when paused for a while.
+        resume_in_secs: Option<u64>,
+    },
+}
+
+/// A device that plain WireGuard devices can connect through, from [`Request::Gateways`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct GatewayInfo {
+    /// The device.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    pub node: NodeId,
+    /// Its name in the network.
+    pub name: String,
+    /// Where phones reach it, as `host:port`.
+    pub endpoint: String,
+    /// Whether it is an exit, so phones may send all traffic through it.
+    pub exit: bool,
+    /// Whether it is the one picked when none is chosen.
+    pub default: bool,
 }
 
 /// One device's report of the peers it reaches, from [`Response::Topology`].

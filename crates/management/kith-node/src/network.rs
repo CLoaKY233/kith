@@ -212,13 +212,13 @@ impl NetworkRuntime {
         &mut self,
         identity: &DeviceIdentity,
         key: [u8; 32],
-        (name, tags): (String, Vec<String>),
+        (name, tags, gateway): (String, Vec<String>, NodeId),
         addresses: Addresses,
         now: Timestamp,
     ) -> Result<(), NodeError> {
         let body = OpBody::AddClient {
             key,
-            gateway: identity.node_id(),
+            gateway,
             name,
             tags,
             v4: addresses.v4,
@@ -266,6 +266,10 @@ impl NetworkRuntime {
 }
 
 /// The invite each member was admitted with, as the invite id `kith invite list` shows.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only a join names an invite"
+)]
 fn joined_with(ledger: &Ledger) -> BTreeMap<NodeId, String> {
     ledger
         .view()

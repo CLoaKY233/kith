@@ -19,10 +19,10 @@ pub use client::IpcClient;
 pub use error::IpcError;
 pub use message::{
     AccountInfo, AccountRole, AccountsInfo, AuthorityChange, BlockedInfo, CredentialInfo,
-    DnsRecord, Entry, EntryKind, ErrorCode, Event, ImportedInfo, InviteInfo, LinkInfo, LinkReport,
-    NetworkSummary, PasskeyAssertion, PasskeyCredential, PathKind, PeerInfo, PendingJoin,
-    PolicyInfo, PolicyRuleInfo, Problem, RecordInfo, RelayInfo, Request, Response, SelectorInfo,
-    Status, TargetInfo, TrafficSample, TrafficSeries, Warning,
+    DnsRecord, Entry, EntryKind, ErrorCode, Event, GatewayInfo, ImportedInfo, InviteInfo, LinkInfo,
+    LinkReport, NetworkSummary, PasskeyAssertion, PasskeyCredential, PathKind, PeerInfo,
+    PendingJoin, PolicyInfo, PolicyRuleInfo, Problem, RecordInfo, RelayInfo, Request, Response,
+    SelectorInfo, Status, TargetInfo, TrafficSample, TrafficSeries, Warning,
 };
 pub use server::{Connection, IpcServer, PeerCred};
 
