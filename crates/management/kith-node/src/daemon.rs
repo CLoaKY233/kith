@@ -351,6 +351,10 @@ mod requests;
 
 /// The event loop's state; owned by one task, so nothing is locked.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags of the daemon"
+)]
 pub(crate) struct Daemon {
     identity: Arc<DeviceIdentity>,
     state: StateDir,
@@ -397,8 +401,10 @@ pub(crate) struct Daemon {
     applied_settings: BTreeMap<NetworkId, DeviceSettings>,
     /// The exit in use and since when it was watched for liveness.
     exit_watch: Option<((NetworkId, NodeId), Instant)>,
-    /// Whether traffic goes out directly while the exit is offline.
+    /// Whether the exit in use is offline.
     exit_bypassed: bool,
+    /// Whether `applied_settings` holds the records found at start.
+    settings_seeded: bool,
 }
 
 impl Drop for Daemon {
@@ -660,6 +666,7 @@ impl Daemon {
             applied_settings: BTreeMap::new(),
             exit_watch: None,
             exit_bypassed: false,
+            settings_seeded: false,
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -856,6 +863,12 @@ impl Daemon {
             Action::Gateways { network } => Ok(Response::Gateways(self.gateways(network)?)),
             Action::Pause { duration } => self.pause(duration).await,
             Action::Resume => {
+                if self.paused && self.paused_by_network() {
+                    return Err(NodeError::InvalidArgument(
+                        "this device was paused in the Console; an admin or its owner can resume it there"
+                            .to_owned(),
+                    ));
+                }
                 if core::mem::take(&mut self.paused) {
                     self.resume_at = None;
                     self.journal.push(EntryKind::Warning {
@@ -1117,6 +1130,7 @@ impl Daemon {
         self.exit = node.map(|node| (network, node));
         self.dataplane.set_exit(self.exit).await?;
         self.exit_watch = None;
+        self.exit_bypassed = false;
         self.state.save_exit(self.exit)?;
         self.journal.push(EntryKind::ExitChanged {
             exit: node.and_then(|node| {
@@ -1174,6 +1188,7 @@ impl Daemon {
         self.exit = Some((network, node));
         self.dataplane.set_exit(self.exit).await?;
         self.exit_watch = None;
+        self.exit_bypassed = false;
         self.refresh(None).await
     }
 
@@ -1249,11 +1264,19 @@ impl Daemon {
                 "{exit} is not an exit node"
             )));
         }
-        if !self.is_admin(network)? && !self.actor_owns(network, node)? {
-            return Err(self.not_admin(
-                network,
-                &format!("only an admin or the owner of {node} can change its settings"),
-            ));
+        let current = map.device_settings().get(&node).copied();
+        if !self.is_admin(network)? {
+            if !self.actor_owns(network, node)? {
+                return Err(self.not_admin(
+                    network,
+                    &format!("only an admin or the owner of {node} can change its settings"),
+                ));
+            }
+            if current.is_some_and(|current| {
+                current.exit_locked && (current.exit != settings.exit || !settings.exit_locked)
+            }) {
+                return Err(self.not_admin(network, "an admin locked this device's exit"));
+            }
         }
         let record = Record::Device(DeviceSettings {
             node,
@@ -1298,44 +1321,75 @@ impl Daemon {
         })
     }
 
-    /// Applies each network's record for this device when it changed: its exit and pause.
-    /// A removed record leaves things as they are.
+    /// Whether a network's record for this device pauses it.
+    fn paused_by_network(&self) -> bool {
+        let local = self.identity.node_id();
+        member_maps(self.networks.maps()).any(|map| {
+            map.device_settings()
+                .get(&local)
+                .is_some_and(|settings| settings.paused)
+        })
+    }
+
+    /// Applies the networks' records for this device when they change. With several, the
+    /// device is paused if any record pauses it, and its exit comes from a locked record if
+    /// there is one, else from the record that changed last. At start, records are taken
+    /// as they are: pauses and locked exits hold, while an unlocked exit leaves the saved
+    /// choice alone. A removed record leaves things as they are.
     async fn apply_device_settings(&mut self) -> Result<(), NodeError> {
         let local = self.identity.node_id();
-        let mut changed = Vec::new();
-        let mut kept = BTreeMap::new();
-        for (network, map) in member_maps_with_ids(self.networks.maps()) {
-            let Some(current) = map.device_settings().get(&local).copied() else {
-                continue;
-            };
-            let last = self.applied_settings.get(&network).copied();
-            if last != Some(current) {
-                changed.push((network, last, current));
+        let current: BTreeMap<NetworkId, DeviceSettings> =
+            member_maps_with_ids(self.networks.maps())
+                .filter_map(|(network, map)| Some((network, *map.device_settings().get(&local)?)))
+                .collect();
+        let last = core::mem::replace(&mut self.applied_settings, current.clone());
+        let seeding = !core::mem::replace(&mut self.settings_seeded, true);
+        let locked = current
+            .iter()
+            .find(|(_, settings)| settings.exit_locked)
+            .map(|(network, settings)| (*network, *settings));
+        let exit = match locked {
+            Some((network, settings)) if seeding || last.get(&network) != Some(&settings) => {
+                Some((network, settings.exit))
             }
-            kept.insert(network, current);
+            Some(_) => None,
+            None if seeding => None,
+            None => current
+                .iter()
+                .filter(|(network, settings)| {
+                    last.get(network).map(|last| last.exit) != Some(settings.exit)
+                })
+                .map(|(network, settings)| (*network, settings.exit))
+                .next_back(),
+        };
+        if let Some((network, exit)) = exit
+            && !(seeding && self.exit == exit.map(|node| (network, node)))
+        {
+            self.apply_network_exit(network, exit, !seeding).await?;
         }
-        self.applied_settings = kept;
         // A locked exit, its own connection included, leaves no room for an import's.
-        if !changed.is_empty() && self.exit_locked() {
+        if current != last && self.exit_locked() {
             for import in self.external.active_exits() {
                 self.external.set_active(&self.state, import, false)?;
             }
         }
-        for (network, last, settings) in changed {
-            if last.map(|last| last.exit) != Some(settings.exit) {
-                self.apply_network_exit(network, settings.exit).await?;
-            }
-            if last.is_some_and(|last| last.paused) != settings.paused {
-                self.paused = settings.paused;
+        let paused = current.values().any(|settings| settings.paused);
+        let was = last.values().any(|settings| settings.paused);
+        if seeding {
+            if paused {
+                self.paused = true;
                 self.resume_at = None;
-                self.journal.push(EntryKind::Warning {
-                    message: if settings.paused {
-                        "traffic paused by the network's admin".to_owned()
-                    } else {
-                        "traffic resumed by the network's admin".to_owned()
-                    },
-                });
             }
+        } else if paused != was {
+            self.paused = paused;
+            self.resume_at = None;
+            self.journal.push(EntryKind::Warning {
+                message: if paused {
+                    "traffic paused by the network's admin".to_owned()
+                } else {
+                    "traffic resumed by the network's admin".to_owned()
+                },
+            });
         }
         Ok(())
     }
@@ -1344,6 +1398,7 @@ impl Daemon {
         &mut self,
         network: NetworkId,
         exit: Option<NodeId>,
+        announce: bool,
     ) -> Result<(), NodeError> {
         let map = self.member_map(network)?;
         let exit = match exit {
@@ -1368,7 +1423,11 @@ impl Daemon {
         self.exit = exit.map(|node| (network, node));
         self.dataplane.set_exit(self.exit).await?;
         self.exit_watch = None;
+        self.exit_bypassed = false;
         self.state.save_exit(self.exit)?;
+        if !announce {
+            return Ok(());
+        }
         self.journal.push(EntryKind::ExitChanged {
             exit: label.clone(),
         });
@@ -1411,16 +1470,22 @@ impl Daemon {
             return Ok(());
         }
         self.exit_bypassed = offline;
-        let message = if offline {
-            self.dataplane.set_exit(None).await?;
+        let locked = self.exit_locked();
+        self.dataplane.set_exit(self.effective_exit()).await?;
+        self.follow_effective_exit()?;
+        let message = if !offline {
             format!(
-                "the exit node {} is offline; traffic goes out through this device's own connection until it is back",
+                "the exit node {} is back; traffic goes through it again",
+                exit.1.short()
+            )
+        } else if locked {
+            format!(
+                "the exit node {} is offline; internet traffic is blocked until it is back, because the exit is locked",
                 exit.1.short()
             )
         } else {
-            self.dataplane.set_exit(Some(exit)).await?;
             format!(
-                "the exit node {} is back; traffic goes through it again",
+                "the exit node {} is offline; traffic goes out through this device's own connection until it is back",
                 exit.1.short()
             )
         };
@@ -1430,6 +1495,25 @@ impl Daemon {
         });
         self.notes.warnings.push_back((Instant::now(), message));
         Ok(())
+    }
+
+    /// The exit traffic actually uses: none while the chosen one is offline, unless the
+    /// exit is locked, in which case traffic stays in the tunnel and goes nowhere.
+    fn effective_exit(&self) -> Option<(NetworkId, NodeId)> {
+        self.exit
+            .filter(|_| !self.exit_bypassed || self.exit_locked())
+    }
+
+    /// Points DNS forwarding and the OS routes at the effective exit.
+    fn follow_effective_exit(&mut self) -> Result<(), NodeError> {
+        if let Some(dns) = &self.dns {
+            let upstreams = self.forwarding_upstreams();
+            if upstreams != self.notes.dns_forwarding {
+                dns.set_upstreams(upstreams.clone());
+                self.notes.dns_forwarding = upstreams;
+            }
+        }
+        self.apply_os()
     }
 
     async fn write_admin_record(
@@ -1794,8 +1878,11 @@ impl Daemon {
             .filter(|_| self.paused)
             .is_some_and(|until| until <= Instant::now())
         {
-            self.paused = false;
             self.resume_at = None;
+            if self.paused_by_network() {
+                return;
+            }
+            self.paused = false;
             self.journal.push(EntryKind::Warning {
                 message: "traffic resumed".to_owned(),
             });
@@ -2485,7 +2572,7 @@ impl Daemon {
     fn forwarding_upstreams(&self) -> Vec<SocketAddr> {
         match &self.dns_upstreams {
             Some(configured) if !configured.is_empty() => configured.clone(),
-            _ if self.exit.is_some() => EXIT_RESOLVERS.to_vec(),
+            _ if self.effective_exit().is_some() => EXIT_RESOLVERS.to_vec(),
             _ => self.system_upstreams.clone(),
         }
     }
@@ -2613,7 +2700,7 @@ impl Daemon {
             })
         });
         let inputs = PlanInputs {
-            exit: self.exit,
+            exit: self.effective_exit(),
             exit_endpoints,
             dns,
             serve_exit: self.server.as_ref().is_some_and(ServerMode::is_exit),
@@ -2627,7 +2714,7 @@ impl Daemon {
     /// known address of the exit node and of every relay. Without them, on systems with no
     /// fwmark, kith's own traffic to them would enter the tunnel it carries.
     fn exit_bypass(&self, maps: &Networks) -> Vec<IpAddr> {
-        let Some((_, node)) = self.exit else {
+        let Some((_, node)) = self.effective_exit() else {
             return Vec::new();
         };
         let current = self.paths.get(&node).and_then(|endpoint| match endpoint {
@@ -2734,7 +2821,7 @@ impl Daemon {
         }
         if paths_changed {
             self.push_peers().await?;
-            if self.exit.is_some() {
+            if self.effective_exit().is_some() {
                 self.apply_os()?;
             }
         }
