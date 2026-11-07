@@ -96,6 +96,7 @@ pub fn declarations() -> String {
     push::<wire::Imported>(&mut out, &config);
     push::<wire::ImportUseIn>(&mut out, &config);
     push::<wire::PhoneIn>(&mut out, &config);
+    push::<kith_ipc::GatewayInfo>(&mut out, &config);
     push::<wire::PhoneCreated>(&mut out, &config);
     push::<wire::PhoneConfigIn>(&mut out, &config);
     push::<wire::PhoneConfig>(&mut out, &config);
