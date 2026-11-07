@@ -896,16 +896,27 @@ mod tests {
         join(&s, &a, network, "alpha").await?;
         let server = peer_info(&a, network, "server").await?;
         let b = start().await?;
-        join(&s, &b, network, "beta").await?;
+        let link = invite(&s, network).await?;
+        let invite_id: String = InviteToken::parse(&link)?
+            .invite_public_key()
+            .to_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        join_with(&b, link, network, "beta").await?;
         let beta = peer(&a, network, "beta").await?;
         let alpha = peer(&b, network, "alpha").await?;
+        if peer_info(&s, network, "beta").await?.invite.as_ref() != Some(&invite_id) {
+            return Err("the peer list does not name the invite beta joined with".into());
+        }
         deliver(&b, &a, &udp_packet(beta, alpha, b"hi")?).await?;
         use_exit(&a, network, Some(server.node)).await?;
 
         let wanted = |entries: &[kith_ipc::Entry]| {
             let joined = entries.iter().any(|e| {
-                matches!(&e.kind, EntryKind::DeviceJoined { name, address, .. }
-                    if name == "beta" && *address == beta.to_string())
+                matches!(&e.kind, EntryKind::DeviceJoined { name, address, invite, .. }
+                    if name == "beta" && *address == beta.to_string()
+                        && invite.as_ref() == Some(&invite_id))
             });
             let exit = entries.iter().any(|e| {
                 matches!(&e.kind, EntryKind::ExitChanged { exit: Some(exit) } if exit == "home/server")

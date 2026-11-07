@@ -214,7 +214,12 @@ gateway: string | null,
  * The largest packet the path to it carries, when smaller than the tunnel MTU. Bigger
  * TCP is kept smaller, IPv4 split, and senders of other traffic told to shrink.
  */
-path_mtu: number | null, };
+path_mtu: number | null, 
+/**
+ * The invite the device joined with, as its [`InviteInfo::id`]; `None` for a device
+ * added another way, such as by an admin, an approved request or as a phone.
+ */
+invite: string | null, };
 
 /**
  * What a journal [`Entry`] records.
@@ -303,7 +308,12 @@ name: string,
 /**
  * Its mesh address.
  */
-address: string, } | { "kind": "device_removed", 
+address: string, 
+/**
+ * The invite it joined with, as its [`InviteInfo::id`]; `None` for a device
+ * added another way.
+ */
+invite: string | null, } | { "kind": "device_removed", 
 /**
  * The network.
  */
@@ -500,7 +510,12 @@ name: string,
 /**
  * Its mesh address.
  */
-address: string, } | { "kind": "device_removed", 
+address: string, 
+/**
+ * The invite it joined with, as its [`InviteInfo::id`]; `None` for a device
+ * added another way.
+ */
+invite: string | null, } | { "kind": "device_removed", 
 /**
  * The network.
  */

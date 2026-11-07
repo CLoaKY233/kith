@@ -27,7 +27,7 @@ pub use message::{
 pub use server::{Connection, IpcServer, PeerCred};
 
 /// The protocol version both sides must agree on in [`Request::Hello`].
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// The largest request the daemon accepts, in envelope bytes.
 pub const MAX_FRAME_LEN: usize = 256 * 1024;

@@ -943,6 +943,9 @@ pub struct PeerInfo {
     /// The largest packet the path to it carries, when smaller than the tunnel MTU. Bigger
     /// TCP is kept smaller, IPv4 split, and senders of other traffic told to shrink.
     pub path_mtu: Option<u16>,
+    /// The invite the device joined with, as its [`InviteInfo::id`]; `None` for a device
+    /// added another way, such as by an admin, an approved request or as a phone.
+    pub invite: Option<String>,
 }
 
 /// How traffic reaches a peer.
@@ -1084,6 +1087,9 @@ pub enum EntryKind {
         name: String,
         /// Its mesh address.
         address: String,
+        /// The invite it joined with, as its [`InviteInfo::id`]; `None` for a device
+        /// added another way.
+        invite: Option<String>,
     },
     /// A device stopped being a member.
     DeviceRemoved {

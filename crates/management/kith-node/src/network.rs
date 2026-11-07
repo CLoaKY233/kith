@@ -9,6 +9,7 @@ use kith_ledger::{JoinProof, Ledger, NetworkParams, OpBody, SignedOp};
 use kith_policy::{Addresses, Policy};
 use kith_types::{AccountId, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, Timestamp};
 
+use crate::daemon::hex;
 use crate::types::NodeError;
 
 /// A ledger shared between the loop and control connections; never locked across `.await`.
@@ -24,6 +25,8 @@ pub(crate) struct NetworkRuntime {
     local: NodeId,
     ledger: SharedLedger,
     netmap: NetMap,
+    /// The invite each member joined with, as an invite id, for those that joined by one.
+    invites: BTreeMap<NodeId, String>,
     /// The person admin ops are made for, while a request acts for one.
     actor: Option<AccountId>,
 }
@@ -69,6 +72,7 @@ impl NetworkRuntime {
         Ok(Self {
             id: ledger.network_id(),
             local,
+            invites: joined_with(&ledger),
             ledger: Arc::new(Mutex::new(ledger)),
             netmap,
             actor: None,
@@ -104,6 +108,11 @@ impl NetworkRuntime {
         &self.netmap
     }
 
+    /// The invite id `device` joined with, if it joined by an invite.
+    pub(crate) fn invite_of(&self, device: &NodeId) -> Option<&str> {
+        self.invites.get(device).map(String::as_str)
+    }
+
     /// Runs `f` with the ledger locked.
     pub(crate) fn with_ledger<R>(&self, f: impl FnOnce(&mut Ledger) -> R) -> Result<R, NodeError> {
         let mut ledger = self.ledger.lock().map_err(|_| NodeError::Poisoned)?;
@@ -112,7 +121,10 @@ impl NetworkRuntime {
 
     /// Re-derives the map from the ledger; `None` when it did not change.
     pub(crate) fn rebuild(&mut self, local: NodeId) -> Result<Option<Change>, NodeError> {
-        let netmap = self.with_ledger(|ledger| build_netmap(ledger.view(), local))??;
+        let (netmap, invites) = self.with_ledger(|ledger| {
+            build_netmap(ledger.view(), local).map(|netmap| (netmap, joined_with(ledger)))
+        })??;
+        self.invites = invites;
         self.local = local;
         let diff = NetMap::diff(&self.netmap, &netmap);
         self.netmap = netmap;
@@ -251,6 +263,21 @@ impl NetworkRuntime {
             .map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
         self.set_record(identity, String::from(records::POLICY), bytes, now)
     }
+}
+
+/// The invite each member was admitted with, as the invite id `kith invite list` shows.
+fn joined_with(ledger: &Ledger) -> BTreeMap<NodeId, String> {
+    ledger
+        .view()
+        .devices()
+        .iter()
+        .filter_map(
+            |(node, device)| match &ledger.get(&device.admitted_by)?.op().body {
+                OpBody::Join(proof) => Some((*node, hex(&proof.invite_key.to_bytes()))),
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 /// Drafts and signs an admin op by `identity`, made for `actor` when there is one.

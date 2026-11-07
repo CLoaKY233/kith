@@ -59,6 +59,7 @@ fn peer(node: NodeId, name: &str, address: &str, online: bool) -> PeerInfo {
         display_name: name.to_owned(),
         gateway: (name == "phone").then(|| "laptop".to_owned()),
         path_mtu: None,
+        invite: None,
     }
 }
 
@@ -580,6 +581,7 @@ async fn a_join_request_settled_elsewhere_answers_with_who_won() -> TestResult {
                 node: NAS,
                 name: "nas".into(),
                 address: "100.64.0.2".into(),
+                invite: None,
             },
         },
     ];

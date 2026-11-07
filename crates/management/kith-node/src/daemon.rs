@@ -31,6 +31,8 @@ use tokio::time::Instant;
 mod manage;
 mod people;
 
+pub(crate) use manage::hex;
+
 use crate::blocked::BlockedLog;
 use crate::channel::{ChannelLayer, now, pick_targets};
 use crate::connectivity::{Connectivity, Output};
@@ -1454,6 +1456,7 @@ impl Daemon {
     fn peer_infos(&self, network: NetworkId, map: &NetMap, stats: &Stats) -> Vec<PeerInfo> {
         let at = wall_instant();
         let age = |when: std::time::Instant| at.saturating_duration_since(when);
+        let runtime = self.networks.get(&network);
         let mut infos: Vec<PeerInfo> = map
             .peers()
             .iter()
@@ -1484,6 +1487,9 @@ impl Daemon {
                     display_name: peer.name.clone(),
                     gateway: None,
                     path_mtu: self.connectivity.path_mtu(node).filter(|_| online),
+                    invite: runtime
+                        .and_then(|runtime| runtime.invite_of(node))
+                        .map(str::to_owned),
                 }
             })
             .collect();
@@ -1542,6 +1548,7 @@ impl Daemon {
                 display_name: client.peer.name.clone(),
                 gateway: label_of(&client.gateway),
                 path_mtu,
+                invite: None,
             });
         }
         infos
