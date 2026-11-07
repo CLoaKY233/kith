@@ -127,18 +127,12 @@ impl Daemon {
             .find(|held| held.request.device == node)
             .ok_or_else(|| NodeError::NotFound(format!("no pending request from {node}")))?;
         let identity = Arc::clone(&self.identity);
-        let author = identity.node_id();
         let body = OpBody::AddDevice {
             device: node,
             name: held.request.name.clone(),
             tags: Vec::new(),
         };
-        self.runtime_mut(network)?.with_ledger(|ledger| {
-            let op = ledger
-                .draft(author, body, at)
-                .sign(identity.signing_key())?;
-            ledger.insert(op).map(|_| ())
-        })??;
+        self.runtime_mut(network)?.append(&identity, body, at)?;
         lock_admissions(self.channel.admissions()).take(network, node);
         self.commit(network).await?;
         self.gossip_admissions(network)?;

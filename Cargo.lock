@@ -1258,9 +1258,13 @@ dependencies = [
  "kith-sys",
  "kith-types",
  "qrcode",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1454,6 +1458,7 @@ dependencies = [
  "kith-transport-ws",
  "kith-tun",
  "kith-types",
+ "p256",
  "rustls-pki-types",
  "thiserror",
  "tokio",

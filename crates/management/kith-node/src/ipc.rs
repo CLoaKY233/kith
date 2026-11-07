@@ -2,11 +2,12 @@ use core::time::Duration;
 
 use kith_config::WgQuickConfig;
 use kith_control::records::{DNS_PREFIX, DnsData, DnsRecords, Record};
-use kith_identity::{InviteToken, RequestCode};
+use kith_identity::{InviteToken, RecoveryCode, RequestCode};
 use kith_ipc::{
-    Connection, DnsRecord, Entry, ErrorCode, Event, IpcServer, PROTOCOL_VERSION, PeerCred, Request,
-    Response,
+    AccountRole, AuthorityChange, Connection, DnsRecord, Entry, ErrorCode, Event, IpcServer,
+    PROTOCOL_VERSION, PasskeyCredential, PeerCred, Request, Response,
 };
+use kith_ledger::{Approval, Assertion, Credential, OpBody, Role, UnsignedOp};
 use kith_naming::DEFAULT_DEVICE_TTL;
 use kith_policy::Policy;
 use kith_types::NetworkId;
@@ -293,8 +294,154 @@ fn admission_action(request: Request) -> Result<Action, NodeError> {
         Request::ListExits { network } => Action::ListExits { network },
         Request::UseImport { network, active } => Action::UseImport { network, active },
         Request::RemoveImport { network } => Action::RemoveImport { network },
+        other @ (Request::Accounts { .. }
+        | Request::AddAccount { .. }
+        | Request::AssignDevice { .. }
+        | Request::PrepareAuthority { .. }
+        | Request::SubmitAuthority { .. }
+        | Request::RecoverAuthority { .. }
+        | Request::RecoveryKey { .. }
+        | Request::AsActor { .. }) => people_action(other)?,
         _ => return Err(NodeError::InvalidArgument("unsupported request".to_owned())),
     })
+}
+
+/// The requests about people: accounts, approvals, the recovery key, acting for someone.
+fn people_action(request: Request) -> Result<Action, NodeError> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "admission_action passes only the requests about people"
+    )]
+    Ok(match request {
+        Request::Accounts { network } => Action::Accounts { network },
+        Request::AddAccount {
+            network,
+            name,
+            role,
+            credential,
+        } => {
+            if role != AccountRole::Owner {
+                return Err(NodeError::InvalidArgument(
+                    "this device adds only the network's first owner; add everyone else with \
+                     an owner's or admin's passkey"
+                        .to_owned(),
+                ));
+            }
+            Action::AddAccount {
+                network,
+                name: person_name(name)?,
+                credential: passkey(credential),
+            }
+        }
+        Request::AssignDevice {
+            network,
+            device,
+            account,
+        } => Action::AssignDevice {
+            network,
+            device,
+            account,
+        },
+        Request::PrepareAuthority { network, change } => Action::PrepareAuthority {
+            network,
+            change: Box::new(authority_change(change)?),
+        },
+        Request::SubmitAuthority {
+            network,
+            op_bytes,
+            assertion,
+        } => Action::SubmitAuthority {
+            network,
+            draft: Box::new(prepared(&op_bytes)?),
+            approval: Box::new(Approval::Passkey(Assertion {
+                account: assertion.account,
+                credential_id: assertion.credential_id,
+                authenticator_data: assertion.authenticator_data,
+                client_data_json: assertion.client_data_json,
+                signature: assertion.signature,
+            })),
+        },
+        Request::RecoverAuthority {
+            network,
+            op_bytes,
+            words,
+        } => {
+            let draft = prepared(&op_bytes)?;
+            let code = RecoveryCode::parse(&words)
+                .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+            let challenge = draft
+                .id()
+                .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+            Action::SubmitAuthority {
+                network,
+                draft: Box::new(draft),
+                approval: Box::new(Approval::recovery(&code.signing_key(), &challenge)),
+            }
+        }
+        Request::RecoveryKey { network } => Action::RecoveryKey { network },
+        Request::AsActor { actor, request } => {
+            if matches!(*request, Request::AsActor { .. }) {
+                return Err(NodeError::InvalidArgument(
+                    "a request acts for one person at most".to_owned(),
+                ));
+            }
+            Action::AsActor {
+                actor,
+                action: Box::new(translate(*request)?),
+            }
+        }
+        _ => {
+            return Err(NodeError::InvalidArgument(
+                "not a people request".to_owned(),
+            ));
+        }
+    })
+}
+
+const fn role(role: AccountRole) -> Role {
+    match role {
+        AccountRole::Owner => Role::Owner,
+        AccountRole::Admin => Role::Admin,
+        AccountRole::Member => Role::Member,
+    }
+}
+
+fn passkey(credential: PasskeyCredential) -> Credential {
+    Credential {
+        id: credential.credential_id,
+        public_key: credential.public_key,
+        rp_id: credential.rp_id,
+    }
+}
+
+fn authority_change(change: AuthorityChange) -> Result<OpBody, NodeError> {
+    Ok(match change {
+        AuthorityChange::AddAccount {
+            name,
+            role: wanted,
+            credential,
+        } => OpBody::AddAccount {
+            name: person_name(name)?,
+            role: role(wanted),
+            credential: passkey(credential),
+        },
+        AuthorityChange::RemoveAccount { account } => OpBody::RemoveAccount { account },
+        AuthorityChange::SetRole {
+            account,
+            role: wanted,
+        } => OpBody::SetRole {
+            account,
+            role: role(wanted),
+        },
+        AuthorityChange::AuthorizeConsole { device } => OpBody::AuthorizeConsole { device },
+        AuthorityChange::RevokeConsole { device } => OpBody::RevokeConsole { device },
+    })
+}
+
+/// Decodes the op bytes that `PrepareAuthority` handed out.
+fn prepared(op_bytes: &[u8]) -> Result<UnsignedOp, NodeError> {
+    UnsignedOp::from_bytes(op_bytes)
+        .map_err(|error| NodeError::InvalidArgument(format!("not a prepared change: {error}")))
 }
 
 fn blocked(request: Request) -> Result<Action, NodeError> {
@@ -338,6 +485,18 @@ fn device_name(name: String) -> Result<String, NodeError> {
     if name.len() > kith_ledger::MAX_NAME_LEN {
         return Err(NodeError::InvalidArgument(format!(
             "device name is longer than {} bytes",
+            kith_ledger::MAX_NAME_LEN
+        )));
+    }
+    Ok(name)
+}
+
+/// A person's name: not empty, and short enough for the ledger.
+fn person_name(name: String) -> Result<String, NodeError> {
+    let name = non_empty("name", name)?;
+    if name.len() > kith_ledger::MAX_NAME_LEN {
+        return Err(NodeError::InvalidArgument(format!(
+            "name is longer than {} bytes",
             kith_ledger::MAX_NAME_LEN
         )));
     }
@@ -446,6 +605,7 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::GetPolicy { .. }
             | Request::ListRelays { .. }
             | Request::ListExits { .. }
+            | Request::Accounts { .. }
     )
 }
 

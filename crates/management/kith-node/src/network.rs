@@ -7,7 +7,7 @@ use kith_control::{NetMap, NetMapDiff, Networks, build_netmap, records};
 use kith_identity::{Bootstrap, DeviceIdentity, InviteToken};
 use kith_ledger::{JoinProof, Ledger, NetworkParams, OpBody, SignedOp};
 use kith_policy::{Addresses, Policy};
-use kith_types::{Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, Timestamp};
+use kith_types::{AccountId, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, Timestamp};
 
 use crate::types::NodeError;
 
@@ -24,6 +24,8 @@ pub(crate) struct NetworkRuntime {
     local: NodeId,
     ledger: SharedLedger,
     netmap: NetMap,
+    /// The person admin ops are made for, while a request acts for one.
+    actor: Option<AccountId>,
 }
 
 /// What changed when a runtime's ledger moved.
@@ -69,6 +71,7 @@ impl NetworkRuntime {
             local,
             ledger: Arc::new(Mutex::new(ledger)),
             netmap,
+            actor: None,
         })
     }
 
@@ -132,6 +135,7 @@ impl NetworkRuntime {
             .checked_add(expires_in)
             .ok_or_else(|| NodeError::InvalidArgument(String::from("invite expiry overflows")))?;
         let author = identity.node_id();
+        let actor = self.actor;
         self.with_ledger(|ledger| {
             let token = InviteToken::generate(
                 ledger.network_id(),
@@ -146,27 +150,21 @@ impl NetworkRuntime {
                 max_uses,
                 tags: Vec::new(),
             };
-            let op = ledger
-                .draft(author, body, now)
-                .sign(identity.signing_key())?;
-            ledger.insert(op)?;
+            ledger.insert(admin_op(ledger, identity, actor, body, now)?)?;
             Ok(token)
         })?
     }
 
-    /// Signs and inserts an admin op authored by `identity`.
+    /// Signs and inserts an admin op authored by `identity`, made for the current actor.
     pub(crate) fn append(
         &mut self,
         identity: &DeviceIdentity,
         body: OpBody,
         now: Timestamp,
     ) -> Result<(), NodeError> {
-        let author = identity.node_id();
+        let actor = self.actor;
         self.with_ledger(|ledger| {
-            let op = ledger
-                .draft(author, body, now)
-                .sign(identity.signing_key())?;
-            ledger.insert(op)?;
+            ledger.insert(admin_op(ledger, identity, actor, body, now)?)?;
             Ok(())
         })?
     }
@@ -178,14 +176,12 @@ impl NetworkRuntime {
         device: NodeId,
         now: Timestamp,
     ) -> Result<(), NodeError> {
-        let author = identity.node_id();
-        self.with_ledger(|ledger| {
-            let op = ledger
-                .draft(author, OpBody::RemoveDevice { device }, now)
-                .sign(identity.signing_key())?;
-            ledger.insert(op)?;
-            Ok(())
-        })?
+        self.append(identity, OpBody::RemoveDevice { device }, now)
+    }
+
+    /// Makes admin ops for `actor` from now on, or as an admin device with `None`.
+    pub(crate) const fn set_actor(&mut self, actor: Option<AccountId>) {
+        self.actor = actor;
     }
 
     /// The addresses a plain WireGuard device with public `key` would be given now.
@@ -208,22 +204,15 @@ impl NetworkRuntime {
         addresses: Addresses,
         now: Timestamp,
     ) -> Result<(), NodeError> {
-        let author = identity.node_id();
-        self.with_ledger(|ledger| {
-            let body = OpBody::AddClient {
-                key,
-                gateway: author,
-                name,
-                tags,
-                v4: addresses.v4,
-                v6: addresses.v6,
-            };
-            let op = ledger
-                .draft(author, body, now)
-                .sign(identity.signing_key())?;
-            ledger.insert(op)?;
-            Ok(())
-        })?
+        let body = OpBody::AddClient {
+            key,
+            gateway: identity.node_id(),
+            name,
+            tags,
+            v4: addresses.v4,
+            v6: addresses.v6,
+        };
+        self.append(identity, body, now)
     }
 
     /// Signs and inserts a `SetRecord` op; an empty value deletes the record.
@@ -235,14 +224,7 @@ impl NetworkRuntime {
         now: Timestamp,
     ) -> Result<(), NodeError> {
         let value = (!value.is_empty()).then_some(value);
-        let author = identity.node_id();
-        self.with_ledger(|ledger| {
-            let op = ledger
-                .draft(author, OpBody::SetRecord { key, value }, now)
-                .sign(identity.signing_key())?;
-            ledger.insert(op)?;
-            Ok(())
-        })?
+        self.append(identity, OpBody::SetRecord { key, value }, now)
     }
 
     /// The policy in force: the default for a network that never set one.
@@ -269,6 +251,22 @@ impl NetworkRuntime {
             .map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
         self.set_record(identity, String::from(records::POLICY), bytes, now)
     }
+}
+
+/// Drafts and signs an admin op by `identity`, made for `actor` when there is one.
+fn admin_op(
+    ledger: &Ledger,
+    identity: &DeviceIdentity,
+    actor: Option<AccountId>,
+    body: OpBody,
+    now: Timestamp,
+) -> Result<SignedOp, NodeError> {
+    let draft = ledger.draft(identity.node_id(), body, now);
+    let draft = match actor {
+        Some(actor) => draft.act_for(actor)?,
+        None => draft,
+    };
+    Ok(draft.sign(identity.signing_key())?)
 }
 
 /// Checks a join proof against our clock, then drafts, signs and inserts the `Join` op.
@@ -307,11 +305,14 @@ pub(crate) struct NetworkSet {
     runtimes: BTreeMap<NetworkId, NetworkRuntime>,
     maps: Networks,
     registry: LedgerRegistry,
+    /// The person admin ops are made for, while a request acts for one.
+    actor: Option<AccountId>,
 }
 
 impl NetworkSet {
     /// Adds or replaces a runtime and publishes its ledger to the registry.
-    pub(crate) fn insert(&mut self, runtime: NetworkRuntime) -> Result<(), NodeError> {
+    pub(crate) fn insert(&mut self, mut runtime: NetworkRuntime) -> Result<(), NodeError> {
+        runtime.set_actor(self.actor);
         let id = runtime.id;
         let local = runtime.local;
         let ledger = runtime.ledger();
@@ -378,6 +379,19 @@ impl NetworkSet {
     /// Every network map.
     pub(crate) const fn maps(&self) -> &Networks {
         &self.maps
+    }
+
+    /// Makes every network's admin ops for `actor`, or as an admin device with `None`.
+    pub(crate) fn set_actor(&mut self, actor: Option<AccountId>) {
+        self.actor = actor;
+        for runtime in self.runtimes.values_mut() {
+            runtime.set_actor(actor);
+        }
+    }
+
+    /// The person admin ops are made for now, if any.
+    pub(crate) const fn actor(&self) -> Option<AccountId> {
+        self.actor
     }
 
     /// The ledger registry, shared with the control channel's handler.

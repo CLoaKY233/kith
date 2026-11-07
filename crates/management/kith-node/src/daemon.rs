@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 mod manage;
+mod people;
 
 use crate::blocked::BlockedLog;
 use crate::channel::{ChannelLayer, now, pick_targets};
@@ -793,6 +794,13 @@ impl Daemon {
             | Action::GetPolicy { .. }
             | Action::ListRelays { .. }
             | Action::ListExits { .. }) => self.manage(action).await,
+            action @ (Action::Accounts { .. }
+            | Action::AddAccount { .. }
+            | Action::AssignDevice { .. }
+            | Action::PrepareAuthority { .. }
+            | Action::SubmitAuthority { .. }
+            | Action::RecoveryKey { .. }
+            | Action::AsActor { .. }) => self.people(action).await,
         }
     }
 
@@ -1033,12 +1041,25 @@ impl Daemon {
         self.refresh(None).await
     }
 
+    /// Whether this device may make admin ops in `network` now: as an admin device, or,
+    /// while acting for a person, as an admin device or authorized console for someone
+    /// who is an owner or admin.
     fn is_admin(&self, network: NetworkId) -> Result<bool, NodeError> {
         let local = self.identity.node_id();
+        let actor = self.networks.actor();
         self.networks
             .get(&network)
             .ok_or_else(|| NodeError::NotFound(network.to_string()))?
-            .with_ledger(|ledger| ledger.view().admins().contains(&local))
+            .with_ledger(|ledger| {
+                let view = ledger.view();
+                let device = view.admins().contains(&local);
+                actor.map_or(device, |actor| {
+                    (device || view.is_console(&local))
+                        && view
+                            .account(&actor)
+                            .is_some_and(|account| account.role.can_administer())
+                })
+            })
     }
 
     async fn write_admin_record(
