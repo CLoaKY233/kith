@@ -10,6 +10,8 @@ AddDevice (spec §7.3). Asks `What are you adding?`; a phone hands over to AddPh
     the sheet closes 2 s later unless the pointer or focus is inside it. A request that lapses
     reads `This request expired. Ask dev-box to try again.`
   - Send an invite link: the invite flow (§7.4), with `Create invite` pinned in the footer.
+In a public Console a laptop or server instead gets a one-time code for the signed-in person
+(DeviceCode.svelte), and the sheet says whose device joined.
 Props:
   - open: boolean, bindable. The screen maps it to the URL query (Back closes it).
   - net: string, the network as the route names it.
@@ -17,6 +19,7 @@ Props:
 -->
 <script lang="ts">
   import { tick, untrack } from 'svelte';
+  import { me as signedIn } from '../lib/account.svelte';
   import { announce } from '../lib/announce';
   import { copy } from '../lib/copy';
   import { rtt } from '../lib/format';
@@ -32,6 +35,7 @@ Props:
   import { deviceName, findNetwork, isStale, membershipOf, pathText } from './flow';
   import { InviteFlow } from './inviteFlow.svelte';
   import InviteBody from './InviteBody.svelte';
+  import DeviceCode from './DeviceCode.svelte';
 
   let {
     open = $bindable(false),
@@ -147,6 +151,15 @@ Props:
     setQuery({ add: 'phone' }, { replace: true });
   }
 
+  /** The signed-in person, in a public Console: computers join with a code for them. */
+  const person = $derived(signedIn());
+
+  function showByName(device: string): void {
+    if (network === null) return;
+    open = false;
+    go(href({ name: 'device', net: network.name, dev: device }));
+  }
+
   function showDevice(peer: PeerInfo): void {
     if (network === null) return;
     open = false;
@@ -158,7 +171,7 @@ Props:
     { value: 'invite', label: copy.addDevice.sendInvite },
   ] as const;
 
-  const showFooter = $derived(laptop && tab === 'invite' && (flow.invite === null || flow.expired));
+  const showFooter = $derived(!person && laptop && tab === 'invite' && (flow.invite === null || flow.expired));
 </script>
 
 {#snippet createInvite()}
@@ -237,6 +250,8 @@ Props:
         </button>
         <button type="button" class="kind" onclick={choosePhone}>{copy.addDevice.phone}</button>
       </div>
+    {:else if person && networkId !== null}
+      <DeviceCode {networkId} {person} onShow={showByName} />
     {:else}
       <Tabs
         bind:value={tab}

@@ -28,6 +28,7 @@ import type {
   TrafficSeries,
   Versions,
 } from '../types.gen';
+import { viewerStatus } from '../viewer';
 import type {
   ApiFailure,
   ConnState,
@@ -494,7 +495,7 @@ export class Store implements ReducerState {
   }
 
   #setStatus(status: StatusView): void {
-    this.status = status;
+    this.status = viewerStatus(status);
     this.versions = status.versions;
     if (!status.versions.compatible) this.gate = 'version_skew';
     else if (this.gate === 'version_skew') this.gate = null;

@@ -19,6 +19,7 @@ export type Route =
   | { name: 'names'; net: string }
   | { name: 'exits'; net: string }
   | { name: 'access'; net: string }
+  | { name: 'people'; net: string }
   | { name: 'settings'; net: string }
   | { name: 'not_found' };
 
@@ -28,7 +29,7 @@ export type NetPage = Extract<Route, { net: string }>['name'];
 /** The query keys that open overlays; closing one goes Back when the page opened it. */
 export type OverlayKey = 'add' | 'need' | 'remove' | 'flow' | 'sheet';
 
-const NET_PAGES = ['devices', 'activity', 'names', 'exits', 'access', 'settings'] as const;
+const NET_PAGES = ['devices', 'activity', 'people', 'names', 'exits', 'access', 'settings'] as const;
 /** Characters of the id used when two networks share a name. */
 const SHORT_ID = 8;
 

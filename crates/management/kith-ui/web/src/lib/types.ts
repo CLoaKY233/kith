@@ -193,3 +193,56 @@ export type WireguardImported = { readonly network: string };
 
 /** `POST /api/networks/:net/devices/:node/rename`. */
 export type RenameDeviceIn = { readonly name: string };
+
+// The Console: people with passkeys (docs/plans/console.md). Not generated yet.
+
+/** The three roles a person can hold. */
+export type PersonRole = 'owner' | 'admin' | 'member';
+
+/** Where kith-ui runs: on this computer, or reachable from anywhere with passkeys. */
+export type ConsoleMode = 'local' | 'public';
+
+/** Who is signed in, from `/api/status` and `/api/login/finish`. */
+export type Me = { readonly id: string; readonly name: string; readonly role: PersonRole };
+
+/** What `/api/status` adds for the Console; both are absent from an older server. */
+export type ConsoleStatus = { readonly me?: Me | null; readonly mode?: ConsoleMode };
+
+export type PersonDevice = { readonly node: string; readonly name: string; readonly online: boolean };
+
+/** `GET /api/people`. `pending` is a person who has not opened their link yet. */
+export type Person = {
+  readonly id: string;
+  readonly name: string;
+  readonly role: PersonRole;
+  readonly pending: boolean;
+  readonly devices: readonly PersonDevice[];
+};
+
+/** `POST /api/people`. */
+export type AddPersonIn = { readonly name: string; readonly role: PersonRole };
+export type PersonAdded = {
+  readonly id: string;
+  readonly link: string;
+  /** The link as a QR code, when the server sends one (the page has no QR library). */
+  readonly qr_svg?: string | null;
+};
+
+/**
+ * What `POST /api/authority/begin` asks the person's passkey to sign: a role change,
+ * removing someone, or making a just-added person an admin.
+ */
+export type AuthorityChange =
+  | { readonly kind: 'set_role'; readonly person: string; readonly role: PersonRole }
+  | { readonly kind: 'remove_person'; readonly person: string }
+  | { readonly kind: 'add_admin'; readonly person: string };
+
+/** `POST /api/device-codes`: a code that joins one computer for `person`. */
+export type DeviceCodeIn = { readonly person: string };
+export type DeviceCode = {
+  readonly code: string;
+  readonly expires_at_ms: number;
+  readonly qr_svg: string;
+  /** `kith join https://<domain>/j/<code>`. */
+  readonly command: string;
+};

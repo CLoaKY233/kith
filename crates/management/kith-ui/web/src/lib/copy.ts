@@ -35,6 +35,7 @@ export const copy = {
     names: 'Names',
     exits: 'Exits',
     access: 'Access',
+    people: 'People',
     addDevice: 'Add device',
     settings: 'Settings',
     thisDevice: 'This device',
@@ -1227,6 +1228,12 @@ export const copy = {
     offlineSome: (ago: string): string => `Not reachable right now. Seen ${ago}.`,
     never: 'Not connected yet.',
     waitingPhone: 'Waiting for its first connection.',
+  },
+
+  /** Who is signed in to a public Console (docs/plans/console.md); the rest is copy.console.ts. */
+  account: {
+    signOut: 'Sign out',
+    role: { owner: 'Owner', admin: 'Admin', member: 'Member' },
   },
 } as const;
 

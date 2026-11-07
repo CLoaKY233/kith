@@ -32,6 +32,7 @@ export const ICONS = [
   'minus',
   'scan',
   'network',
+  'users',
   'path-direct',
   'path-relayed',
   'path-stealth',

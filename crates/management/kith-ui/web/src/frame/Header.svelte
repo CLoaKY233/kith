@@ -2,7 +2,8 @@
 @component
 The header (spec §4.2): sticky, 56 px, `--bg`, hairline bottom. The screen title at
 `--t-title`, then on the right, in order: ExitChip (only with an exit), NeedsYouButton
-(only when the count is above 0), the connection indicator (nothing when live,
+(only when the count is above 0), who is signed in with Sign out (a public Console only),
+the connection indicator (nothing when live,
 `Reconnecting…`, or `as of 14:02` once stale), and `Search ⌘K`. The connection text hangs
 to the left of the cluster without taking room, so nothing moves when it appears, and it is
 not a live region (frame/conn announces what matters). The bar's contents share the
@@ -17,6 +18,8 @@ Props:
   import Icon from '../lib/icons/Icon.svelte';
   import Kbd from '../lib/ui/Kbd.svelte';
   import { connection } from './conn.svelte';
+  import { me } from '../lib/account.svelte';
+  import Lazy from './Lazy.svelte';
   import ExitChip from './ExitChip.svelte';
   import { layers } from './layers.svelte';
   import { apple } from './net';
@@ -42,6 +45,7 @@ Props:
         <ExitChip {net} />
         <NeedsYouButton {net} />
       {/if}
+      {#if me()}<Lazy name="account">{#snippet children(Account)}<Account />{/snippet}</Lazy>{/if}
       <button
         type="button"
         class="search"

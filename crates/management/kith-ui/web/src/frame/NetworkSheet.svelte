@@ -14,7 +14,8 @@ Props:
   import { closeOverlay, href, netHref, openOverlay, setQuery } from '../router';
   import { layers } from './layers.svelte';
   import { isAdmin, membership, networkName } from './net';
-  import { SETTINGS, SHAPING, type NavPage } from './nav';
+  import { SETTINGS, shaping, type NavPage } from './nav';
+  import Account from './Account.svelte';
   import NavLink from './NavLink.svelte';
   import NetworkList from './NetworkList.svelte';
 
@@ -41,7 +42,7 @@ Props:
     <NetworkList current={net} page={page ?? 'overview'} onPick={dismiss} />
   </div>
   <ul class="menu">
-    {#each SHAPING as item (item.page)}
+    {#each shaping() as item (item.page)}
       <li>
         <NavLink
           to={netHref(net, item.page)}
@@ -84,9 +85,13 @@ Props:
       />
     </li>
   </ul>
+  <div class="account"><Account /></div>
 </Sheet>
 
 <style>
+  .account {
+    margin-top: var(--s-3);
+  }
   .identity {
     display: flex;
     flex-wrap: wrap;

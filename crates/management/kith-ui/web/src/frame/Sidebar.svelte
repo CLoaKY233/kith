@@ -15,7 +15,7 @@ Props:
   import { copy } from '../lib/copy';
   import { netHref, openOverlay } from '../router';
   import { isAdmin, peers } from './net';
-  import { OBSERVING, SETTINGS, SHAPING, type NavItem, type NavPage } from './nav';
+  import { OBSERVING, SETTINGS, shaping, type NavItem, type NavPage } from './nav';
   import NavLink from './NavLink.svelte';
   import NetworkList from './NetworkList.svelte';
 
@@ -55,7 +55,7 @@ Props:
       {#each OBSERVING as item (item.page)}{@render link(item)}{/each}
     </ul>
     <ul class="group">
-      {#each SHAPING as item (item.page)}{@render link(item)}{/each}
+      {#each shaping() as item (item.page)}{@render link(item)}{/each}
     </ul>
     {#if isAdmin(net)}
       <ul class="group">

@@ -35,6 +35,14 @@ async function boot(): Promise<void> {
     mount(Kit, { target });
     return;
   }
+  // The Console's one-time setup link: no session and no network to show yet.
+  const setup = /^\/setup\/([^/]+)\/?$/.exec(location.pathname);
+  if (setup?.[1]) {
+    const { default: Setup } = await import('./routes/Setup.svelte');
+    target.replaceChildren();
+    mount(Setup, { target, props: { token: setup[1] } });
+    return;
+  }
   const snapshot = parseBoot(document.getElementById('boot')?.textContent);
   const [signedOut] = await Promise.all([signIn(), preload(location.pathname, snapshot)]);
   target.replaceChildren();

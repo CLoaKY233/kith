@@ -25,6 +25,7 @@
     "src/**/*.svelte",
     "tests/**/*.ts",
     "vite.config.ts",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "playwright.mocked.config.ts"
   ]
 }

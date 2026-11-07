@@ -7,6 +7,9 @@ import type { Boot } from './lib/types.gen';
 
 const loaders = {
   access: () => import('./routes/Access.svelte'),
+  account: () => import('./frame/Account.svelte'),
+  login: () => import('./routes/Login.svelte'),
+  people: () => import('./routes/People.svelte'),
   activity: () => import('./routes/Activity.svelte'),
   devices: () => import('./routes/Devices.svelte'),
   exits: () => import('./routes/Exits.svelte'),
@@ -52,7 +55,7 @@ export function load<K extends ScreenKey>(key: K): Promise<ScreenModule<K>> {
   return promise as Promise<ScreenModule<K>>;
 }
 
-const PAGES = ['access', 'activity', 'devices', 'exits', 'names', 'settings'] as const;
+const PAGES = ['access', 'activity', 'devices', 'exits', 'names', 'people', 'settings'] as const;
 
 /** Fetches what the first screen at `pathname` shows; never fails. */
 export function preload(pathname: string, boot: Boot | null): Promise<void> {
