@@ -528,3 +528,73 @@ fn only_account_changes_take_approvals_and_only_admin_changes_take_actors() {
         Some(OpBody::RemoveAccount { account })
     );
 }
+
+#[test]
+fn a_person_or_an_owner_adds_another_passkey() {
+    let ann = Passkey::new(1);
+    let bob = Passkey::new(2);
+    let carol = Passkey::new(3);
+    let mut ledger = owned_by(&ann);
+    for person in [&bob, &carol] {
+        let add = approved(&ledger, &key(1), person.add("p", Role::Member), |c| {
+            ann.approve(c)
+        });
+        put(&mut ledger, add);
+    }
+    let spare = Passkey::new(4).credential;
+    let add_spare = |account: AccountId| OpBody::AddCredential {
+        account,
+        credential: spare.clone(),
+    };
+
+    let by_carol = approved(&ledger, &key(1), add_spare(bob.account()), |c| {
+        carol.approve(c)
+    });
+    let by_carol = put(&mut ledger, by_carol);
+    assert!(!applied(&ledger, by_carol));
+
+    let by_bob = approved(&ledger, &key(1), add_spare(bob.account()), |c| {
+        bob.approve(c)
+    });
+    let by_bob = put(&mut ledger, by_bob);
+    assert!(applied(&ledger, by_bob));
+    let credentials = &ledger.view().account(&bob.account()).unwrap().credentials;
+    assert_eq!(credentials.len(), 2);
+
+    let again = approved(&ledger, &key(1), add_spare(bob.account()), |c| {
+        ann.approve(c)
+    });
+    let again = put(&mut ledger, again);
+    assert!(!applied(&ledger, again));
+}
+
+#[test]
+fn a_console_admin_device_acts_only_for_people_until_revoked() {
+    let ann = Passkey::new(1);
+    let mut ledger = owned_by(&ann);
+    let authorize = approved(
+        &ledger,
+        &key(1),
+        OpBody::AuthorizeConsole { device: id(1) },
+        |c| ann.approve(c),
+    );
+    put(&mut ledger, authorize);
+
+    let plain = signed(&ledger, &key(1), rename(1, "plain"));
+    put(&mut ledger, plain);
+    assert_ne!(name_of(&ledger, 1).as_deref(), Some("plain"));
+    let for_ann = acted(&ledger, &key(1), ann.account(), rename(1, "for-ann"));
+    put(&mut ledger, for_ann);
+    assert_eq!(name_of(&ledger, 1).as_deref(), Some("for-ann"));
+
+    let revoke = approved(
+        &ledger,
+        &key(1),
+        OpBody::RevokeConsole { device: id(1) },
+        |c| ann.approve(c),
+    );
+    put(&mut ledger, revoke);
+    let after = acted(&ledger, &key(1), ann.account(), rename(1, "after"));
+    put(&mut ledger, after);
+    assert_eq!(name_of(&ledger, 1).as_deref(), Some("for-ann"));
+}

@@ -44,6 +44,15 @@ export const accounts = {
   authorityBegin: (change: AuthorityChangeIn) => api.post<Authority>('/api/authority/begin', { change }),
   authorityFinish: (credential: AssertionJSON) => api.post<Outcome>('/api/authority/finish', { credential }),
 
+  /** Makes another passkey for the signed-in person; finish answers with the prompt that adds it. */
+  passkeyBegin: () => api.post<Ceremony<CreationOptionsJSON>>('/api/passkeys/begin', {}),
+  passkeyFinish: (credential: RegistrationJSON) => api.post<Authority>('/api/passkeys/finish', { credential }),
+
+  /** For someone with the recovery words and no working passkey: a new passkey, as owner. */
+  recoverBegin: (name: string) => api.post<Ceremony<CreationOptionsJSON>>('/api/recover/begin', { name }),
+  recoverFinish: (credential: RegistrationJSON, words: string) =>
+    api.post<{ account: string }>('/api/recover/finish', { credential, words }),
+
   loginBegin: () => api.post<Ceremony<RequestOptionsJSON>>('/api/login/begin', {}),
   loginFinish: (credential: AssertionJSON) => api.post<MeView>('/api/login/finish', { credential }),
 

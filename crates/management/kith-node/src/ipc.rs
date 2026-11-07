@@ -454,6 +454,13 @@ fn authority_change(change: AuthorityChange) -> Result<OpBody, NodeError> {
         },
         AuthorityChange::AuthorizeConsole { device } => OpBody::AuthorizeConsole { device },
         AuthorityChange::RevokeConsole { device } => OpBody::RevokeConsole { device },
+        AuthorityChange::AddCredential {
+            account,
+            credential,
+        } => OpBody::AddCredential {
+            account,
+            credential: passkey(credential),
+        },
     })
 }
 

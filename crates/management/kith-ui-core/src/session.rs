@@ -46,10 +46,16 @@ form-action 'self'; frame-ancestors 'none'";
 /// HTTPS only, for a year, on the public Console.
 const HSTS: &str = "max-age=31536000";
 /// API paths a request reaches without a session: they start one.
-const OPEN: [&str; 3] = ["/api/setup/", "/api/login/", "/api/register/"];
+const OPEN: [&str; 4] = [
+    "/api/setup/",
+    "/api/login/",
+    "/api/register/",
+    "/api/recover/",
+];
 /// Changes a signed-in member may ask for; their handlers check roles themselves. Every
 /// other change needs an owner or an admin.
-const SELF_SERVICE: [&str; 7] = [
+const SELF_SERVICE: [&str; 8] = [
+    "/api/passkeys/",
     "/api/logout",
     "/api/device-codes",
     "/api/authority/",

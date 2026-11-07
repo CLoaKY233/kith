@@ -227,6 +227,14 @@ pub enum OpBody {
     /// A device leaves: removes its own author from the network, as a `RemoveDevice` of
     /// itself would. Any device may sign it, for itself only.
     Leave,
+    /// Account op, valid only [`Approved`](Self::Approved) by the account's own passkey or
+    /// an owner: adds another passkey to an existing person.
+    AddCredential {
+        /// The account.
+        account: AccountId,
+        /// The new passkey, at the same relying party as the others or not.
+        credential: Credential,
+    },
 }
 
 /// The hash context that turns a WireGuard key into a member id.
@@ -273,7 +281,8 @@ impl OpBody {
             | Self::AuthorizeConsole { .. }
             | Self::RevokeConsole { .. }
             | Self::SetRecoveryKey { .. }
-            | Self::Approved { .. } => Kind::Account,
+            | Self::Approved { .. }
+            | Self::AddCredential { .. } => Kind::Account,
         }
     }
 
@@ -317,7 +326,8 @@ impl OpBody {
             | Self::RevokeConsole { .. }
             | Self::SetRecoveryKey { .. }
             | Self::Approved { .. }
-            | Self::Acted { .. } => self.check_account(author, network),
+            | Self::Acted { .. }
+            | Self::AddCredential { .. } => self.check_account(author, network),
             Self::SetThreshold { threshold } => {
                 if *threshold == 0 {
                     return Err(LedgerError::BadThreshold(*threshold));
@@ -387,6 +397,10 @@ impl OpBody {
                 credential.check()
             }
             Self::AuthorizeConsole { device } => check_key(*device),
+            Self::AddCredential {
+                account: _,
+                credential,
+            } => credential.check(),
             Self::Approved { approval, change } => {
                 approval.check()?;
                 change.to_body().check(author, network)
@@ -444,6 +458,7 @@ impl OpBody {
             | Self::AuthorizeConsole { .. }
             | Self::RevokeConsole { .. }
             | Self::SetRecoveryKey { .. }
+            | Self::AddCredential { .. }
             | Self::Leave => None,
         }
     }

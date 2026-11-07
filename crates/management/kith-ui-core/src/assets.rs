@@ -37,7 +37,7 @@ const SIGNED_OUT: &str = "<main class=\"signed-out\"><h1>This page needs a fresh
 fn is_page(path: &str) -> bool {
     let segments: Vec<&str> = path.trim_end_matches('/').split('/').skip(1).collect();
     match segments.as_slice() {
-        [] | ["" | "welcome" | "this" | "login"] => true,
+        [] | ["" | "welcome" | "this" | "login" | "recover"] => true,
         ["setup" | "register", token] => !token.is_empty(),
         ["n", net]
         | [
@@ -110,7 +110,7 @@ async fn page(
     path: &str,
 ) -> Response {
     let signed_in = principal.is_some();
-    let signing_in = ["/login", "/setup/", "/register/"]
+    let signing_in = ["/login", "/recover", "/setup/", "/register/"]
         .iter()
         .any(|prefix| path.starts_with(prefix));
     let show_signed_out = !signed_in && !signing_in && shared.mode == crate::console::Mode::Local;

@@ -192,6 +192,13 @@ pub enum AccountChange {
         /// The console's device.
         device: NodeId,
     },
+    /// See [`OpBody::AddCredential`].
+    AddCredential {
+        /// The account.
+        account: AccountId,
+        /// The new passkey.
+        credential: Credential,
+    },
 }
 
 impl AccountChange {
@@ -211,6 +218,13 @@ impl AccountChange {
             Self::SetRole { account, role } => OpBody::SetRole { account, role },
             Self::AuthorizeConsole { device } => OpBody::AuthorizeConsole { device },
             Self::RevokeConsole { device } => OpBody::RevokeConsole { device },
+            Self::AddCredential {
+                account,
+                credential,
+            } => OpBody::AddCredential {
+                account,
+                credential,
+            },
         }
     }
 
@@ -230,6 +244,13 @@ impl AccountChange {
             OpBody::SetRole { account, role } => Self::SetRole { account, role },
             OpBody::AuthorizeConsole { device } => Self::AuthorizeConsole { device },
             OpBody::RevokeConsole { device } => Self::RevokeConsole { device },
+            OpBody::AddCredential {
+                account,
+                credential,
+            } => Self::AddCredential {
+                account,
+                credential,
+            },
             OpBody::Genesis { .. }
             | OpBody::AddAdmin { .. }
             | OpBody::RemoveAdmin { .. }
@@ -377,6 +398,7 @@ impl AdminChange {
             | OpBody::SetRole { .. }
             | OpBody::AuthorizeConsole { .. }
             | OpBody::RevokeConsole { .. }
+            | OpBody::AddCredential { .. }
             | OpBody::SetRecoveryKey { .. }
             | OpBody::Approved { .. }
             | OpBody::Acted { .. }

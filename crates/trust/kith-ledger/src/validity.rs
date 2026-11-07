@@ -15,7 +15,11 @@ use kith_types::{AccountId, NodeId, OpId, Timestamp};
 use crate::limits::MAX_ADMINS;
 use crate::op::Kind;
 use crate::view::{Account, Device, Invite, NetworkView, Via};
+<<<<<<< HEAD
 use crate::{AdminChange, Approval, OpBody, Role, SignedOp, client_id};
+=======
+use crate::{Approval, Credential, OpBody, Role, SignedOp, client_id};
+>>>>>>> fix/owner
 
 /// A set of op indices, as a bitmap: `n` ops take `n / 8` bytes.
 struct OpSet(Vec<u64>);
@@ -181,6 +185,7 @@ impl Authority {
             | OpBody::SetRecoveryKey { .. }
             | OpBody::Approved { .. }
             | OpBody::Acted { .. }
+            | OpBody::AddCredential { .. }
             | OpBody::Leave => return None,
         }
         Some(next)
@@ -372,6 +377,9 @@ impl Chain {
 struct People {
     accounts: BTreeMap<AccountId, Account>,
     consoles: BTreeSet<NodeId>,
+    /// Every device ever authorized as a console. Such a device signs admin ops only for
+    /// a person, and only while it is a console: owners can take its power back.
+    ever_consoles: BTreeSet<NodeId>,
     recovery: Option<VerifyingKey>,
 }
 
@@ -394,8 +402,37 @@ impl People {
             .count()
     }
 
-    /// The state after `change` approved by `by`, or `None` if it is not allowed.
-    fn apply(&self, change: &OpBody, by: Approver, op: OpId) -> Option<Self> {
+    /// Adds `credential` to `account`, if its own passkey or an owner approved and it is new.
+    fn add_credential(
+        &mut self,
+        account: &AccountId,
+        credential: &Credential,
+        by: Approver,
+        signer: Option<AccountId>,
+    ) -> Option<()> {
+        let allowed = by == Approver::Account(Role::Owner) || signer.as_ref() == Some(account);
+        let entry = self.accounts.get_mut(account)?;
+        if !allowed
+            || entry
+                .credentials
+                .iter()
+                .any(|known| known.id == credential.id)
+        {
+            return None;
+        }
+        entry.credentials.push(credential.clone());
+        Some(())
+    }
+
+    /// The state after `change` approved by `by`, or `None` if it is not allowed. `signer`
+    /// is the account whose passkey approved, if one did.
+    fn apply(
+        &self,
+        change: &OpBody,
+        by: Approver,
+        signer: Option<AccountId>,
+        op: OpId,
+    ) -> Option<Self> {
         let mut next = self.clone();
         match change {
             OpBody::AddAccount {
@@ -454,6 +491,7 @@ impl People {
                 if !allowed || !next.consoles.insert(*device) {
                     return None;
                 }
+                next.ever_consoles.insert(*device);
             }
             OpBody::RevokeConsole { device } => {
                 let allowed = matches!(by, Approver::Account(Role::Owner | Role::Admin));
@@ -461,6 +499,10 @@ impl People {
                     return None;
                 }
             }
+            OpBody::AddCredential {
+                account,
+                credential,
+            } => next.add_credential(account, credential, by, signer)?,
             OpBody::SetRecoveryKey { key } => {
                 if by != Approver::Devices || next.recovery.replace(*key).is_some() {
                     return None;
@@ -564,6 +606,11 @@ impl PeopleChain {
         self.holds(index, |people| people.consoles.contains(device))
     }
 
+    /// Whether `device` has never been a console, at `index` and concurrently with it.
+    fn never_console(&self, index: usize, device: &NodeId) -> bool {
+        self.holds(index, |people| !people.ever_consoles.contains(device))
+    }
+
     /// Whether `account` exists in `index`'s causal past.
     fn exists_at(&self, index: usize, account: &AccountId) -> bool {
         self.linear
@@ -583,6 +630,7 @@ fn people_step(
     let body = &op.op().body;
     if let OpBody::Approved { approval, .. } = body {
         let challenge = op.challenge()?;
+        let mut signer = None;
         let by = match approval {
             Approval::Passkey(assertion) => {
                 let account = state.accounts.get(&assertion.account)?;
@@ -595,6 +643,7 @@ fn people_step(
                 let valid = verified.check(index, key, || {
                     assertion.verify(credential, &challenge).is_ok()
                 });
+                signer = Some(assertion.account);
                 valid.then_some(Approver::Account(account.role))?
             }
             Approval::Recovery(signature) => {
@@ -605,14 +654,14 @@ fn people_step(
                 valid.then_some(Approver::Recovery)?
             }
         };
-        return state.apply(op.effect(), by, op.id());
+        return state.apply(op.effect(), by, signer, op.id());
     }
     let device_path = matches!(
         body,
         OpBody::AddAccount { .. } | OpBody::SetRecoveryKey { .. }
     );
     if device_path && state.accounts.is_empty() && chain.devices_approve(index, op) {
-        return state.apply(body, Approver::Devices, op.id());
+        return state.apply(body, Approver::Devices, None, op.id());
     }
     None
 }
@@ -695,14 +744,23 @@ impl<'a> StageB<'a> {
                     .push(Removal::new(graph, index));
                 continue;
             }
+<<<<<<< HEAD
             let valid = if let OpBody::Acted { actor, change } = &op.op().body {
                 ((chain.admin_may_act(index, author) || people.console_may_act(index, &author))
                     && people.may_act(index, actor))
                     || (own_device_invite(change)
                         && people.console_may_act(index, &author)
                         && people.is_person(index, actor))
+=======
+            let valid = if let OpBody::Acted { actor, .. } = &op.op().body {
+                let as_admin =
+                    chain.admin_may_act(index, author) && people.never_console(index, &author);
+                (as_admin || people.console_may_act(index, &author)) && people.may_act(index, actor)
+>>>>>>> fix/owner
             } else {
-                op.op().body.kind() == Kind::Admin && chain.admin_may_act(index, author)
+                op.op().body.kind() == Kind::Admin
+                    && chain.admin_may_act(index, author)
+                    && people.never_console(index, &author)
             };
             if !valid {
                 continue;
@@ -765,6 +823,7 @@ impl<'a> StageB<'a> {
                 | OpBody::SetRecoveryKey { .. }
                 | OpBody::Approved { .. }
                 | OpBody::Acted { .. }
+                | OpBody::AddCredential { .. }
                 | OpBody::Leave => {}
             }
         }
@@ -911,6 +970,7 @@ impl<'a> StageB<'a> {
                 | OpBody::SetRecoveryKey { .. }
                 | OpBody::Approved { .. }
                 | OpBody::Acted { .. }
+                | OpBody::AddCredential { .. }
                 | OpBody::Leave => continue,
             };
             // Last writer wins among renames ordered after the admitting add.

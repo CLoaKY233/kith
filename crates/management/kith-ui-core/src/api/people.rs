@@ -32,10 +32,13 @@ use crate::console::{
 };
 use crate::session::Caller;
 use crate::store::{PendingPerson, hex, secret_id};
-use crate::webauthn::{Authentication, b64, request_options, unb64, verify_assertion};
+use crate::webauthn::{
+    Authentication, Registration, b64, creation_options, request_options, unb64, verify_assertion,
+    verify_registration,
+};
 use crate::wire::{
-    AuthorityBeginIn, AuthorityChallenge, AuthorityChangeIn, AuthorityKind, CredentialIn, PersonIn,
-    PersonInvite, PersonRole, RoleIn,
+    AuthorityBeginIn, AuthorityChallenge, AuthorityChangeIn, AuthorityKind, CeremonyOptions,
+    CredentialIn, PersonIn, PersonInvite, PersonRole, RoleIn,
 };
 
 /// What to do once an authority change went through.
@@ -72,6 +75,7 @@ fn kind(change: &AuthorityChange) -> AuthorityKind {
         AuthorityChange::SetRole { .. } => AuthorityKind::SetRole,
         AuthorityChange::AuthorizeConsole { .. } => AuthorityKind::AuthorizeConsole,
         AuthorityChange::RevokeConsole { .. } => AuthorityKind::RevokeConsole,
+        AuthorityChange::AddCredential { .. } => AuthorityKind::AddCredential,
     }
 }
 
@@ -456,4 +460,82 @@ pub(crate) async fn authority_finish(
         }
     }
     Ok(accepted())
+}
+
+/// What a new-passkey prompt needs to finish.
+#[derive(Debug, Serialize, Deserialize)]
+struct PasskeyPrompt {
+    account: String,
+}
+
+/// `POST /api/passkeys/begin`: a prompt that makes another passkey for the signed-in
+/// person. Its finish answers with the authority prompt that adds it to the ledger.
+pub(crate) async fn passkey_begin(
+    State(shared): State<Arc<Shared>>,
+    Extension(Caller(principal)): Extension<Caller>,
+) -> Answer {
+    let (_, me) = signed_in(&shared, principal.as_ref()).await?;
+    let challenge = b64(&random_bytes()?);
+    let user = random_bytes()?;
+    open_ceremony(
+        &shared,
+        "passkey",
+        Some(&me.id),
+        &challenge,
+        &PasskeyPrompt {
+            account: me.id.clone(),
+        },
+    )?;
+    let known: Vec<Vec<u8>> = me
+        .credentials
+        .iter()
+        .map(|passkey| passkey.credential_id.clone())
+        .collect();
+    Ok(Json(json!(CeremonyOptions {
+        public_key: creation_options(
+            rp_id(&shared),
+            user.get(..16).unwrap_or_default(),
+            &me.name,
+            &challenge,
+            &known,
+        )
+    })))
+}
+
+/// `POST /api/passkeys/finish`: checks the new passkey, then asks one of the person's
+/// existing passkeys to sign its `AddCredential`.
+pub(crate) async fn passkey_finish(
+    State(shared): State<Arc<Shared>>,
+    Extension(Caller(principal)): Extension<Caller>,
+    input: Result<Json<CredentialIn>, JsonRejection>,
+) -> Answer {
+    let Json(input) = input?;
+    let (network, me) = signed_in(&shared, principal.as_ref()).await?;
+    let registration: Registration = credential(input.credential)?;
+    let challenge = registration
+        .challenge()
+        .map_err(passkey_error(StatusCode::BAD_REQUEST))?;
+    let prompt: PasskeyPrompt = close_ceremony(
+        &shared,
+        "passkey",
+        &challenge,
+        Some(&me.id),
+        StatusCode::BAD_REQUEST,
+    )?;
+    if prompt.account != me.id {
+        return Err(refused(
+            StatusCode::BAD_REQUEST,
+            "this prompt is for someone else",
+        ));
+    }
+    let passkey = with_party(&shared, |party| {
+        verify_registration(&registration, &challenge, party)
+    })
+    .map_err(passkey_error(StatusCode::BAD_REQUEST))?;
+    let change = AuthorityChange::AddCredential {
+        account: me.id.clone(),
+        credential: passkey,
+    };
+    let prompt = authority_prompt(&shared, network, &me, change, After::Nothing).await?;
+    Ok(Json(json!(prompt)))
 }

@@ -2118,7 +2118,7 @@ credential: unknown, };
 /**
  * The ledger change an authority prompt signs.
  */
-export type AuthorityKind = "add_account" | "remove_account" | "set_role" | "authorize_console" | "revoke_console";
+export type AuthorityKind = "add_account" | "remove_account" | "set_role" | "authorize_console" | "revoke_console" | "add_credential";
 
 /**
  * A passkey prompt that signs one ledger change: pass `public_key` to
