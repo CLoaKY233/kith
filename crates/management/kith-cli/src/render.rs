@@ -403,7 +403,18 @@ pub(crate) fn status(
                     .iter()
                     .find(|peer| peer.node == exit)
                     .map_or_else(|| exit.short().to_string(), |peer| peer.name.clone());
-                writeln!(out, "  exit {name} (set in the network{locked})")?;
+                let used = status.exit_node.as_deref() == Some(&format!("{}/{name}", network.name));
+                if used || settings.exit_locked {
+                    writeln!(out, "  exit {name} (set in the network{locked})")?;
+                } else {
+                    let instead = status.exit_node.as_deref().unwrap_or("its own connection");
+                    writeln!(
+                        out,
+                        "  the network chose {name} as the exit; this device uses {instead}, as changed here"
+                    )?;
+                }
+            } else if settings.exit_locked {
+                writeln!(out, "  its own connection (set in the network, locked)")?;
             }
             if settings.paused {
                 writeln!(out, "  paused (set in the network)")?;
