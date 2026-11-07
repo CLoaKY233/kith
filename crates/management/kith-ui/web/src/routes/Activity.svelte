@@ -22,6 +22,7 @@ Props:
     type FeedRow,
     type Filter,
   } from '../lib/kith/activity';
+  import Icon from '../lib/icons/Icon.svelte';
   import EventRow from '../lib/kith/EventRow.svelte';
   import { liveContext } from '../lib/kith/liveContext';
   import { devicesByName, findNetwork, membershipOf } from '../lib/kith/network';
@@ -216,6 +217,7 @@ Props:
           <option value={option.value}>{option.label}</option>
         {/each}
       </select>
+      <span class="caret" aria-hidden="true"><Icon name="chevron-down" /></span>
     </label>
     <div class="device">
       <Combobox
@@ -306,7 +308,6 @@ Props:
     display: grid;
     gap: var(--s-5);
     max-width: var(--content-max);
-    margin: 0 auto;
     padding: var(--s-6) var(--content-pad);
   }
 
@@ -329,6 +330,11 @@ Props:
     padding-top: var(--s-2);
   }
 
+  /* The toolbar ends where the feed's rows end. */
+  .toolbar,
+  .feed {
+    max-width: calc(var(--measure) + var(--s-8) * 4);
+  }
   .toolbar {
     display: flex;
     flex-wrap: wrap;
@@ -339,7 +345,7 @@ Props:
     display: none;
   }
   .search {
-    flex: 1 1 calc(var(--s-8) * 4);
+    flex: 1 1 calc(var(--s-8) * 3);
   }
   .device {
     flex: 0 1 calc(var(--s-8) * 3);
@@ -349,16 +355,32 @@ Props:
     position: relative;
     display: inline-flex;
   }
+  /* Drawn like the device combobox beside it: same box, same chevron. */
   .select select {
+    appearance: none;
     height: var(--control);
     max-width: 100%;
-    padding: 0 var(--s-6) 0 var(--s-3);
+    padding: 0 var(--control) 0 var(--s-3);
     border: var(--hairline) solid var(--line-strong);
     border-radius: var(--r-2);
     background: var(--sunken);
     color: var(--ink-1);
     font: var(--t-input);
     cursor: pointer;
+    transition: border-color var(--d-hover) var(--e-linear);
+  }
+  .select select:hover {
+    border-color: var(--ink-3);
+  }
+  .caret {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    display: grid;
+    place-items: center;
+    width: var(--control);
+    color: var(--ink-2);
+    pointer-events: none;
   }
   .select select:focus-visible {
     outline: var(--focus-ring) solid var(--accent);
@@ -367,7 +389,6 @@ Props:
 
   .feed {
     position: relative;
-    max-width: calc(var(--measure) + var(--s-8) * 4);
   }
   .pill-slot {
     position: sticky;

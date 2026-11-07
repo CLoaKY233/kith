@@ -167,7 +167,8 @@
     color: var(--ink-1);
     font: var(--t-body);
     font-feature-settings: var(--ff-features);
-    font-variant-numeric: tabular-nums slashed-zero;
+    /* Inter's tabular figures widen the hyphen too (`dev-box`); columns of numbers opt in. */
+    font-variant-numeric: slashed-zero;
     -webkit-font-smoothing: antialiased;
     scroll-padding-top: var(--scroll-pad-top);
     scroll-padding-bottom: var(--scroll-pad-bottom);
@@ -191,12 +192,12 @@
   select {
     font: var(--t-input);
   }
-  /* The `font` shorthand resets figures; controls keep the tabular ones of the body. */
+  /* The `font` shorthand resets figures; controls keep the body's. */
   button,
   input,
   textarea,
   select {
     font-feature-settings: var(--ff-features);
-    font-variant-numeric: tabular-nums slashed-zero;
+    font-variant-numeric: slashed-zero;
   }
 }

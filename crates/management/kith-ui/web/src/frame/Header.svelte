@@ -77,7 +77,7 @@ Props:
     justify-content: space-between;
     gap: var(--s-4);
     height: 100%;
-    max-width: calc(var(--content-max) + 2 * var(--content-pad));
+    /* Like a window's toolbar: the title over the content, the controls at the far edge. */
     padding: 0 var(--content-pad);
   }
   .title {

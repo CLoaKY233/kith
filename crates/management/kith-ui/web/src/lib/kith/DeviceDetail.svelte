@@ -844,7 +844,7 @@ Props:
             rttMs === null ? null : copy.spoken.milliseconds(Math.round(rttMs)),
           )}
         >
-          <span class="node"><span class="pin"></span>{selfLabel}</span>
+          <span class="node"><span class="pin"></span><span class="who" title={selfLabel}>{selfLabel}</span></span>
           {#each hops as hop, i (i)}
             <!-- The end-to-end latency sits on the first edge, where the path starts. -->
             <span class="edge {hop.style}">
@@ -852,7 +852,7 @@ Props:
                 <span class="edge-rtt">{formatRtt(isStale ? null : rttMs)}</span>
               {/if}
             </span>
-            <span class="node"><span class="pin"></span>{who(hop.label)}</span>
+            <span class="node"><span class="pin"></span><span class="who" title={who(hop.label)}>{who(hop.label)}</span></span>
           {/each}
         </div>
         {#if endpoint || peer.path_mtu !== null}
@@ -1140,7 +1140,7 @@ Props:
     display: inline-flex;
     align-items: center;
     gap: var(--s-1);
-    height: var(--control);
+    height: var(--target-fine);
     padding: 0 var(--s-2);
     border-radius: var(--r-2);
     font: var(--t-small);
@@ -1152,6 +1152,11 @@ Props:
   .copy:hover {
     background: var(--sunken);
     color: var(--ink-1);
+  }
+  @media (pointer: coarse) {
+    .copy {
+      height: var(--control);
+    }
   }
   .verdict {
     display: grid;
@@ -1216,26 +1221,43 @@ Props:
     font: var(--t-small);
     color: var(--ink-3);
   }
+  /* Dots joined edge to edge; each label hangs under its dot, the ends flush with the row. */
   .diagram {
     position: relative;
     display: flex;
     align-items: flex-start;
+    padding-bottom: var(--s-5);
   }
   .diagram.with-rtt {
     padding-top: var(--s-5);
   }
   .node {
-    display: grid;
-    justify-items: center;
-    gap: var(--s-1);
+    position: relative;
     flex: none;
+  }
+  .who {
+    position: absolute;
+    top: calc(var(--dot) + var(--s-1));
+    left: 50%;
+    translate: -50% 0;
     max-width: calc(var(--s-8) * 2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font: var(--t-small);
     color: var(--ink-2);
-    text-align: center;
-    overflow-wrap: anywhere;
+  }
+  .node:first-child .who {
+    left: 0;
+    translate: none;
+  }
+  .node:last-child .who {
+    left: auto;
+    right: 0;
+    translate: none;
   }
   .pin {
+    display: block;
     width: var(--dot);
     height: var(--dot);
     border-radius: var(--r-full);
@@ -1245,7 +1267,7 @@ Props:
     position: relative;
     flex: 1;
     min-width: var(--s-6);
-    margin-top: calc(var(--dot) / 2);
+    margin-top: calc((var(--dot) - var(--dot-ring)) / 2);
     border-top: var(--dot-ring) solid var(--ink-2);
   }
   .edge.relayed {

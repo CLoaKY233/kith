@@ -575,7 +575,6 @@ Props:
   }
   .pick {
     display: grid;
-    justify-items: start;
     gap: var(--s-1);
   }
   .field-label {

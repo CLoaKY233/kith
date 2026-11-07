@@ -351,7 +351,7 @@ Props:
   <span class="c-name" role="gridcell">
     <span class="name">{peer.display_name}</span>
     {#if self}<Badge>{copy.device.you}</Badge>{/if}
-    {#if needsWord}<span class="needs-word">{needsWord}</span>{/if}
+    {#if needsWord}<span class="needs-word" title={needsWord}>{needsWord}</span>{/if}
     <span class="addr">{peer.address}</span>
   </span>
   <span class="c-path" role="gridcell">
@@ -431,11 +431,11 @@ Props:
     padding-inline: var(--s-3);
     /* §5: 20px dot … 32px ⋯; the ⋯ column grows with the 44 px touch target. */
     --more: var(--control);
-    /* Line 2's facts never size a column, so every row's spark has one width and edge. */
+    /* Line 2's facts never size a column. A phone has no room for a spark beside them. */
     grid-template-columns: 20px minmax(0, 1fr) auto var(--more);
     grid-template-areas:
       'dot name path more'
-      '. facts spark more';
+      '. facts facts more';
     min-height: var(--row-mobile);
   }
   @media (pointer: coarse) {
@@ -455,9 +455,7 @@ Props:
   }
   :global(.kith-device-cols > .c-spark) {
     grid-area: spark;
-    display: flex;
     align-items: center;
-    justify-self: end;
     min-width: 0;
   }
   :global(.kith-device-cols > .c-more) {
@@ -470,7 +468,8 @@ Props:
   }
   :global(.kith-device-cols > .c-rtt),
   :global(.kith-device-cols > .c-rate),
-  :global(.kith-device-cols > .c-seen) {
+  :global(.kith-device-cols > .c-seen),
+  :global(.kith-device-cols > .c-spark) {
     display: none;
   }
   :global(.kith-device-cols .addr) {
@@ -501,8 +500,7 @@ Props:
         grid-area: rate;
         text-align: right;
       }
-      :global(.kith-device-cols > .c-facts),
-      :global(.kith-device-cols > .c-spark) {
+      :global(.kith-device-cols > .c-facts) {
         display: none;
       }
     }
@@ -607,24 +605,28 @@ Props:
     gap: var(--s-2);
     min-width: 0;
   }
-  .name {
+  /* The name keeps its width; the needs word and the address give way first. */
+  .name,
+  .needs-word,
+  .addr {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    /* Tabular figures would give the hyphen in `dev-box` a figure's width. */
-    font-variant-numeric: slashed-zero;
+  }
+  .name {
+    flex: none;
+    max-width: 100%;
   }
   .needs-word {
-    flex: none;
+    min-width: 0;
     font: var(--t-small);
     color: var(--attn-text);
-    white-space: nowrap;
   }
   .addr {
+    min-width: 0;
     font: var(--t-small);
     font-family: var(--ff-mono);
     color: var(--ink-3);
-    white-space: nowrap;
   }
   .c-path {
     display: flex;

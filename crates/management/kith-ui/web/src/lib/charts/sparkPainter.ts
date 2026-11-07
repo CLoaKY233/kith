@@ -2,8 +2,8 @@
 // its canvas here; one requestAnimationFrame repaints them all after a tick, so a list of
 // 60 rows costs one frame, not 60.
 //
-// Each row: received traffic only, as an area at SPARK_AREA_ALPHA of the chart ink under a
-// SPARK_LINE px line, on its own y-scale (scale.ts). Frozen rows (offline, or the page is
+// Each row: received traffic only, as an area fading from SPARK_AREA_ALPHA of the chart
+// ink at the top to nothing at the baseline, under a SPARK_LINE px line, on its own y-scale (scale.ts). Frozen rows (offline, or the page is
 // stale) draw in --ink-4 and stop advancing. A row with no rates draws a dashed baseline.
 
 import { live } from '../live/store.svelte';
@@ -11,12 +11,12 @@ import { EASING, SPARK_RESCALE_MS, TICK_MS } from '../live/timing';
 import { watchPalette, type Palette } from '../tokens';
 import type { TrafficColumns } from '../types';
 import { curve, Tween } from './ease';
-import { ink } from './ink';
+import { ink, wash } from './ink';
 import { bucketCount, peak, resample, type Buckets } from './resample';
 import { sparkFit, sparkTop } from './scale';
 
-/** §5: rx area at 12 % of the ink under a 1.25 px line. */
-const SPARK_AREA_ALPHA = 0.12;
+/** §5: the rx area under a 1.25 px line, 20 % of the ink at the top (hex alpha). */
+const SPARK_AREA_ALPHA = '33';
 const SPARK_LINE = 1.25;
 const CROSSHAIR = 1;
 const EMPTY_DASH = [2, 2];
@@ -122,7 +122,7 @@ function drawLine(
   const x = (i: number): number => (i + 0.5) * step;
   const y = (i: number): number =>
     base - Math.min(1, Math.max(0, (b.rxMax[i] ?? 0) / top)) * usable;
-  ctx.fillStyle = color;
+  ctx.fillStyle = wash(ctx, color, SPARK_AREA_ALPHA, 0, base);
   ctx.strokeStyle = color;
   ctx.lineWidth = SPARK_LINE;
   ctx.lineJoin = 'round';
@@ -141,9 +141,7 @@ function drawLine(
     area.lineTo(x1, base);
     area.lineTo(x0, base);
     area.closePath();
-    ctx.globalAlpha = SPARK_AREA_ALPHA;
     ctx.fill(area);
-    ctx.globalAlpha = 1;
     ctx.stroke(line);
   }
 }

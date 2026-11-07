@@ -115,6 +115,18 @@ Props:
   }
 </script>
 
+{#snippet recentFeed()}
+  <h2 id="recent-title" class="heading">{copy.overview.recent}</h2>
+  <div class="feed">
+    {#each recent as entry (entry.seq)}<EventRow {entry} />{/each}
+  </div>
+  <div>
+    <a class="more" href={activityHref} onclick={(e) => follow(e, activityHref)}>
+      {copy.overview.allActivity}
+    </a>
+  </div>
+{/snippet}
+
 <div class="overview" class:wide={wide.current && recent.length > 0}>
   <div class="main">
     <Headline {net} />
@@ -157,32 +169,12 @@ Props:
     </section>
 
     {#if !wide.current && recent.length > 0}
-      <section class="section" aria-labelledby="recent-title">
-        <h2 id="recent-title" class="heading">{copy.overview.recent}</h2>
-        <div class="feed">
-          {#each recent as entry (entry.seq)}<EventRow {entry} />{/each}
-        </div>
-        <div>
-          <a class="more" href={activityHref} onclick={(e) => follow(e, activityHref)}>
-            {copy.overview.allActivity}
-          </a>
-        </div>
-      </section>
+      <section class="section" aria-labelledby="recent-title">{@render recentFeed()}</section>
     {/if}
   </div>
 
   {#if wide.current && recent.length > 0}
-    <aside class="column" aria-labelledby="recent-title">
-      <h2 id="recent-title" class="heading">{copy.overview.recent}</h2>
-      <div class="feed">
-        {#each recent as entry (entry.seq)}<EventRow {entry} />{/each}
-      </div>
-      <div>
-        <a class="more" href={activityHref} onclick={(e) => follow(e, activityHref)}>
-          {copy.overview.allActivity}
-        </a>
-      </div>
-    </aside>
+    <aside class="column" aria-labelledby="recent-title">{@render recentFeed()}</aside>
   {/if}
 </div>
 

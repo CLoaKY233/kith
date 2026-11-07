@@ -234,6 +234,7 @@ Props:
   /* §3.5: a new row fades in (the list slides it in) and carries the change tint, which fades
      by opacity on a layer of its own so reduced motion keeps it. */
   .event {
+    container: event / inline-size;
     position: relative;
     display: grid;
     grid-template-rows: 1fr;
@@ -313,6 +314,7 @@ Props:
     grid-area: time;
     color: var(--ink-3);
     font: var(--t-small);
+    font-variant-numeric: tabular-nums;
   }
   .glyph {
     grid-area: glyph;
@@ -377,13 +379,16 @@ Props:
     border-left: var(--hairline) solid var(--line);
   }
 
-  @media (width < 40rem) {
+  /* A narrow column (a phone, the detail panel, Overview's Recent) puts the actor on a
+     second line instead of squeezing the sentence. */
+  @container event (width < 520px) {
     .line:not(.log-line) {
-      grid-template-columns: calc(var(--s-7) + var(--s-2)) var(--icon) minmax(0, 1fr);
+      grid-template-columns: calc(var(--s-6) + var(--s-1)) var(--icon) minmax(0, 1fr);
       grid-template-areas:
         'time glyph sentence'
         '. . actor';
-      row-gap: var(--s-1);
+      column-gap: var(--s-2);
+      row-gap: 0;
     }
     .actor {
       white-space: normal;

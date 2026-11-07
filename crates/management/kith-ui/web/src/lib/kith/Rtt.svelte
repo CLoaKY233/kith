@@ -61,6 +61,7 @@ Props:
     display: inline-block;
     min-width: 6ch;
     text-align: right;
+    font-variant-numeric: tabular-nums slashed-zero;
     white-space: nowrap;
     border-radius: var(--r-1);
   }

@@ -2,8 +2,8 @@
 @component
 Series (spec §5, §9.1): the detail traffic chart for one device. uPlot, full width, 200 px
 tall (160 on mobile). Received above the baseline in the chart ink, sent below in --ink-2,
-each the max per slice with a faint min–max band. Up to 3 ticks on the right, hairlines at
---line, relative times `−60m … now` below.
+each the max per slice over an area that fades out toward the baseline. Up to 3 ticks on
+the right, hairlines at --line, relative times `−60m … now` below.
 
 Live: the series slides left by one sample over each 2 s tick (it steps under reduced
 motion). The y-scale grows at once and shrinks after 10 s of 3× headroom, over 300 ms.
@@ -52,7 +52,7 @@ Props:
   import Tooltip from '../ui/Tooltip.svelte';
   import { curve, Tween } from './ease';
   import { loadHistory } from './history';
-  import { ink } from './ink';
+  import { ink, wash } from './ink';
   import { isRelayed, pathAt, pathSpans, pathWord, sentence, type PathSpan } from './events';
   import { bucketCount, latest, minutes, resample } from './resample';
   import { axisRate, GrowShrink, ticks } from './scale';
@@ -73,8 +73,8 @@ Props:
 
   /** §5: line weight of both series. */
   const LINE = 1.5;
-  /** §9.1: the faint min–max band. */
-  const BAND_ALPHA = 0.08;
+  /** The areas under the lines, 16 % of their ink by the plot's edge (hex alpha). */
+  const AREA_ALPHA = '29';
   /** §5: the relayed band at 4 % of the ink, labelled when wider than 60 px. */
   const RELAYED_ALPHA = 0.04;
   const RELAYED_LABEL_MIN = 60;
@@ -97,8 +97,6 @@ Props:
     xs: number[];
     rx: (number | null | undefined)[];
     tx: (number | null | undefined)[];
-    rxMin: (number | null | undefined)[];
-    txMin: (number | null | undefined)[];
   };
 
   const net = $derived(peer.slice(0, peer.indexOf('/')));
@@ -124,7 +122,7 @@ Props:
   let palette: Palette | null = null;
   let font = '';
 
-  let model: Model = { xs: [], rx: [], tx: [], rxMin: [], txMin: [] };
+  let model: Model = { xs: [], rx: [], tx: [] };
   let spans: PathSpan[] = [];
   let anchor = 0;
   let arrived = 0;
@@ -248,7 +246,7 @@ Props:
     const to = Math.ceil(anchor / slice) * slice;
     const b = cols ? resample(cols, from, to, Math.max(1, Math.round((to - from) / slice))) : null;
 
-    const m: Model = { xs: [], rx: [], tx: [], rxMin: [], txMin: [] };
+    const m: Model = { xs: [], rx: [], tx: [] };
     let rxPeak = 0;
     let txPeak = 0;
     if (b) {
@@ -261,16 +259,10 @@ Props:
           m.xs.push(((m.xs[m.xs.length - 1] ?? t) + t) / 2);
           m.rx.push(null);
           m.tx.push(null);
-          m.rxMin.push(null);
-          m.txMin.push(null);
         }
         m.xs.push(t);
         m.rx.push(Number.isNaN(rx) ? undefined : rx);
         m.tx.push(Number.isNaN(tx) ? undefined : -tx);
-        const rxLo = b.rxMin[i] ?? Number.NaN;
-        const txLo = b.txMin[i] ?? Number.NaN;
-        m.rxMin.push(Number.isNaN(rxLo) ? undefined : rxLo);
-        m.txMin.push(Number.isNaN(txLo) ? undefined : -txLo);
         if (t >= anchor - rangeMs) {
           if (rx > rxPeak) rxPeak = rx;
           if (tx > txPeak) txPeak = tx;
@@ -364,61 +356,33 @@ Props:
     ctx.restore();
   }
 
-  function band(u: uPlot, hi: (number | null | undefined)[], lo: (number | null | undefined)[], ink: string): void {
-    const ctx = u.ctx;
-    ctx.fillStyle = ink;
-    let upperPts: [number, number][] = [];
-    let lowerPts: [number, number][] = [];
-    const flush = (): void => {
-      if (upperPts.length > 1) {
-        ctx.beginPath();
-        upperPts.forEach(([px, py], i) => (i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py)));
-        for (let i = lowerPts.length - 1; i >= 0; i -= 1) {
-          const pt = lowerPts[i];
-          if (pt) ctx.lineTo(pt[0], pt[1]);
-        }
-        ctx.closePath();
-        ctx.fill();
-      }
-      upperPts = [];
-      lowerPts = [];
-    };
-    for (let i = 0; i < model.xs.length; i += 1) {
-      const a = hi[i];
-      const b = lo[i];
-      if (a === null || b === null) {
-        flush();
-        continue;
-      }
-      if (a === undefined || b === undefined) continue;
-      const px = x(u, model.xs[i] ?? 0);
-      upperPts.push([px, u.valToPos(a, 'y', true)]);
-      lowerPts.push([px, u.valToPos(b, 'y', true)]);
-    }
-    flush();
-  }
-
-  function drawBands(u: uPlot): void {
+  /** The baseline: a hairline, dashed while the window has no samples (§5 empty state). */
+  function drawBaseline(u: uPlot): void {
     if (!palette) return;
-    const { left, top, width: w, height: h } = u.bbox;
+    const { left, width: w } = u.bbox;
     const ctx = u.ctx;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(left, top, w, h);
-    ctx.clip();
-    ctx.globalAlpha = BAND_ALPHA;
-    band(u, model.rx, model.rxMin, palette['chart-ink']);
-    band(u, model.txMin, model.tx, ink(palette, 'ink-2'));
-    ctx.globalAlpha = 1;
+    const r = ratio();
     const y0 = Math.round(u.valToPos(0, 'y', true)) + 0.5;
+    ctx.save();
     ctx.strokeStyle = empty ? ink(palette, 'ink-4') : palette.line;
-    ctx.lineWidth = Math.max(1, readPx('hairline') * ratio());
-    if (empty) ctx.setLineDash([SPACE[1] * ratio(), SPACE[1] * ratio()]);
+    ctx.lineWidth = Math.max(1, readPx('hairline') * r);
+    if (empty) ctx.setLineDash([SPACE[1] * r, SPACE[1] * r]);
     ctx.beginPath();
     ctx.moveTo(left, y0);
     ctx.lineTo(left + w, y0);
     ctx.stroke();
     ctx.restore();
+  }
+
+  /** Received fades down from the plot's top, sent up from its bottom, both to the baseline. */
+  function area(edge: 'top' | 'bottom', token: 'chart-ink' | 'ink-2') {
+    return (u: uPlot): CanvasGradient | string => {
+      const { top, height } = u.bbox;
+      const y0 = u.valToPos(0, 'y', true);
+      // Before the first data the scale is empty and y0 is not a number.
+      if (!palette || !Number.isFinite(y0)) return 'transparent';
+      return wash(u.ctx, ink(palette, token), AREA_ALPHA, edge === 'top' ? top : top + height, y0);
+    };
   }
 
   function syncOverlay(u: uPlot): void {
@@ -498,8 +462,8 @@ Props:
       scales: { x: { time: false, auto: false }, y: { auto: false } },
       series: [
         {},
-        { stroke: p['chart-ink'], width: LINE, points: { show: false } },
-        { stroke: ink(p, 'ink-2'), width: LINE, points: { show: false } },
+        { stroke: p['chart-ink'], fill: area('top', 'chart-ink'), width: LINE, points: { show: false } },
+        { stroke: ink(p, 'ink-2'), fill: area('bottom', 'ink-2'), width: LINE, points: { show: false } },
       ],
       axes: [
         {
@@ -529,7 +493,7 @@ Props:
       ],
       hooks: {
         drawClear: [drawRelayed],
-        drawAxes: [drawBands],
+        drawAxes: [drawBaseline],
         draw: [syncOverlay],
         setCursor: [
           (u) => {
@@ -745,7 +709,8 @@ Props:
   .readout {
     margin: 0;
     font: var(--t-small);
-    color: var(--ink-2);
+    font-variant-numeric: tabular-nums slashed-zero;
+    color: var(--ink-1);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

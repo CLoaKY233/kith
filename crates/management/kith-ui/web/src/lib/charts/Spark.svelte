@@ -1,8 +1,8 @@
 <!--
 @component
-Spark (spec §5): received traffic for one device over the last 5 minutes, 120×24 on
-desktop and 64 px wide on mobile, the same on every row. Painted by the list's shared painter in the
-tick's frame. Hover (mouse and pen only) shows a crosshair and
+Spark (spec §5): received traffic for one device over the last 5 minutes, 120×24, the
+same on every row; phone rows leave it out so their numbers fit. Painted by the list's
+shared painter in the tick's frame. Hover (mouse and pen only) shows a crosshair and
 `14:02:16 · ↓ 2.1 MB/s · peak 4.0 MB/s`. Empty draws a dashed baseline; offline, or a
 stale page, freezes it in --ink-4. Hidden from screen readers: Rate and the row's
 accessible name carry the numbers.
@@ -116,11 +116,5 @@ Props:
     white-space: nowrap;
     pointer-events: none;
     transform: translateX(-50%);
-  }
-  /* Every phone row's spark has one width, so the time scales compare (§5). */
-  @media (width < 40rem) {
-    .spark {
-      width: var(--s-8);
-    }
   }
 </style>

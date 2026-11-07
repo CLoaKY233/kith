@@ -621,14 +621,24 @@ Props:
 
 <style>
   .card {
+    position: relative;
     display: grid;
     gap: var(--s-3);
     padding: var(--s-4);
     border: var(--hairline) solid var(--line);
     border-radius: var(--r-3);
     background: var(--surface);
-    box-shadow: inset var(--lead-bar) 0 0 var(--attn);
     outline-offset: var(--s-1);
+  }
+  /* The amber mark sits inside the left edge, clear of the rounded corners. */
+  .card::before {
+    content: '';
+    position: absolute;
+    inset-block: var(--s-4);
+    left: calc(-1 * var(--hairline));
+    width: var(--lead-bar);
+    border-radius: var(--r-full);
+    background: var(--attn);
   }
   .card.changed {
     animation: need-tint var(--d-tint) var(--e-linear);
