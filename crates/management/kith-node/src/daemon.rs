@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use kith_channel::{Link, Presence};
 use kith_config::Config;
-use kith_control::records::{Record, Relay};
+use kith_control::records::{DeviceSettings, Record, Relay};
 use kith_control::{NetMap, Networks, Warning as MapWarning};
 use kith_crypto::AgreementSecret;
 use kith_dataplane::{
@@ -15,7 +15,7 @@ use kith_identity::{
     Bootstrap, BootstrapAddr, DeviceIdentity, Hostname, InviteToken, MAX_BOOTSTRAP,
 };
 use kith_ipc::{
-    EntryKind, Event, LinkInfo, LinkReport, NetworkSummary, PeerInfo, Problem, Request, Response,
+    DeviceSettingsInfo, EntryKind, Event, LinkInfo, LinkReport, NetworkSummary, PeerInfo, Problem, Request, Response,
     Status, Warning,
 };
 use kith_ledger::{AdmissionRequest, JoinProof, Ledger};
@@ -83,6 +83,14 @@ const PEER_TICK: core::time::Duration = core::time::Duration::from_secs(2);
 
 /// The one rule for whether a peer is online: something authenticated arrived from it
 /// within `silence`.
+const fn settings_info(settings: &DeviceSettings) -> DeviceSettingsInfo {
+    DeviceSettingsInfo {
+        exit: settings.exit,
+        exit_locked: settings.exit_locked,
+        paused: settings.paused,
+    }
+}
+
 fn is_online(heard_ago: Option<core::time::Duration>, silence: core::time::Duration) -> bool {
     heard_ago.is_some_and(|age| age < silence)
 }
@@ -382,6 +390,12 @@ pub(crate) struct Daemon {
     paused: bool,
     /// When a pause ends on its own.
     resume_at: Option<Instant>,
+    /// The `device/<local>` record last applied, per network.
+    applied_settings: BTreeMap<NetworkId, DeviceSettings>,
+    /// The exit in use and since when it was watched for liveness.
+    exit_watch: Option<((NetworkId, NodeId), Instant)>,
+    /// Whether traffic goes out directly while the exit is offline.
+    exit_bypassed: bool,
 }
 
 impl Drop for Daemon {
@@ -640,6 +654,9 @@ impl Daemon {
             blocked: BlockedLog::default(),
             paused: false,
             resume_at: None,
+            applied_settings: BTreeMap::new(),
+            exit_watch: None,
+            exit_bypassed: false,
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -791,7 +808,15 @@ impl Daemon {
                 self.commit(network).await?;
                 Ok(Response::PolicySet)
             }
-            Action::UseExit { network, node } => self.use_exit(network, node).await,
+            Action::UseExit { network, node } => {
+                if self.exit_locked() {
+                    return Err(NodeError::InvalidArgument(
+                        "the exit of this device is locked; an admin or its owner can change it in the Console"
+                            .to_owned(),
+                    ));
+                }
+                self.use_exit(network, node).await
+            }
             Action::RemoveDevice { network, node } => self.remove_device(network, node).await,
             Action::SetExitGrant {
                 network,
@@ -802,6 +827,11 @@ impl Daemon {
                     .await?;
                 Ok(Response::ExitGrantSet)
             }
+            Action::SetDeviceSettings {
+                network,
+                node,
+                settings,
+            } => self.set_device_settings(network, node, settings).await,
             Action::ServerMode { exit, relay } => self.server_mode(exit, relay).await,
             Action::ImportWireGuard { name, config } => {
                 let network = self.external.import(&self.state, name, *config).await?;
@@ -1085,6 +1115,7 @@ impl Daemon {
         }
         self.exit = node.map(|node| (network, node));
         self.dataplane.set_exit(self.exit).await?;
+        self.exit_watch = None;
         self.state.save_exit(self.exit)?;
         self.journal.push(EntryKind::ExitChanged {
             exit: node.and_then(|node| {
@@ -1138,6 +1169,7 @@ impl Daemon {
         }
         self.exit = Some((network, node));
         self.dataplane.set_exit(self.exit).await?;
+        self.exit_watch = None;
         self.refresh(None).await
     }
 
@@ -1176,6 +1208,200 @@ impl Daemon {
                 let view = ledger.view();
                 view.is_console(&local) && view.account(&actor).is_some()
             })
+    }
+
+    /// Writes `device/<node>` as an admin, or for the person who owns that device.
+    async fn set_device_settings(
+        &mut self,
+        network: NetworkId,
+        node: NodeId,
+        settings: DeviceSettingsInfo,
+    ) -> Result<Response, NodeError> {
+        let map = self.member_map(network)?;
+        if node != self.identity.node_id() && !map.peers().contains_key(&node) {
+            return Err(NodeError::NotFound(format!("device {node}")));
+        }
+        if let Some(exit) = settings.exit
+            && !map.exit_nodes().contains(&exit)
+        {
+            return Err(NodeError::InvalidArgument(format!(
+                "{exit} is not an exit node"
+            )));
+        }
+        if !self.is_admin(network)? && !self.actor_owns(network, node)? {
+            return Err(NodeError::InvalidArgument(format!(
+                "only an admin or the owner of {node} can change its settings"
+            )));
+        }
+        let record = Record::Device(DeviceSettings {
+            node,
+            exit: settings.exit,
+            exit_locked: settings.exit_locked,
+            paused: settings.paused,
+        });
+        let value = record
+            .encode()
+            .map_err(|error| NodeError::InvalidArgument(error.to_string()))?;
+        let identity = Arc::clone(&self.identity);
+        self.runtime_mut(network)?
+            .set_record(&identity, record.key(), value, now())?;
+        self.commit(network).await?;
+        Ok(Response::DeviceSettingsSet)
+    }
+
+    /// Whether this device acts, as an admin device or console, for the person who owns
+    /// `node`.
+    fn actor_owns(&self, network: NetworkId, node: NodeId) -> Result<bool, NodeError> {
+        let local = self.identity.node_id();
+        let Some(actor) = self.networks.actor() else {
+            return Ok(false);
+        };
+        self.networks
+            .get(&network)
+            .ok_or_else(|| NodeError::NotFound(network.to_string()))?
+            .with_ledger(|ledger| {
+                let view = ledger.view();
+                (view.admins().contains(&local) || view.is_console(&local))
+                    && view.device_owners().get(&node) == Some(&actor)
+            })
+    }
+
+    /// Whether a network's record for this device locks its exit.
+    fn exit_locked(&self) -> bool {
+        let local = self.identity.node_id();
+        member_maps(self.networks.maps()).any(|map| {
+            map.device_settings()
+                .get(&local)
+                .is_some_and(|settings| settings.exit_locked)
+        })
+    }
+
+    /// Applies each network's record for this device when it changed: its exit and pause.
+    /// A removed record leaves things as they are.
+    async fn apply_device_settings(&mut self) -> Result<(), NodeError> {
+        let local = self.identity.node_id();
+        let mut changed = Vec::new();
+        let mut kept = BTreeMap::new();
+        for (network, map) in member_maps_with_ids(self.networks.maps()) {
+            let Some(current) = map.device_settings().get(&local).copied() else {
+                continue;
+            };
+            let last = self.applied_settings.get(&network).copied();
+            if last != Some(current) {
+                changed.push((network, last, current));
+            }
+            kept.insert(network, current);
+        }
+        self.applied_settings = kept;
+        for (network, last, settings) in changed {
+            if last.map(|last| last.exit) != Some(settings.exit) {
+                self.apply_network_exit(network, settings.exit).await?;
+            }
+            if last.is_some_and(|last| last.paused) != settings.paused {
+                self.paused = settings.paused;
+                self.resume_at = None;
+                self.journal.push(EntryKind::Warning {
+                    message: if settings.paused {
+                        "traffic paused by the network's admin".to_owned()
+                    } else {
+                        "traffic resumed by the network's admin".to_owned()
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_network_exit(
+        &mut self,
+        network: NetworkId,
+        exit: Option<NodeId>,
+    ) -> Result<(), NodeError> {
+        let map = self.member_map(network)?;
+        let exit = match exit {
+            Some(node) if !map.exit_nodes().contains(&node) => {
+                self.journal.push(EntryKind::Warning {
+                    message: format!(
+                        "the network chose {} as the exit, which is not an exit node; using this device's own connection",
+                        node.short()
+                    ),
+                });
+                None
+            }
+            exit => exit,
+        };
+        let label = exit
+            .and_then(|node| Some(format!("{}/{}", map.name(), map.peers().get(&node)?.label)));
+        if exit.is_some() {
+            for import in self.external.active_exits() {
+                self.external.set_active(&self.state, import, false)?;
+            }
+        }
+        self.exit = exit.map(|node| (network, node));
+        self.dataplane.set_exit(self.exit).await?;
+        self.exit_watch = None;
+        self.state.save_exit(self.exit)?;
+        self.journal.push(EntryKind::ExitChanged {
+            exit: label.clone(),
+        });
+        self.journal.push(EntryKind::Warning {
+            message: format!(
+                "exit set to {} by the network's admin",
+                label.as_deref().unwrap_or("this device's own connection")
+            ),
+        });
+        Ok(())
+    }
+
+    /// Sends traffic out directly while the exit in use is offline, and through it again
+    /// once it is back.
+    async fn follow_exit_liveness(&mut self, stats: &Stats) -> Result<(), NodeError> {
+        let Some(exit) = self.exit else {
+            self.exit_watch = None;
+            self.exit_bypassed = false;
+            return Ok(());
+        };
+        let now = Instant::now();
+        let since = match self.exit_watch {
+            Some((watched, since)) if watched == exit => since,
+            _ => {
+                self.exit_watch = Some((exit, now));
+                self.exit_bypassed = false;
+                now
+            }
+        };
+        let at = wall_instant();
+        let heard_ago = stats
+            .peers
+            .iter()
+            .find(|stat| stat.network == exit.0 && stat.node == exit.1)
+            .and_then(|stat| stat.last_received)
+            .map(|when| at.saturating_duration_since(when));
+        let online = is_online(heard_ago, MESH_SILENCE);
+        let offline = !online && (heard_ago.is_some() || now - since >= MESH_SILENCE);
+        if offline == self.exit_bypassed {
+            return Ok(());
+        }
+        self.exit_bypassed = offline;
+        let message = if offline {
+            self.dataplane.set_exit(None).await?;
+            format!(
+                "the exit node {} is offline; traffic goes out through this device's own connection until it is back",
+                exit.1.short()
+            )
+        } else {
+            self.dataplane.set_exit(Some(exit)).await?;
+            format!(
+                "the exit node {} is back; traffic goes through it again",
+                exit.1.short()
+            )
+        };
+        tracing::warn!("{message}");
+        self.journal.push(EntryKind::Warning {
+            message: message.clone(),
+        });
+        self.notes.warnings.push_back((Instant::now(), message));
+        Ok(())
     }
 
     async fn write_admin_record(
@@ -1652,7 +1878,10 @@ impl Daemon {
             .iter()
             .filter(|(_, map)| map.is_member())
             .map(|(id, map)| NetworkSummary {
-                my_settings: None,
+                my_settings: map
+                    .device_settings()
+                    .get(&self.identity.node_id())
+                    .map(settings_info),
                 id: *id,
                 name: map.name().to_owned(),
                 peers_online: count(
@@ -1783,7 +2012,7 @@ impl Daemon {
                 let online = is_online(heard_ago, MESH_SILENCE);
                 let seen_ago = heard_ago.or_else(|| self.last_seen.get(node).map(|s| secs_ago(*s)));
                 PeerInfo {
-                    settings: None,
+                    settings: map.device_settings().get(node).map(settings_info),
                     via_this_exit: false,
                     node: *node,
                     name: peer.label.clone(),
@@ -1851,7 +2080,7 @@ impl Daemon {
                     (online, seen_ago, None, (0, 0), None)
                 };
             infos.push(PeerInfo {
-                settings: None,
+                settings: map.device_settings().get(id).map(settings_info),
                 via_this_exit: false,
                 node: *id,
                 name: client.peer.label.clone(),
@@ -2140,6 +2369,7 @@ impl Daemon {
     }
 
     async fn refresh(&mut self, changed: Option<NetworkId>) -> Result<(), NodeError> {
+        self.apply_device_settings().await?;
         self.refresh_public_endpoints().await;
         self.push_peers().await?;
         let maps = self.networks.maps();
@@ -2583,6 +2813,8 @@ impl Daemon {
             .observe(&peers, &drop_reasons(&stats.drops), &self.journal);
         self.announce_links(&peers);
         self.observe_blocked(&stats);
+        let followed = self.follow_exit_liveness(&stats).await;
+        self.report(followed);
     }
 
     /// The peers this device reaches in `network`, from `infos`, as a link report.
