@@ -30,6 +30,8 @@ Props:
   import { appliedOf, choosable, owns, same } from './deviceSettings';
   import { errorText } from '../api';
 
+  const EXITS_REFRESH_MS = 4000;
+
   let {
     net,
     node,
@@ -46,7 +48,8 @@ Props:
     stale?: boolean;
   } = $props();
 
-  const NONE = '';
+  // Not empty: the field drops an empty choice. Node ids are hex, so this can't clash.
+  const NONE = 'own';
   const network = $derived(live.status?.networks.find((n) => n.id === net) ?? null);
   const saved = $derived<DeviceSettingsInfo | null>(
     isSelf ? (network?.my_settings ?? null) : (live.peers[net]?.[node]?.settings ?? null),
@@ -66,6 +69,14 @@ Props:
   });
   $effect(() => {
     if (exits === null) untrack(() => actions.loadExits(net));
+  });
+  // Who uses an exit comes from the exits list, so keep it fresh while an exit is chosen:
+  // "Waiting…" turns into "Using vps" without a reload.
+  const watching = $derived(saved !== null && saved.exit !== null && !saved.paused);
+  $effect(() => {
+    if (!watching) return;
+    const timer = setInterval(() => untrack(() => actions.loadExits(net)), EXITS_REFRESH_MS);
+    return () => clearInterval(timer);
   });
   const mayChange = $derived(privileged || owns(people, node));
 

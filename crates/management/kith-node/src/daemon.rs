@@ -1186,7 +1186,7 @@ impl Daemon {
             .with_ledger(|ledger| {
                 let view = ledger.view();
                 let device = view.admins().contains(&local);
-                actor.map_or(device && !view.was_console(&local), |actor| {
+                actor.map_or(device, |actor| {
                     (device || view.is_console(&local))
                         && view
                             .account(&actor)
@@ -1206,7 +1206,7 @@ impl Daemon {
                     .unwrap_or(false)
             });
         NodeError::InvalidArgument(if console {
-            "this device runs the Console, so the network accepts its changes only on behalf of a person: make this change in the Console, or from another admin device".to_owned()
+            crate::network::CONSOLE_ALONE.to_owned()
         } else {
             otherwise.to_owned()
         })

@@ -2053,6 +2053,13 @@ mod tests {
         if submitted != Response::AuthorityApplied {
             return Err(format!("authorizing the console failed: {submitted:?}").into());
         }
+        // Still an admin to its page, which shows people what they may change.
+        let Response::Status(status) = s.request(Request::Status).await else {
+            return Err("status failed".into());
+        };
+        if !status.networks.iter().all(|summary| summary.admin) {
+            return Err(format!("the console lost its admin view: {status:?}").into());
+        }
 
         let paused = DeviceSettingsInfo {
             paused: true,

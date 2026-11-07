@@ -335,6 +335,9 @@ fn joined_with(ledger: &Ledger) -> BTreeMap<NodeId, String> {
 }
 
 /// Drafts and signs an admin op by `identity`, made for `actor` when there is one.
+/// Why a device that is or was the Console may not make an admin change on its own.
+pub(crate) const CONSOLE_ALONE: &str = "this device runs the Console, so the network accepts its changes only on behalf of a person: make this change in the Console, or from another admin device";
+
 fn admin_op(
     ledger: &Ledger,
     identity: &DeviceIdentity,
@@ -342,6 +345,10 @@ fn admin_op(
     body: OpBody,
     now: Timestamp,
 ) -> Result<SignedOp, NodeError> {
+    // The ledger would keep such an op but ignore it, so refuse it instead of losing it.
+    if actor.is_none() && body.is_admin_change() && ledger.view().was_console(&identity.node_id()) {
+        return Err(NodeError::InvalidArgument(CONSOLE_ALONE.to_owned()));
+    }
     let draft = ledger.draft(identity.node_id(), body, now);
     let draft = match actor {
         Some(actor) => draft.act_for(actor)?,

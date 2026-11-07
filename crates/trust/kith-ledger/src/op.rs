@@ -258,6 +258,12 @@ pub(crate) enum Kind {
 }
 
 impl OpBody {
+    /// Whether this is an everyday admin change (devices, invites, records, names), the
+    /// kind a console may make only on behalf of a person.
+    pub const fn is_admin_change(&self) -> bool {
+        matches!(self.kind(), Kind::Admin)
+    }
+
     pub(crate) const fn kind(&self) -> Kind {
         match self {
             Self::Genesis { .. } => Kind::Genesis,
