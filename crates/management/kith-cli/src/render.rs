@@ -483,9 +483,15 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
             None => out.write_all(b"null")?,
         }
         match peer.path_mtu {
-            Some(mtu) => write!(out, ",\"path_mtu\":{mtu}}}")?,
-            None => out.write_all(b",\"path_mtu\":null}")?,
+            Some(mtu) => write!(out, ",\"path_mtu\":{mtu}")?,
+            None => out.write_all(b",\"path_mtu\":null")?,
         }
+        out.write_all(b",\"invite\":")?;
+        match &peer.invite {
+            Some(invite) => json_str(out, invite)?,
+            None => out.write_all(b"null")?,
+        }
+        out.write_all(b"}")?;
     }
     out.write_all(b"]")
 }
