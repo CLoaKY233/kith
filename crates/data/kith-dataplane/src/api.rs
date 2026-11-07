@@ -1,7 +1,8 @@
 //! The dataplane's public face: configuration, commands and events.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use kith_crypto::SigningKey;
 use kith_policy::CompiledFilter;
@@ -210,6 +211,17 @@ pub struct PeerStats {
     pub rx_bytes: u64,
     /// Bytes of WireGuard datagrams produced for it.
     pub tx_bytes: u64,
+    /// When it last sent a packet through this device to the internet.
+    pub last_exit_use: Option<Instant>,
+}
+
+impl PeerStats {
+    /// Whether it used this device as its exit within `window` before `now`.
+    #[must_use]
+    pub fn used_as_exit(&self, now: Instant, window: Duration) -> bool {
+        self.last_exit_use
+            .is_some_and(|at| now.saturating_duration_since(at) <= window)
+    }
 }
 
 /// Packets and datagrams dropped, by reason. Every counter saturates.
@@ -480,6 +492,23 @@ impl DataplaneHandle {
         let (reply, response) = oneshot::channel();
         self.send(Command::Stats(reply)).await?;
         response.await.map_err(|_| DataplaneError::Stopped)
+    }
+
+    /// The peers of `network` that sent internet traffic through this device within `window`
+    /// before `now`.
+    pub async fn exit_users(
+        &self,
+        network: NetworkId,
+        now: Instant,
+        window: Duration,
+    ) -> Result<BTreeSet<NodeId>, DataplaneError> {
+        let stats = self.stats().await?;
+        Ok(stats
+            .peers
+            .iter()
+            .filter(|peer| peer.network == network && peer.used_as_exit(now, window))
+            .map(|peer| peer.node)
+            .collect())
     }
 
     async fn send(&self, command: Command) -> Result<(), DataplaneError> {

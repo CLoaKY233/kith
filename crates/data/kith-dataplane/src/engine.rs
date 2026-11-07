@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use kith_crypto::{SigningKey, VerifyingKey};
 use kith_filter::{Counters, DropReason, Filter, Verdict};
 use kith_policy::CompiledFilter;
-use kith_router::{PrefixTable, Router};
+use kith_router::{MeshRanges, PrefixTable, Router};
 use kith_transport_udp::{Kind, MAX_SLOT_LEN, RecvBatch, SendBatch, UdpLink, classify};
 use kith_tun::{MAX_PACKET_CAPACITY, PacketBatch};
 use kith_types::{IpPrefix, NetworkId, NodeId};
@@ -91,6 +91,8 @@ struct State {
     local: BTreeSet<IpAddr>,
     /// This device's addresses in each network.
     local_in: BTreeMap<NetworkId, BTreeSet<IpAddr>>,
+    /// Each network's mesh ranges, to tell exit traffic from mesh traffic.
+    meshes: BTreeMap<NetworkId, MeshRanges>,
     /// The exit in use until `.2`, whose late internet replies are expected for a while.
     former_exit: Option<(NetworkId, NodeId, Duration)>,
     tun_out: PacketBatch,
@@ -117,6 +119,8 @@ struct PeerEntry {
     keepalive: Option<u16>,
     /// The largest packet the current path carries, when smaller than the tunnel MTU.
     path_mtu: Option<u16>,
+    /// When it last sent a packet through this device to the internet.
+    exit_used: Option<Duration>,
     touched: bool,
 }
 
@@ -225,6 +229,7 @@ impl<T: TunDevice> Engine<T> {
                 touched: Vec::with_capacity(kith_tun::BATCH_SIZE),
                 local: BTreeSet::new(),
                 local_in: BTreeMap::new(),
+                meshes: BTreeMap::new(),
                 former_exit: None,
                 tun_out: tun.new_batch()?,
                 out: Output {
@@ -430,6 +435,7 @@ impl State {
                 let count = routes.len();
                 let result = self.router.set_network(network, mesh, routes);
                 if result.is_ok() {
+                    self.meshes.insert(network, mesh);
                     debug!(network = %network.short(), routes = count, "routes set");
                 }
                 reply.send(result.map_err(DataplaneError::from)).ok();
@@ -533,6 +539,7 @@ impl State {
                     endpoint: spec.endpoint,
                     keepalive: spec.persistent_keepalive,
                     path_mtu: None,
+                    exit_used: None,
                     touched: true,
                 },
             );
@@ -567,6 +574,7 @@ impl State {
             self.remove_peer(*node);
         }
         self.router.remove_network(network);
+        self.meshes.remove(&network);
         if let Some(filter) = self.filters.remove(&network) {
             absorb(&mut self.out.drops, filter.counters());
         }
@@ -620,6 +628,7 @@ impl State {
                 last_received: peer.last_received().and_then(|at| clock.at(at)),
                 rx_bytes: peer.rx_bytes(),
                 tx_bytes: peer.tx_bytes(),
+                last_exit_use: entry.exit_used.and_then(|at| clock.at(at)),
             });
         }
         let mut external = Vec::new();
@@ -879,7 +888,7 @@ impl State {
     /// Delivers a datagram that arrived from mesh peer `node` in fragments: judged whole,
     /// sent on as the fragments.
     fn deliver_reassembled(&mut self, now: Now, node: NodeId, role: ExitRole, done: &Complete) {
-        let Some(entry) = self.peers.get(&node) else {
+        let Some(entry) = self.peers.get_mut(&node) else {
             return;
         };
         let member = packet::destination(&done.whole)
@@ -903,6 +912,9 @@ impl State {
                     &done.whole,
                     now.monotonic,
                 ) {
+                    if is_internet(&self.router, &self.meshes, &self.local, &done.whole) {
+                        entry.exit_used = Some(now.monotonic);
+                    }
                     self.push_each(&done.whole, Some(&done.parts));
                 }
             }
@@ -1279,9 +1291,12 @@ impl State {
                                 &mut self.out,
                                 packet,
                                 now.monotonic,
-                            ) && self.tun_out.push(packet).is_err()
-                            {
-                                count(&mut self.out.drops.overflow);
+                            ) {
+                                if self.tun_out.push(packet).is_err() {
+                                    count(&mut self.out.drops.overflow);
+                                } else if is_internet(&self.router, &self.meshes, &self.local, packet) {
+                                    entry.exit_used = Some(now.monotonic);
+                                }
                             }
                         }
                     }
@@ -1631,6 +1646,27 @@ fn owns_source(entry: &PeerEntry, role: ExitRole, drops: &mut DropCounters, pack
 }
 
 /// Cryptokey routing (the peer may use this source address), then the network's filter.
+/// Whether `packet` is bound for the internet: for none of this device's addresses, no
+/// network's mesh, and no advertised route.
+fn is_internet(
+    router: &Router,
+    meshes: &BTreeMap<NetworkId, MeshRanges>,
+    local: &BTreeSet<IpAddr>,
+    packet: &[u8],
+) -> bool {
+    let Some(destination) = packet::destination(packet) else {
+        return false;
+    };
+    !local.contains(&destination)
+        && !meshes.values().any(|mesh| match destination {
+            IpAddr::V4(addr) => mesh.v4.contains(addr),
+            IpAddr::V6(addr) => mesh.v6.contains(addr),
+        })
+        && router
+            .route(destination)
+            .is_none_or(|route| route.prefix.prefix_len() == 0)
+}
+
 fn admits(
     entry: &PeerEntry,
     role: ExitRole,
