@@ -4,12 +4,12 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 use kith_ipc::{
-    AccountRole, AccountsInfo, BlockedInfo, DnsRecord, ImportedInfo, IpcError, LinkReport,
+    AccountRole, AccountsInfo, BlockedInfo, DeviceSettingsInfo, DnsRecord, ImportedInfo, IpcError, LinkReport,
     PathKind, PeerInfo, RecordInfo, Response, Status,
 };
 use kith_types::NodeId;
 
-use crate::cli::{Cmd, DnsCmd, ExitCmd, InviteCmd, RelayCmd, WgCmd};
+use crate::cli::{Cmd, DeviceAction, DnsCmd, ExitCmd, InviteCmd, RelayCmd, WgCmd};
 use crate::exec::CliError;
 
 /// The PATH column: offline comes from liveness, never from a missing path, and a device
@@ -106,8 +106,48 @@ pub(crate) fn write_row<S: AsRef<str>>(
     Ok(())
 }
 
+/// What was chosen for a device in the network, like `exit vps, locked` or `paused`.
+fn settings_text(settings: DeviceSettingsInfo, peers: &[PeerInfo]) -> String {
+    let mut parts = Vec::new();
+    if let Some(exit) = settings.exit {
+        let name = peers
+            .iter()
+            .find(|peer| peer.node == exit)
+            .map_or_else(|| exit.short().to_string(), |peer| peer.name.clone());
+        let lock = if settings.exit_locked { ", locked" } else { "" };
+        parts.push(format!("exit {name}{lock}"));
+    }
+    if settings.paused {
+        parts.push("paused".to_owned());
+    }
+    parts.join(", ")
+}
+
+/// The EXIT cell: the exit chosen for the peer, whether it is paused, and whether it is
+/// using this device as its exit.
+fn exit_cell(peer: &PeerInfo, peers: &[PeerInfo]) -> String {
+    let mut parts: Vec<String> = peer
+        .settings
+        .map(|settings| settings_text(settings, peers))
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect();
+    if peer.via_this_exit {
+        parts.push("via this exit".to_owned());
+    }
+    if parts.is_empty() {
+        "-".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
 fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Result<()> {
-    const HEADER: [&str; 8] = [
+    if peers.is_empty() {
+        return writeln!(out, "{indent}no peers yet");
+    }
+    let with_exit = peers.iter().any(|peer| exit_cell(peer, peers) != "-");
+    let mut header = vec![
         "NAME",
         "ADDRESS",
         "PATH",
@@ -115,15 +155,15 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
         "LAST SEEN",
         "RX",
         "TX",
-        "NODE",
     ];
-    if peers.is_empty() {
-        return writeln!(out, "{indent}no peers yet");
+    if with_exit {
+        header.push("EXIT");
     }
-    let rows: Vec<[String; 8]> = peers
+    header.push("NODE");
+    let rows: Vec<Vec<String>> = peers
         .iter()
         .map(|peer| {
-            [
+            let mut row = vec![
                 peer.name.clone(),
                 peer.address.clone(),
                 path_cell(peer),
@@ -131,17 +171,21 @@ fn peer_table(out: &mut impl Write, peers: &[PeerInfo], indent: &str) -> io::Res
                 seen_ago(peer.last_seen_secs),
                 byte_size(peer.rx_bytes),
                 byte_size(peer.tx_bytes),
-                peer.node.short().to_string(),
-            ]
+            ];
+            if with_exit {
+                row.push(exit_cell(peer, peers));
+            }
+            row.push(peer.node.short().to_string());
+            row
         })
         .collect();
-    let mut widths = HEADER.map(str::len);
+    let mut widths: Vec<usize> = header.iter().map(|cell| cell.len()).collect();
     for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
         }
     }
-    write_row(out, indent, &HEADER, &widths)?;
+    write_row(out, indent, &header, &widths)?;
     for row in &rows {
         write_row(out, indent, row, &widths)?;
     }
@@ -352,6 +396,19 @@ pub(crate) fn status(
             network.peers_online,
             network.peers_total
         )?;
+        if let Some(settings) = network.my_settings {
+            let locked = if settings.exit_locked { ", locked" } else { "" };
+            if let Some(exit) = settings.exit {
+                let name = peers
+                    .iter()
+                    .find(|peer| peer.node == exit)
+                    .map_or_else(|| exit.short().to_string(), |peer| peer.name.clone());
+                writeln!(out, "  exit {name} (set in the network{locked})")?;
+            }
+            if settings.paused {
+                writeln!(out, "  paused (set in the network)")?;
+            }
+        }
         peer_table(out, peers, "  ")?;
     }
     notes(out, status)
@@ -491,9 +548,27 @@ fn peers_json(out: &mut impl Write, peers: &[PeerInfo]) -> io::Result<()> {
             Some(invite) => json_str(out, invite)?,
             None => out.write_all(b"null")?,
         }
-        out.write_all(b"}")?;
+        out.write_all(b",\"settings\":")?;
+        settings_json(out, peer.settings)?;
+        write!(out, ",\"via_this_exit\":{}}}", peer.via_this_exit)?;
     }
     out.write_all(b"]")
+}
+
+fn settings_json(out: &mut impl Write, settings: Option<DeviceSettingsInfo>) -> io::Result<()> {
+    let Some(settings) = settings else {
+        return out.write_all(b"null");
+    };
+    out.write_all(b"{\"exit\":")?;
+    match settings.exit {
+        Some(exit) => write!(out, "\"{exit}\"")?,
+        None => out.write_all(b"null")?,
+    }
+    write!(
+        out,
+        ",\"exit_locked\":{},\"paused\":{}}}",
+        settings.exit_locked, settings.paused
+    )
 }
 
 /// A device just added on plain WireGuard.
@@ -693,7 +768,9 @@ pub(crate) fn status_json(
             json_str(out, &problem.fix)?;
             out.write_all(b"}")?;
         }
-        out.write_all(b"],\"peers\":")?;
+        out.write_all(b"],\"my_settings\":")?;
+        settings_json(out, network.my_settings)?;
+        out.write_all(b",\"peers\":")?;
         peers_json(out, peers)?;
         out.write_all(b"}")?;
     }
@@ -751,6 +828,36 @@ pub(crate) fn response(
             writeln!(out, "internet traffic now goes through {node}")?;
         }
         (Cmd::Exit(ExitCmd::Off { .. }), Response::ExitSet) => writeln!(out, "exit node off")?,
+        (
+            Cmd::Device {
+                device,
+                action: DeviceAction::Exit { exit, .. },
+                ..
+            },
+            Response::DeviceSettingsSet,
+        ) => {
+            if exit == "off" {
+                writeln!(out, "{device} now uses its own connection")?;
+            } else {
+                writeln!(out, "{device} now sends internet traffic through {exit}")?;
+            }
+        }
+        (
+            Cmd::Device {
+                device,
+                action: DeviceAction::Pause,
+                ..
+            },
+            Response::DeviceSettingsSet,
+        ) => writeln!(out, "paused {device}")?,
+        (
+            Cmd::Device {
+                device,
+                action: DeviceAction::Resume,
+                ..
+            },
+            Response::DeviceSettingsSet,
+        ) => writeln!(out, "resumed {device}")?,
         (Cmd::Remove { device, network }, Response::DeviceRemoved) => {
             writeln!(out, "removed {device} from {network}")?;
         }

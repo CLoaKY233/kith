@@ -48,6 +48,7 @@ fn main() -> ExitCode {
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
+        | Cmd::Device { .. }
         | Cmd::Admission(_)
         | Cmd::Peers { .. }
         | Cmd::People { .. }

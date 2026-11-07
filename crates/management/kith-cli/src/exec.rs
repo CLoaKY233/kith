@@ -8,7 +8,7 @@ use kith_config::{Config, ConfigError};
 use kith_ipc::{DnsRecord, IpcClient, IpcError, Request, Response};
 use kith_types::{NetworkId, NodeId};
 
-use crate::cli::{Cmd, ConfigCmd, DnsCmd, ExitCmd, InviteCmd, Opts, RelayCmd, WgCmd};
+use crate::cli::{Cmd, ConfigCmd, DeviceAction, DnsCmd, ExitCmd, InviteCmd, Opts, RelayCmd, WgCmd};
 use crate::{doctor, render};
 
 /// A failure worth one line on stderr.
@@ -66,6 +66,8 @@ pub(crate) struct Names {
     /// Each peer's node, unique label and the name it asked for.
     pub peers: Vec<(NodeId, String, String)>,
     pub hostname: String,
+    /// The settings chosen for each device, for commands that change one part of them.
+    pub settings: std::collections::BTreeMap<NodeId, kith_ipc::DeviceSettingsInfo>,
     /// Each imported WireGuard network's id and name.
     pub imports: Vec<(NetworkId, String)>,
 }
@@ -237,6 +239,36 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
             network: names.network(network)?,
             node: names.node(device)?,
         },
+        Cmd::Device {
+            network,
+            device,
+            action,
+        } => {
+            let node = names.node(device)?;
+            let mut settings = names.settings.get(&node).copied().unwrap_or_default();
+            match action {
+                DeviceAction::Exit { lock, unlock, exit } => {
+                    if *lock && *unlock {
+                        return Err(CliError("use --lock or --unlock, not both".to_owned()));
+                    }
+                    settings.exit = if exit == "off" {
+                        None
+                    } else {
+                        Some(names.node(exit)?)
+                    };
+                    if *lock || *unlock {
+                        settings.exit_locked = *lock;
+                    }
+                }
+                DeviceAction::Pause => settings.paused = true,
+                DeviceAction::Resume => settings.paused = false,
+            }
+            Request::SetDeviceSettings {
+                network: names.network(network)?,
+                node,
+                settings,
+            }
+        }
         Cmd::Exit(ExitCmd::Use { network, node }) => Request::UseExit {
             network: names.network(network)?,
             node: Some(names.node(node)?),
@@ -424,6 +456,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
+        | Cmd::Device { .. }
         | Cmd::Peers { .. }
         | Cmd::People { .. }
         | Cmd::Map { .. }
@@ -457,6 +490,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Join { .. }
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
+        | Cmd::Device { .. }
         | Cmd::Peers { .. }
         | Cmd::People { .. }
         | Cmd::Map { .. }
@@ -544,6 +578,7 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
         | ExitCmd::Deny { network, .. },
     )
     | Cmd::Remove { network, .. }
+    | Cmd::Device { network, .. }
     | Cmd::Rename { network, .. }
     | Cmd::Allow { network, .. }
     | Cmd::Relay(RelayCmd::Advertise {
@@ -553,14 +588,23 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
     }) = cmd
     {
         let network = names.network(network)?;
-        names.peers = fetch_peers(client, network)
-            .await?
-            .into_iter()
-            .map(|p| (p.node, p.name, p.display_name))
+        let peers = fetch_peers(client, network).await?;
+        names.peers = peers
+            .iter()
+            .map(|p| (p.node, p.name.clone(), p.display_name.clone()))
             .collect();
+        for peer in &peers {
+            if let Some(settings) = peer.settings {
+                names.settings.insert(peer.node, settings);
+            }
+        }
         if let Some(me) = status.node {
             let host = hostname();
             names.peers.push((me, host.clone(), host));
+            let mine = status.networks.iter().find(|n| n.id == network);
+            if let Some(settings) = mine.and_then(|n| n.my_settings) {
+                names.settings.insert(me, settings);
+            }
         }
     }
     Ok(names)
