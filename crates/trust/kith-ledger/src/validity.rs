@@ -15,11 +15,7 @@ use kith_types::{AccountId, NodeId, OpId, Timestamp};
 use crate::limits::MAX_ADMINS;
 use crate::op::Kind;
 use crate::view::{Account, Device, Invite, NetworkView, Via};
-<<<<<<< HEAD
-use crate::{AdminChange, Approval, OpBody, Role, SignedOp, client_id};
-=======
-use crate::{Approval, Credential, OpBody, Role, SignedOp, client_id};
->>>>>>> fix/owner
+use crate::{AdminChange, Approval, Credential, OpBody, Role, SignedOp, client_id};
 
 /// A set of op indices, as a bitmap: `n` ops take `n / 8` bytes.
 struct OpSet(Vec<u64>);
@@ -744,19 +740,14 @@ impl<'a> StageB<'a> {
                     .push(Removal::new(graph, index));
                 continue;
             }
-<<<<<<< HEAD
             let valid = if let OpBody::Acted { actor, change } = &op.op().body {
-                ((chain.admin_may_act(index, author) || people.console_may_act(index, &author))
+                let as_admin =
+                    chain.admin_may_act(index, author) && people.never_console(index, &author);
+                ((as_admin || people.console_may_act(index, &author))
                     && people.may_act(index, actor))
                     || (own_device_invite(change)
                         && people.console_may_act(index, &author)
                         && people.is_person(index, actor))
-=======
-            let valid = if let OpBody::Acted { actor, .. } = &op.op().body {
-                let as_admin =
-                    chain.admin_may_act(index, author) && people.never_console(index, &author);
-                (as_admin || people.console_may_act(index, &author)) && people.may_act(index, actor)
->>>>>>> fix/owner
             } else {
                 op.op().body.kind() == Kind::Admin
                     && chain.admin_may_act(index, author)
