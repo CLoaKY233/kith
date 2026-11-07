@@ -1999,6 +1999,10 @@ impl Daemon {
     /// run of the dataplane heard; a member behind another gateway is online when that
     /// gateway is and says it is. The saved last-seen time only fills in when a peer was
     /// last heard from before a restart.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one field per line for kith peers and phones"
+    )]
     fn peer_infos(&self, network: NetworkId, map: &NetMap, stats: &Stats) -> Vec<PeerInfo> {
         let at = wall_instant();
         let age = |when: std::time::Instant| at.saturating_duration_since(when);
