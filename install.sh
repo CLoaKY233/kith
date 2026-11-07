@@ -226,6 +226,12 @@ setup_console() {
         printf 'KITH_CONSOLE_DOMAIN=%s\n' "$console"
         printf 'KITH_CONSOLE_EMAIL=%s\n' "${KITH_CONSOLE_EMAIL:-}"
     } >"$tmp/console.env"
+    # A real system user, not systemd's DynamicUser: kith checks the operator group through
+    # /etc/passwd and /etc/group, where dynamic users never appear.
+    if ! id kith-console >/dev/null 2>&1; then
+        as_root useradd --system --no-create-home --home-dir /var/lib/kith-console \
+            --shell /usr/sbin/nologin -G kith kith-console
+    fi
     as_root mkdir -p /etc/kith
     as_root install -m 0644 "$tmp/console.env" /etc/kith/console.env
     as_root install -m 0644 "$unit.local" /etc/systemd/system/kith-console.service

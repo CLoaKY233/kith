@@ -10,8 +10,11 @@ EnvironmentFile=/etc/kith/console.env
 ExecStart=/usr/local/bin/kith-ui --public ${KITH_CONSOLE_DOMAIN}
 Restart=on-failure
 RestartSec=2s
-# Its own user, created on start; the kith group lets it open the daemon's socket.
-DynamicUser=yes
+# Its own system user (install.sh creates it); the kith group lets it use the daemon's
+# socket. Not DynamicUser: kith looks the group up in /etc/group, where dynamic users never
+# appear, and would treat the Console as a member that can only read.
+User=kith-console
+Group=kith-console
 SupplementaryGroups=kith
 # The database, the ACME certificate cache and the one-time setup link.
 StateDirectory=kith-console
