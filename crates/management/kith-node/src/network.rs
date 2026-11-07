@@ -191,6 +191,15 @@ impl NetworkRuntime {
         self.append(identity, OpBody::RemoveDevice { device }, now)
     }
 
+    /// Signs this device's own departure, so the others stop trusting its key.
+    pub(crate) fn leave(
+        &mut self,
+        identity: &DeviceIdentity,
+        now: Timestamp,
+    ) -> Result<(), NodeError> {
+        self.append(identity, OpBody::Leave, now)
+    }
+
     /// Makes admin ops for `actor` from now on, or as an admin device with `None`.
     pub(crate) const fn set_actor(&mut self, actor: Option<AccountId>) {
         self.actor = actor;

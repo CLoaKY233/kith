@@ -281,6 +281,11 @@ impl NodeHandle {
     }
 }
 
+/// Whether `me` leaving would leave other members with no admin to sign for them.
+fn last_admin_leaving(admins: &BTreeSet<NodeId>, members: usize, me: NodeId) -> bool {
+    admins.len() == 1 && admins.contains(&me) && members > 1
+}
+
 /// Runs the real daemon until SIGINT or SIGTERM, then reverts OS changes.
 pub async fn run(config: Config, journal: Journal) -> Result<(), NodeError> {
     let mut node = Node::start(NodeOptions::new(config, OsSystem).journal(journal)).await?;
@@ -585,6 +590,7 @@ impl Daemon {
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
         let journal = options.journal.clone();
+        journal.persist(&config.daemon.state_dir.join("journal.jsonl"));
         let ipc_task = options
             .ipc
             .then(|| start_ipc(config, commands.clone(), events.clone(), journal.clone()))
@@ -981,6 +987,31 @@ impl Daemon {
     }
 
     async fn leave(&mut self, network: NetworkId) -> Result<Response, NodeError> {
+        let me = self.identity.node_id();
+        let (admins, members) = self
+            .networks
+            .get(&network)
+            .ok_or_else(|| NodeError::NotFound(network.to_string()))?
+            .with_ledger(|ledger| {
+                let view = ledger.view();
+                (view.admins().clone(), view.devices().len())
+            })?;
+        if last_admin_leaving(&admins, members, me) {
+            return Err(NodeError::InvalidArgument(
+                "this device is the only admin; make another device an admin before leaving"
+                    .to_owned(),
+            ));
+        }
+        let identity = Arc::clone(&self.identity);
+        self.runtime_mut(network)?.leave(&identity, now())?;
+        // Best effort: peers connected now get the signed departure before we go.
+        self.commit(network).await?;
+        self.drop_network(network).await?;
+        Ok(Response::Left)
+    }
+
+    /// Forgets `network` on this device: its state, routes, DNS and exit.
+    async fn drop_network(&mut self, network: NetworkId) -> Result<(), NodeError> {
         if self.networks.remove(&network)?.is_none() {
             return Err(NodeError::NotFound(network.to_string()));
         }
@@ -993,8 +1024,7 @@ impl Daemon {
             self.dataplane.set_exit(None).await?;
             self.state.save_exit(None)?;
         }
-        self.refresh(None).await?;
-        Ok(Response::Left)
+        self.refresh(None).await
     }
 
     async fn remove_device(
@@ -1844,11 +1874,41 @@ impl Daemon {
         }
     }
 
+    /// Drops `network` when the synced ledger no longer lists this device, telling the
+    /// user an admin removed it. Returns whether it did.
+    async fn drop_if_removed(&mut self, network: NetworkId) -> Result<bool, NodeError> {
+        let before = self
+            .networks
+            .maps()
+            .get(&network)
+            .map(|map| (map.is_member(), map.name().to_owned()));
+        let me = self.identity.node_id();
+        let removed = self
+            .networks
+            .get(&network)
+            .map(|runtime| runtime.with_ledger(|ledger| ledger.view().is_member(&me)))
+            .transpose()?
+            .is_some_and(|member| !member);
+        if let Some((true, name)) = before
+            && removed
+        {
+            self.drop_network(network).await?;
+            self.journal.push(EntryKind::Warning {
+                message: format!("removed from {name} by an admin; this device left it"),
+            });
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Handles ledger changes and endpoint gossip reported by the control channel.
     pub(crate) async fn on_channel(&mut self, event: ChannelEvent) -> Result<(), NodeError> {
         match event {
             ChannelEvent::LedgerChanged { network } => {
                 if self.networks.get(&network).is_none() {
+                    return Ok(());
+                }
+                if self.drop_if_removed(network).await? {
                     return Ok(());
                 }
                 match self.networks.rebuild(&network, self.identity.node_id())? {
@@ -3102,7 +3162,19 @@ mod tests {
 
     use kith_types::IpPrefix;
 
-    use super::{outside, resolve};
+    use super::{last_admin_leaving, outside, resolve};
+    use kith_types::NodeId;
+
+    #[test]
+    fn the_only_admin_cannot_leave_others_behind() {
+        let me = NodeId::from_bytes([1; 32]);
+        let other = NodeId::from_bytes([2; 32]);
+        let only_me = [me].into_iter().collect();
+        assert!(last_admin_leaving(&only_me, 2, me));
+        assert!(!last_admin_leaving(&only_me, 1, me));
+        let both = [me, other].into_iter().collect();
+        assert!(!last_admin_leaving(&both, 2, me));
+    }
 
     #[test]
     fn mesh_addresses_are_never_shared_as_endpoints() {

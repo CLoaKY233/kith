@@ -730,7 +730,12 @@ impl Peer {
 
     fn persistent_keepalive_due(&self) -> Option<Duration> {
         let interval = self.persistent_keepalive?;
-        let last = latest_activity(self.last_sent, self.last_received);
+        // Counted from our own last send only: a peer whose keepalives keep arriving must not
+        // silence ours, or it sees nothing from us and calls us offline.
+        let last = self
+            .last_sent
+            .or(self.last_received)
+            .unwrap_or(Duration::ZERO);
         Some(last.saturating_add(interval))
     }
 
@@ -827,10 +832,6 @@ fn earliest(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
 
 fn byte_count(len: usize) -> u64 {
     u64::try_from(len).unwrap_or(u64::MAX)
-}
-
-fn latest_activity(sent: Option<Duration>, received: Option<Duration>) -> Duration {
-    sent.max(received).unwrap_or(Duration::ZERO)
 }
 
 /// The IP packet's own length, which strips the zero padding added by the sender.
