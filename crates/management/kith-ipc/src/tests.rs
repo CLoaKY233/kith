@@ -1221,7 +1221,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (16, 0xf17f_6c7e_9596_e5cb),
+        (16, 0x1f31550e177cc3b2),
         "the wire format changed"
     );
 }

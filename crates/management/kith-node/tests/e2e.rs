@@ -2088,7 +2088,7 @@ mod tests {
         let mut gateways = Vec::new();
         for _ in 0..100 {
             if let Response::Gateways(list) = a.request(Request::Gateways { network }).await
-                && list.iter().any(|g| g.node == server)
+                && list.iter().any(|g| g.node == server && g.exit)
             {
                 gateways = list;
                 break;
