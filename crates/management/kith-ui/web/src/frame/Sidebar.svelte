@@ -11,6 +11,7 @@ Props:
   - self?: boolean, true on This device (the identity block is the active item).
 -->
 <script lang="ts">
+  import { me as signedIn } from '../lib/account.svelte';
   import IdentityBlock from '../lib/kith/IdentityBlock.svelte';
   import { copy } from '../lib/copy';
   import { netHref, openOverlay } from '../router';
@@ -57,7 +58,7 @@ Props:
     <ul class="group">
       {#each shaping() as item (item.page)}{@render link(item)}{/each}
     </ul>
-    {#if isAdmin(net)}
+    {#if isAdmin(net) || signedIn() !== null}
       <ul class="group">
         <li>
           <NavLink

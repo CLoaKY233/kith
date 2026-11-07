@@ -13,6 +13,7 @@ Props:
   - query?: URLSearchParams, for `?sheet=wireguard`.
 -->
 <script lang="ts">
+  import { consoleMode } from '../lib/account.svelte';
   import { announce } from '../lib/announce';
   import { copy } from '../lib/copy';
   import ExitPicker from '../lib/kith/ExitPicker.svelte';
@@ -250,6 +251,7 @@ Props:
           </section>
         {/if}
 
+        {#if consoleMode() !== 'public'}
         <section class="network" aria-labelledby="{headingId}-wg">
           <h2 class="t-heading" id="{headingId}-wg">{copy.wgImport.heading}</h2>
           <p class="reason">{copy.wgImport.intro}</p>
@@ -258,6 +260,7 @@ Props:
             <Button onclick={() => openOverlay('sheet', 'wireguard')}>{copy.wgImport.open}</Button>
           </div>
         </section>
+        {/if}
 
         <OfferThisDevice />
       {/if}

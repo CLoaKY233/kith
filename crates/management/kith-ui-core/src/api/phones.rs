@@ -40,10 +40,12 @@ pub(crate) async fn create(
         Source::Daemon(daemon) => daemon,
     };
     let network = network_id(&net)?;
-    let request = Request::ExportWireGuard {
+    let gateway = input.gateway.as_deref().map(node_id).transpose()?;
+    let request = Request::ExportWireGuardVia {
         network,
         device_name: input.name,
         tags: input.tags,
+        gateway,
     };
     let Response::WireGuardConfig {
         device,
@@ -76,6 +78,20 @@ pub(crate) async fn create(
     hold(&shared, &network.to_string(), &created.node, held);
     assign(&shared, &net, &created.node).await;
     Ok(Json(json!(created)))
+}
+
+/// `GET /api/networks/:net/phones/gateways`: the devices a phone can connect through,
+/// default first.
+pub(crate) async fn gateways(State(shared): State<Arc<Shared>>, Path(net): Path<String>) -> Answer {
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return Ok(Json(json!(sim.gateways(&net)?))),
+        Source::Daemon(daemon) => daemon,
+    };
+    let network = network_id(&net)?;
+    let Response::Gateways(list) = daemon.ask(Request::Gateways { network }).await? else {
+        return Err(ApiError::unexpected());
+    };
+    Ok(Json(json!(list)))
 }
 
 /// Gives a new phone to the signed-in person who made it. Best effort: a daemon without

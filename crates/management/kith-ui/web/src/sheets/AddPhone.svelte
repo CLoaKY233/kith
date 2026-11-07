@@ -33,7 +33,7 @@ Props:
     SPACES_HINT_MS,
   } from '../lib/live/timing';
   import type { ActionHandle } from '../lib/types';
-  import type { PhoneConfig, PhoneCreated } from '../lib/types.gen';
+  import type { GatewayInfo, PhoneConfig, PhoneCreated } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
   import Field from '../lib/ui/Field.svelte';
   import Input from '../lib/ui/Input.svelte';
@@ -79,6 +79,13 @@ Props:
   /** Only an exit this phone may use; without one, All traffic is unavailable. */
   const exitName = $derived(exits.find((e) => e.allowed)?.name ?? null);
 
+  /** Where phones connect; the server's default, an exit when there is one, comes first. */
+  let gateways = $state.raw<GatewayInfo[]>([]);
+  let gatewayNode = $state<string | null>(null);
+  const chosen = $derived(gateways.find((g) => g.node === gatewayNode) ?? null);
+  /** The exit All traffic goes through: the gateway itself when it is one. */
+  const allVia = $derived(chosen?.exit ? chosen.name : exitName);
+
   // Step 1.
   let name = $state('');
   let tags = $state('');
@@ -115,12 +122,12 @@ Props:
       name: waiting.name,
       node: waiting.node,
       gateway: waiting.gateway ?? '',
-      everything_available: exitName !== null,
+      everything_available: allVia !== null,
     };
   });
   const phonePeer = $derived(phone ? (peers[phone.node] ?? null) : null);
   const gateway = $derived(phonePeer?.gateway ?? phone?.gateway ?? '');
-  const exitAvailable = $derived(phone ? phone.everything_available : exitName !== null);
+  const exitAvailable = $derived(phone ? phone.everything_available : allVia !== null);
   const numbers = $derived(phone ? live.numbers[`${netId}/${phone.node}`] : undefined);
 
   $effect(() => {
@@ -143,6 +150,9 @@ Props:
       internetDue = false;
       sawTraffic = false;
       if (!live.exits[netId]) actions.loadExits(netId);
+      gateways = [];
+      gatewayNode = null;
+      void loadGateways(netId);
     });
   });
 
@@ -152,6 +162,19 @@ Props:
     if (last !== null && now !== last) untrack(() => onOpenChange?.(now));
     last = now;
   });
+
+  /** Picks the default gateway, and All traffic when that gateway is an exit. */
+  async function loadGateways(id: string): Promise<void> {
+    try {
+      const list = await actions.phoneGateways(id);
+      gateways = list;
+      const pick = list.find((g) => g.default) ?? list[0] ?? null;
+      gatewayNode = pick?.node ?? null;
+      if (pick?.exit) mode = 'all';
+    } catch {
+      gateways = [];
+    }
+  }
 
   /** Drops the private config from the page. */
   function forget(): void {
@@ -203,7 +226,7 @@ Props:
         return;
       }
       const list = tags.split(/[\s,]+/).filter(Boolean);
-      const handle = actions.createPhone(netId, name, list);
+      const handle = actions.createPhone(netId, name, list, gatewayNode ?? undefined);
       creating = handle;
       const settled = await handle.done;
       if (creating === handle && settled.result) {
@@ -455,7 +478,7 @@ Props:
               { value: 'mine', label: copy.addPhone.justMine },
               {
                 value: 'all',
-                label: copy.addPhone.everything,
+                label: allVia ? copy.addPhone.everythingVia(allVia) : copy.addPhone.everything,
                 disabled: !exitAvailable,
                 reason: copy.addPhone.noExitReason,
               },
@@ -467,7 +490,7 @@ Props:
           {:else}
             <p class="note">
               {mode === 'all'
-                ? copy.addPhone.everythingHelp(exitName ?? '')
+                ? copy.addPhone.everythingHelp(allVia ?? '')
                 : copy.addPhone.justMineHelp(networkName)}
             </p>
           {/if}

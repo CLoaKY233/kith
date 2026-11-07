@@ -9,6 +9,7 @@ Props:
   - self?: boolean, true on This device.
 -->
 <script lang="ts">
+  import { me as signedIn } from '../lib/account.svelte';
   import { copy } from '../lib/copy';
   import Sheet from '../lib/ui/Sheet.svelte';
   import { closeOverlay, href, netHref, openOverlay, setQuery } from '../router';
@@ -53,7 +54,7 @@ Props:
         />
       </li>
     {/each}
-    {#if isAdmin(net)}
+    {#if isAdmin(net) || signedIn() !== null}
       <li>
         <NavLink
           icon="plus"

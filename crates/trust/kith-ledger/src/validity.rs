@@ -15,7 +15,7 @@ use kith_types::{AccountId, NodeId, OpId, Timestamp};
 use crate::limits::MAX_ADMINS;
 use crate::op::Kind;
 use crate::view::{Account, Device, Invite, NetworkView, Via};
-use crate::{Approval, OpBody, Role, SignedOp, client_id};
+use crate::{AdminChange, Approval, OpBody, Role, SignedOp, client_id};
 
 /// A set of op indices, as a bitmap: `n` ops take `n / 8` bytes.
 struct OpSet(Vec<u64>);
@@ -554,6 +554,11 @@ impl PeopleChain {
         })
     }
 
+    /// Whether `actor` is a person in the network for an op at `index`, in any role.
+    fn is_person(&self, index: usize, actor: &AccountId) -> bool {
+        self.holds(index, |people| people.accounts.contains_key(actor))
+    }
+
     /// Whether `device` is an authorized console for an op at `index`.
     fn console_may_act(&self, index: usize, device: &NodeId) -> bool {
         self.holds(index, |people| people.consoles.contains(device))
@@ -690,9 +695,12 @@ impl<'a> StageB<'a> {
                     .push(Removal::new(graph, index));
                 continue;
             }
-            let valid = if let OpBody::Acted { actor, .. } = &op.op().body {
-                (chain.admin_may_act(index, author) || people.console_may_act(index, &author))
-                    && people.may_act(index, actor)
+            let valid = if let OpBody::Acted { actor, change } = &op.op().body {
+                ((chain.admin_may_act(index, author) || people.console_may_act(index, &author))
+                    && people.may_act(index, actor))
+                    || (own_device_invite(change)
+                        && people.console_may_act(index, &author)
+                        && people.is_person(index, actor))
             } else {
                 op.op().body.kind() == Kind::Admin && chain.admin_may_act(index, author)
             };
@@ -1012,4 +1020,13 @@ pub(crate) fn evaluate(
         .collect();
     view.heads = heads;
     view
+}
+
+/// Whether `change` is an invite a console may make for any person adding their own
+/// device: single use, with no tags.
+fn own_device_invite(change: &AdminChange) -> bool {
+    matches!(
+        change,
+        AdminChange::CreateInvite { max_uses: 1, tags, .. } if tags.is_empty()
+    )
 }

@@ -681,6 +681,10 @@ pub struct PhoneIn {
     pub name: String,
     /// Its policy tags.
     pub tags: Vec<String>,
+    /// The device it connects through; absent picks the network's default gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub gateway: Option<String>,
 }
 
 /// The phone that was made.

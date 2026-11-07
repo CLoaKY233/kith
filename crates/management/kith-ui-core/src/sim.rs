@@ -786,6 +786,23 @@ impl Sim {
 
     /// `POST /api/networks/:net/phones`: a phone joins through this device, and its made-up
     /// config is held for the page.
+    /// The fixture's phone gateways: this device, an exit when it offers one.
+    pub(crate) fn gateways(&self, net: &str) -> Result<Vec<kith_ipc::GatewayInfo>, ApiError> {
+        let world = self.read();
+        known(&world, net)?;
+        let status = status(&world)?;
+        let Some(node) = status.node else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![kith_ipc::GatewayInfo {
+            node,
+            name: local_name(&world.status.memberships, net),
+            endpoint: "203.0.113.1:51820".to_owned(),
+            exit: status.exit,
+            default: true,
+        }])
+    }
+
     pub(crate) fn add_phone(
         &self,
         live: &Live,

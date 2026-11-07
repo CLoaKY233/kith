@@ -880,7 +880,8 @@ impl Daemon {
         max_uses: u16,
     ) -> Result<Response, NodeError> {
         self.member_map(network)?;
-        if !self.is_admin(network)? {
+        let own_device = max_uses == 1 && self.console_for_person(network)?;
+        if !own_device && !self.is_admin(network)? {
             return Err(NodeError::InvalidArgument(
                 "only an admin of this network can create invites; ask an admin to run `kith invite`"
                     .to_owned(),
@@ -1128,6 +1129,22 @@ impl Daemon {
                             .account(&actor)
                             .is_some_and(|account| account.role.can_administer())
                 })
+            })
+    }
+
+    /// Whether this device is an authorized console acting for a person of `network`, in
+    /// any role: enough for a single-use invite that person adds their own device with.
+    fn console_for_person(&self, network: NetworkId) -> Result<bool, NodeError> {
+        let local = self.identity.node_id();
+        let Some(actor) = self.networks.actor() else {
+            return Ok(false);
+        };
+        self.networks
+            .get(&network)
+            .ok_or_else(|| NodeError::NotFound(network.to_string()))?
+            .with_ledger(|ledger| {
+                let view = ledger.view();
+                view.is_console(&local) && view.account(&actor).is_some()
             })
     }
 
