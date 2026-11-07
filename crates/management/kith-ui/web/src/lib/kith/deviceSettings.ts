@@ -8,7 +8,8 @@ export type Applied =
   | { kind: 'paused' }
   | { kind: 'using'; exit: string }
   | { kind: 'offline' }
-  | { kind: 'waiting' };
+  | { kind: 'waiting' }
+  | { kind: 'set'; exit: string };
 
 export type AppliedInput = {
   settings: DeviceSettingsInfo;
@@ -20,6 +21,8 @@ export type AppliedInput = {
   /** For the Console's own device: `exit_node` from the status (`network/device`), or null. */
   usedNow?: string | null;
   network?: string;
+  /** The device that serves this page: only an exit it is can report who uses it. */
+  observer?: string | null;
 };
 
 /**
@@ -39,7 +42,12 @@ export function appliedOf(input: AppliedInput): Applied {
   }
   if (!online) return { kind: 'offline' };
   if (settings.paused) return { kind: 'paused' };
-  return settings.exit === null ? { kind: 'own' } : { kind: 'waiting' };
+  if (settings.exit === null) return { kind: 'own' };
+  // Another device's exit traffic is invisible here: say it is set, not that it waits.
+  if (chosen !== null && input.usedNow === undefined && chosen.node !== input.observer) {
+    return { kind: 'set', exit: chosen.name };
+  }
+  return { kind: 'waiting' };
 }
 
 /** Whether the saved settings say anything worth a tag. */

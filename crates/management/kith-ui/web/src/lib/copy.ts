@@ -390,9 +390,11 @@ export const copy = {
         offline: (device: string): string =>
             `Set${DOT}applies when ${device} is online`,
         using: (exit: string): string => `Using ${exit}`,
+        set: (device: string, exit: string): string =>
+            `Set${DOT}${device} switches to ${exit} when it next syncs`,
         usingOwn: "Using its own connection",
         paused: "Paused",
-        tagVia: (exit: string): string => `via ${exit}`,
+        tagVia: (exit: string): string => `Exit${DOT}${exit}`,
         tagLocked: "Locked",
         tagPaused: "Paused",
     },

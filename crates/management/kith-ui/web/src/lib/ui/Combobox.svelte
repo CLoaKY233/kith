@@ -82,7 +82,8 @@ Props:
   </div>
   <Combobox.Portal>
     <Combobox.Content
-      class="kith-float kith-menu"
+      class="kith-float kith-menu combo-menu"
+      align="start"
       sideOffset={MENU_OFFSET}
       collisionPadding={MENU_OFFSET}
     >
@@ -102,6 +103,10 @@ Props:
 </Combobox.Root>
 
 <style>
+  /* As wide as the field, and lined up under it. */
+  :global(.combo-menu) {
+    min-width: var(--bits-combobox-anchor-width);
+  }
   .box {
     display: flex;
     align-items: center;

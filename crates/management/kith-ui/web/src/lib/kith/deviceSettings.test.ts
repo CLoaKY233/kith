@@ -16,7 +16,20 @@ const exits = [exit('b', 'vps', true, ['tv']), exit('c', 'nas', false)];
 describe('appliedOf', () => {
   it('says using only when the exit lists the device', () => {
     expect(appliedOf({ settings: via('b'), name: 'tv', online: true, exits })).toEqual({ kind: 'using', exit: 'vps' });
-    expect(appliedOf({ settings: via('b'), name: 'desk', online: true, exits })).toEqual({ kind: 'waiting' });
+    expect(appliedOf({ settings: via('b'), name: 'desk', online: true, exits, observer: 'b' })).toEqual({
+      kind: 'waiting',
+    });
+  });
+
+  it('says only that it is set when the exit is a device this page cannot watch', () => {
+    expect(appliedOf({ settings: via('b'), name: 'desk', online: true, exits, observer: 'z' })).toEqual({
+      kind: 'set',
+      exit: 'vps',
+    });
+    expect(appliedOf({ settings: via('b'), name: 'tv', online: true, exits, observer: 'z' })).toEqual({
+      kind: 'using',
+      exit: 'vps',
+    });
   });
 
   it('keeps waiting and offline apart, and reads the Console device from the status', () => {

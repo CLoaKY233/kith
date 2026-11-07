@@ -252,7 +252,7 @@ pub(crate) enum DnsCmd {
     },
 }
 
-/// `kith device <network> <device> …`.
+// What `kith device <network> <device>` does; a doc comment here would show in its help.
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 pub(crate) enum DeviceAction {
     /// Send its internet traffic through a device, or `off` for its own connection

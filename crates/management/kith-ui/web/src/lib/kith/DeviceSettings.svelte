@@ -111,6 +111,7 @@ Props:
       name,
       online,
       exits: exits ?? [],
+      observer: live.status?.node ?? null,
       ...(isSelf ? { usedNow: live.status?.exit_node ?? null, network: network?.name ?? '' } : {}),
     });
     switch (applied.kind) {
@@ -124,6 +125,8 @@ Props:
         return copy.deviceSettings.offline(name);
       case 'waiting':
         return copy.deviceSettings.waiting(name);
+      case 'set':
+        return copy.deviceSettings.set(name, applied.exit);
     }
   });
   const headingId = $props.id();
