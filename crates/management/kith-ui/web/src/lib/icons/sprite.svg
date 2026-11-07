@@ -32,6 +32,7 @@
 <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14" /></symbol>
 <symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" /></symbol>
 <symbol id="i-network" viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6" rx="1" /><rect x="2" y="16" width="6" height="6" rx="1" /><rect x="9" y="2" width="6" height="6" rx="1" /><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" /><path d="M12 12V8" /></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><path d="M16 3.128a4 4 0 0 1 0 7.744" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><circle cx="9" cy="7" r="4" /></symbol>
 <symbol id="i-path-direct" viewBox="0 0 24 24"><circle cx="4.5" cy="12" r="2"/><circle cx="19.5" cy="12" r="2"/><path d="M6.5 12h11"/></symbol>
 <symbol id="i-path-relayed" viewBox="0 0 24 24"><circle cx="4.5" cy="17" r="2"/><circle cx="19.5" cy="17" r="2"/><rect x="10" y="4.5" width="4" height="4" rx="0.5"/><path d="M5.6 15.3 10 8.5M18.4 15.3 14 8.5"/></symbol>
 <symbol id="i-path-stealth" viewBox="0 0 24 24"><circle cx="4.5" cy="17" r="2"/><circle cx="19.5" cy="17" r="2"/><rect x="10" y="4.5" width="4" height="4" rx="0.5"/><path d="M5.6 15.3 10 8.5M18.4 15.3 14 8.5" stroke-dasharray="0.5 2.5"/></symbol>

@@ -2,6 +2,7 @@
 // (Names, Exits), then Add device, with Settings pinned to the bottom. The sidebar, the
 // rail, the mobile Network sheet and the palette's Go to group all read this list.
 
+import { me } from '../lib/account.svelte';
 import { copy } from '../lib/copy';
 import type { IconName } from '../lib/icons/names';
 import type { NetPage, Route } from '../router';
@@ -15,11 +16,18 @@ export const OBSERVING: readonly NavItem[] = [
   { page: 'activity', label: copy.nav.activity, icon: 'list' },
 ];
 
-export const SHAPING: readonly NavItem[] = [
+const SHAPING: readonly NavItem[] = [
   { page: 'names', label: copy.nav.names, icon: 'at-sign' },
   { page: 'exits', label: copy.nav.exits, icon: 'globe' },
   { page: 'access', label: copy.nav.access, icon: 'key-round' },
 ];
+
+const PEOPLE: NavItem = { page: 'people', label: copy.nav.people, icon: 'users' };
+
+/** Shaping, with People first when someone is signed in to the Console. */
+export function shaping(): readonly NavItem[] {
+  return me() ? [PEOPLE, ...SHAPING] : SHAPING;
+}
 
 export const SETTINGS: NavItem = { page: 'settings', label: copy.nav.settings, icon: 'settings-2' };
 
@@ -34,6 +42,7 @@ export function section(route: Route): NavPage | null {
     case 'names':
     case 'exits':
     case 'access':
+    case 'people':
     case 'settings':
       return route.name;
     default:
@@ -44,6 +53,6 @@ export function section(route: Route): NavPage | null {
 /** The screen title in the header (§4.2). */
 export function title(route: Route): string {
   const page = section(route);
-  if (page) return [...OBSERVING, ...SHAPING, SETTINGS].find((i) => i.page === page)?.label ?? '';
+  if (page) return [...OBSERVING, PEOPLE, ...SHAPING, SETTINGS].find((i) => i.page === page)?.label ?? '';
   return route.name === 'this' ? copy.nav.thisDevice : '';
 }

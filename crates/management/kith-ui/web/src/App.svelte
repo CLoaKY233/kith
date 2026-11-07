@@ -17,6 +17,7 @@ title and the live regions. Screens receive the network id as `net`.
   import { needs } from './frame/needs.svelte';
   import { prefs } from './frame/prefs.svelte';
   import UnauthOverlay from './frame/UnauthOverlay.svelte';
+  import { consoleMode, signedOut } from './lib/account.svelte';
   import { attachAnnouncer } from './lib/announce';
   import { copy } from './lib/copy';
   import Sprite from './lib/icons/Sprite.svelte';
@@ -130,10 +131,22 @@ title and the live regions. Screens receive the network id as `net`.
     layers.network = query.get('sheet') === 'network';
   });
 
+  const signedOutGate = $derived(
+    live.gate === 'unauthorized' || live.gate === 'session_used' || live.gate === 'session_expired',
+  );
+  $effect(() => {
+    if (signedOutGate) signedOut.ask();
+  });
+
   // 401 (§6.9): nothing behind the overlay can be used, so close what is open over it.
   const unauth = $derived(connection.shown === 'unauth');
   $effect(() => {
     if (!unauth) return;
+    // A public Console's session ended: the server now serves the sign-in page.
+    if (consoleMode() === 'public') {
+      location.reload();
+      return;
+    }
     layers.palette = false;
     layers.shortcuts = false;
     layers.needs = false;
@@ -267,7 +280,14 @@ title and the live regions. Screens receive the network id as `net`.
 <Tooltip.Provider delayDuration={TOOLTIP_DELAY_MS}>
   <a class="skip" href="#content" inert={unauth}>{copy.skipToContent}</a>
   <div class="stack">
-    {#if live.gate}
+    {#if live.gate && signedOutGate && signedOut.mode !== 'local'}
+      <!-- A public Console signs in with a passkey; until the mode is known, nothing shows. -->
+      {#if signedOut.mode === 'public'}
+        <div class="layer">
+          <main id="content"><Lazy name="login">{#snippet children(Login)}<Login />{/snippet}</Lazy></main>
+        </div>
+      {/if}
+    {:else if live.gate}
       <div class="layer" transition:fade={crossfade}>
         <main id="content"><Gate reason={live.gate} /></main>
       </div>
@@ -302,6 +322,8 @@ title and the live regions. Screens receive the network id as `net`.
               <Lazy name="names">{#snippet children(Names)}<Names net={routeNet} {query} />{/snippet}</Lazy>
             {:else if route.name === 'exits'}
               <Lazy name="exits">{#snippet children(Exits)}<Exits net={routeNet} {query} />{/snippet}</Lazy>
+            {:else if route.name === 'people'}
+              <Lazy name="people">{#snippet children(People)}<People net={routeNet} />{/snippet}</Lazy>
             {:else if route.name === 'access'}
               <Lazy name="access">{#snippet children(Access)}<Access net={routeNet} {query} />{/snippet}</Lazy>
             {:else if route.name === 'settings'}
@@ -353,7 +375,7 @@ title and the live regions. Screens receive the network id as `net`.
           {/if}
         {/if}
         </div>
-        {#if unauth}<UnauthOverlay />{/if}
+        {#if unauth && consoleMode() !== 'public'}<UnauthOverlay />{/if}
       </div>
     {/if}
   </div>

@@ -20,7 +20,7 @@ Props:
   import { go, href, netHref, openOverlay } from '../router';
   import { layers } from './layers.svelte';
   import { isAdmin, networkName, peers, selfPeer } from './net';
-  import { OBSERVING, SETTINGS, SHAPING } from './nav';
+  import { OBSERVING, SETTINGS, shaping } from './nav';
 
   let { net }: { net: string | null } = $props();
 
@@ -151,7 +151,7 @@ Props:
       out.push({
         heading: copy.palette.groups.goTo,
         items: [
-          ...[...OBSERVING, ...SHAPING, SETTINGS].map((item) => ({
+          ...[...OBSERVING, ...shaping(), SETTINGS].map((item) => ({
             id: `go:${item.page}`,
             label: item.label,
             onSelect: () => go(netHref(id, item.page)),

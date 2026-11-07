@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { copy } from './copy';
+import { copyConsole } from './copy.console';
 
 /** Every string in copy.ts, with functions called on sample arguments. */
 function strings(value: unknown, path: string, out: [string, string][]): [string, string][] {
@@ -25,7 +26,7 @@ function strings(value: unknown, path: string, out: [string, string][]): [string
   return out;
 }
 
-const all = strings(copy, 'copy', []);
+const all = strings(copyConsole, 'copyConsole', strings(copy, 'copy', []));
 
 describe('copy.ts (spec §12.1)', () => {
   it('has no banned words or punctuation', () => {

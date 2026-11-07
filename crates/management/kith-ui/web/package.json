@@ -13,6 +13,7 @@
     "test": "vitest run",
     "size": "size-limit",
     "e2e": "playwright test",
+    "e2e:mocked": "playwright test -c playwright.mocked.config.ts",
     "icons": "node scripts/icons.mjs",
     "fixture": "node scripts/office-fixture.mjs"
   },

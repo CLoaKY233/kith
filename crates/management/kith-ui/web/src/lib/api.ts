@@ -70,6 +70,7 @@ const STATUS_CODES: Readonly<Record<number, ApiErrorCode>> = {
   403: 'forbidden',
   404: 'not_found',
   409: 'conflict',
+  410: 'session_expired',
   422: 'invalid_argument',
   503: 'daemon_down',
 };

@@ -32,6 +32,12 @@ import type {
 } from '../types.gen';
 import type {
   ActionHandle,
+  AddPersonIn,
+  DeviceCode,
+  DeviceCodeIn,
+  Person,
+  PersonAdded,
+  PersonRole,
   InvitePreview,
   OpenInvite,
   PolicyIn,
@@ -403,6 +409,21 @@ export function createActions(host: ActionsHost, runner: Runner) {
             host.resync();
             return value;
           }),
+      }),
+
+    // People (docs/plans/console.md). Role changes and removals are authority ops the
+    // person's passkey signs: see lib/authority.svelte.ts.
+    loadPeople: () =>
+      runner.run<Person[]>({ read: true, latest: 'people', run: (signal) => api.get<Person[]>('/api/people', { signal }) }),
+    /** A pending person and their one-time sign-up link. */
+    addPerson: (name: string, role: PersonRole) =>
+      runner.run<PersonAdded>({
+        run: () => api.post<PersonAdded>('/api/people', { name, role } satisfies AddPersonIn),
+      }),
+    /** A 6-character code that joins one computer for `person`. */
+    deviceCode: (person: string) =>
+      runner.run<DeviceCode>({
+        run: () => api.post<DeviceCode>('/api/device-codes', { person } satisfies DeviceCodeIn),
       }),
   } as const;
 }
