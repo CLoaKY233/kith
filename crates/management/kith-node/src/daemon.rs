@@ -813,10 +813,7 @@ impl Daemon {
             }
             Action::UseExit { network, node } => {
                 if self.exit_locked() {
-                    return Err(NodeError::InvalidArgument(
-                        "the exit of this device is locked; an admin or its owner can change it in the Console"
-                            .to_owned(),
-                    ));
+                    return Err(exit_locked_error());
                 }
                 self.use_exit(network, node).await
             }
@@ -838,6 +835,9 @@ impl Daemon {
             Action::ServerMode { exit, relay } => self.server_mode(exit, relay).await,
             Action::ImportWireGuard { name, config } => {
                 let network = self.external.import(&self.state, name, *config).await?;
+                if self.exit_locked() && self.external.carries_all_traffic(network) {
+                    self.external.set_active(&self.state, network, false)?;
+                }
                 self.refresh(None).await?;
                 Ok(Response::Imported { network })
             }
@@ -1138,6 +1138,9 @@ impl Daemon {
         if !self.external.contains(network) {
             return Err(NodeError::NotFound(format!("imported network {network}")));
         }
+        if active && self.exit_locked() && self.external.carries_all_traffic(network) {
+            return Err(exit_locked_error());
+        }
         self.external.set_active(&self.state, network, active)?;
         if active && self.external.active_exits().contains(&network) {
             for other in self.external.active_exits() {
@@ -1312,6 +1315,12 @@ impl Daemon {
             kept.insert(network, current);
         }
         self.applied_settings = kept;
+        // A locked exit, its own connection included, leaves no room for an import's.
+        if !changed.is_empty() && self.exit_locked() {
+            for import in self.external.active_exits() {
+                self.external.set_active(&self.state, import, false)?;
+            }
+        }
         for (network, last, settings) in changed {
             if last.map(|last| last.exit) != Some(settings.exit) {
                 self.apply_network_exit(network, settings.exit).await?;
@@ -3414,6 +3423,13 @@ fn secs_ago(secs: u64) -> core::time::Duration {
 )]
 fn wall_instant() -> std::time::Instant {
     std::time::Instant::now()
+}
+
+fn exit_locked_error() -> NodeError {
+    NodeError::InvalidArgument(
+        "the exit of this device is locked; an admin or its owner can change it in the Console"
+            .to_owned(),
+    )
 }
 
 fn count<T>(items: impl Iterator<Item = T>) -> u32 {

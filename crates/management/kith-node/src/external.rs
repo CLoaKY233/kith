@@ -105,6 +105,13 @@ impl ExternalPeers {
         self.name_of(network).is_ok()
     }
 
+    /// Whether the import `network` carries all internet traffic when in use.
+    pub(crate) fn carries_all_traffic(&self, network: NetworkId) -> bool {
+        self.imported
+            .values()
+            .any(|interface| import_id(&interface.name) == network && carries_everything(interface))
+    }
+
     /// Routes through the import `network` again, or keeps it but stops using it.
     pub(crate) fn set_active(
         &mut self,
