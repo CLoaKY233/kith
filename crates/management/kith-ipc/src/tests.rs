@@ -50,6 +50,8 @@ fn golden_bytes() {
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
+        settings: None,
+        via_this_exit: false,
         node: NodeId::from_bytes([0x11; 32]),
         name: "a".to_owned(),
         address: "b".to_owned(),
@@ -176,6 +178,7 @@ fn status() -> impl Strategy<Value = Status> {
                 .prop_map(
                     |((id, name, peers_online, peers_total, relays), admin, problems)| {
                         NetworkSummary {
+                            my_settings: None,
                             id,
                             name,
                             peers_online,
@@ -236,6 +239,8 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                     invite,
                 )| {
                     PeerInfo {
+                        settings: None,
+                        via_this_exit: false,
                         node,
                         name,
                         address,
@@ -558,6 +563,7 @@ fn request_index(request: &Request) -> u8 {
         Request::Pause { .. } => 48,
         Request::Resume => 49,
         Request::PauseState => 50,
+        Request::SetDeviceSettings { .. } => 51,
     }
 }
 
@@ -611,6 +617,7 @@ fn response_index(response: &Response) -> u8 {
         Response::RecoveryKey { .. } => 45,
         Response::Gateways(_) => 46,
         Response::PauseState { .. } => 47,
+        Response::DeviceSettingsSet => 48,
     }
 }
 
@@ -819,6 +826,15 @@ fn requests() -> Vec<Request> {
         },
         Request::Resume,
         Request::PauseState,
+        Request::SetDeviceSettings {
+            network: NET,
+            node: NODE,
+            settings: crate::DeviceSettingsInfo {
+                exit: Some(NODE),
+                exit_locked: true,
+                paused: false,
+            },
+        },
     ]
 }
 
@@ -841,6 +857,7 @@ fn responses() -> Vec<Response> {
         Response::Status(Status {
             node: Some(NODE),
             networks: vec![NetworkSummary {
+                my_settings: None,
                 id: NET,
                 name: s("home"),
                 peers_online: 1,
@@ -1040,11 +1057,14 @@ fn responses() -> Vec<Response> {
             paused: true,
             resume_in_secs: Some(60),
         },
+        Response::DeviceSettingsSet,
     ]
 }
 
 fn sample_peer() -> PeerInfo {
     PeerInfo {
+        settings: None,
+        via_this_exit: false,
         node: NODE,
         name: "nas".to_owned(),
         address: "100.64.0.1".to_owned(),

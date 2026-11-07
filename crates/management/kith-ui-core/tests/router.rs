@@ -186,6 +186,7 @@ mod tests {
         Status {
             node: None,
             networks: vec![NetworkSummary {
+                my_settings: None,
                 id: NET,
                 name: "home".into(),
                 peers_online: 0,

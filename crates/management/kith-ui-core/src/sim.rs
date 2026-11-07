@@ -999,6 +999,8 @@ fn add_device(
         .find(|address| !used.contains(address))
         .ok_or_else(|| ApiError::bad("the simulated network is full"))?;
     peers.push(PeerInfo {
+        settings: None,
+        via_this_exit: false,
         node,
         name: name.to_owned(),
         address: address.clone(),
@@ -1047,6 +1049,7 @@ fn add_network(
     let me = self_node(world)?;
     let mut status = status(world)?;
     status.networks.push(kith_ipc::NetworkSummary {
+        my_settings: None,
         id: network,
         name: name.to_owned(),
         peers_online: 0,

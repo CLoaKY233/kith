@@ -1652,6 +1652,7 @@ impl Daemon {
             .iter()
             .filter(|(_, map)| map.is_member())
             .map(|(id, map)| NetworkSummary {
+                my_settings: None,
                 id: *id,
                 name: map.name().to_owned(),
                 peers_online: count(
@@ -1782,6 +1783,8 @@ impl Daemon {
                 let online = is_online(heard_ago, MESH_SILENCE);
                 let seen_ago = heard_ago.or_else(|| self.last_seen.get(node).map(|s| secs_ago(*s)));
                 PeerInfo {
+                    settings: None,
+                    via_this_exit: false,
                     node: *node,
                     name: peer.label.clone(),
                     address: peer.addresses.v4.to_string(),
@@ -1848,6 +1851,8 @@ impl Daemon {
                     (online, seen_ago, None, (0, 0), None)
                 };
             infos.push(PeerInfo {
+                settings: None,
+                via_this_exit: false,
                 node: *id,
                 name: client.peer.label.clone(),
                 address: client.peer.addresses.v4.to_string(),

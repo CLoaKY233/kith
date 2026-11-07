@@ -482,6 +482,7 @@ form-action 'self'; frame-ancestors 'none'";
         Status {
             node: None,
             networks: vec![NetworkSummary {
+                my_settings: None,
                 id: NetworkId::from_bytes([0xab; 32]),
                 name: "home".into(),
                 peers_online: 0,

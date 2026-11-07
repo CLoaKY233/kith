@@ -350,6 +350,30 @@ pub enum Request {
     Resume,
     /// Whether the tunnel is paused.
     PauseState,
+    /// Chooses what a device does: its exit, whether it may pick another itself, and
+    /// whether it is paused. Written to the network as `device/<node>`; the device
+    /// applies it. Allowed for admins and for the device's owner.
+    SetDeviceSettings {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// The settings.
+        settings: DeviceSettingsInfo,
+    },
+}
+
+/// The settings chosen for a device in a network, from `device/<node>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeviceSettingsInfo {
+    /// The exit for its internet traffic; `None` is its own connection.
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
+    pub exit: Option<NodeId>,
+    /// Whether the device itself may not choose another exit.
+    pub exit_locked: bool,
+    /// Whether its traffic is paused.
+    pub paused: bool,
 }
 
 /// A person's role in a network, from [`Request::Accounts`].
@@ -752,6 +776,8 @@ pub enum Response {
         /// Seconds until it resumes on its own, when paused for a while.
         resume_in_secs: Option<u64>,
     },
+    /// Answers [`Request::SetDeviceSettings`].
+    DeviceSettingsSet,
 }
 
 /// A device that plain WireGuard devices can connect through, from [`Request::Gateways`].
@@ -955,6 +981,8 @@ pub struct NetworkSummary {
     pub problems: Vec<Problem>,
     /// Whether this device is an admin of the network, so may change it.
     pub admin: bool,
+    /// The settings chosen for this device in the network, if any were.
+    pub my_settings: Option<DeviceSettingsInfo>,
 }
 
 /// Something wrong in a network, such as a phone that lost its address.
@@ -1005,6 +1033,11 @@ pub struct PeerInfo {
     /// The invite the device joined with, as its [`InviteInfo::id`]; `None` for a device
     /// added another way, such as by an admin, an approved request or as a phone.
     pub invite: Option<String>,
+    /// The settings chosen for it, if any were.
+    pub settings: Option<DeviceSettingsInfo>,
+    /// Whether this device is an exit and the peer sent internet traffic through it in
+    /// the last minute: the chosen exit is in use.
+    pub via_this_exit: bool,
 }
 
 /// How traffic reaches a peer.

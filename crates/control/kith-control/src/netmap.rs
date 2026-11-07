@@ -120,6 +120,7 @@ struct TypedRecords {
     dns: Vec<DnsRecords>,
     exit_nodes: BTreeSet<NodeId>,
     gateways: BTreeMap<NodeId, records::Gateway>,
+    devices: BTreeMap<NodeId, records::DeviceSettings>,
 }
 
 impl NetMap {
@@ -198,6 +199,11 @@ impl NetMap {
     /// Members that serve plain WireGuard devices, with their key and endpoint.
     pub const fn gateways(&self) -> &BTreeMap<NodeId, records::Gateway> {
         &self.records.gateways
+    }
+
+    /// The settings chosen for each device, by `device/<node hex>` records.
+    pub const fn device_settings(&self) -> &BTreeMap<NodeId, records::DeviceSettings> {
+        &self.records.devices
     }
 
     /// The local device's inbound packet filter.
@@ -530,6 +536,9 @@ fn typed_records(view: &NetworkView, warnings: &mut Vec<Warning>) -> TypedRecord
             }
             Record::Gateway(gateway) => {
                 records.gateways.insert(gateway.node, gateway);
+            }
+            Record::Device(settings) => {
+                records.devices.insert(settings.node, settings);
             }
         }
     }

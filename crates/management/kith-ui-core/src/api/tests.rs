@@ -46,6 +46,8 @@ const IMPORTED: NetworkId = NetworkId::from_bytes([0xef; 32]);
 
 fn peer(node: NodeId, name: &str, address: &str, online: bool) -> PeerInfo {
     PeerInfo {
+        settings: None,
+        via_this_exit: false,
         node,
         name: name.to_owned(),
         address: address.to_owned(),
@@ -146,6 +148,7 @@ impl World {
         Status {
             node: Some(ME),
             networks: vec![NetworkSummary {
+                my_settings: None,
                 id: NET,
                 name: "home".into(),
                 peers_online: 2,

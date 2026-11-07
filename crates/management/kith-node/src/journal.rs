@@ -560,6 +560,8 @@ mod tests {
         let mut activity = Activity::default();
         activity.note_no_peers(&journal);
         let info = PeerInfo {
+            settings: None,
+            via_this_exit: false,
             node: A,
             name: "laptop".into(),
             address: "100.64.0.2".into(),

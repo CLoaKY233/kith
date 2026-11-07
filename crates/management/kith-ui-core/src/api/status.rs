@@ -554,6 +554,7 @@ mod tests {
             }],
         };
         let mut network = NetworkSummary {
+            my_settings: None,
             id: NetworkId::from_bytes([9; 32]),
             name: "home".into(),
             peers_online: 0,

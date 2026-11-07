@@ -41,6 +41,9 @@ pub(crate) const EXIT_PREFIX: &str = "exit/";
 /// The prefix of phone gateway advertisements: `gateway/<node hex>`.
 pub(crate) const GATEWAY_PREFIX: &str = "gateway/";
 
+/// The prefix of a device's settings, chosen by an admin or its owner: `device/<node hex>`.
+pub(crate) const DEVICE_PREFIX: &str = "device/";
+
 const RECORD_VERSION: u64 = 1;
 
 const MAX_TTL: u32 = 0x7FFF_FFFF;
@@ -92,6 +95,22 @@ pub enum Record {
     Exit(NodeId),
     /// `gateway/<node hex>`: where plain WireGuard devices reach the device as gateway.
     Gateway(Gateway),
+    /// `device/<node hex>`: the settings an admin or the device's owner chose for it.
+    Device(DeviceSettings),
+}
+
+/// What a device should do, set from any device or the Console and applied by the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceSettings {
+    /// The device these settings are for.
+    pub node: NodeId,
+    /// The exit it sends internet traffic through, in the same network; `None` is its own
+    /// connection.
+    pub exit: Option<NodeId>,
+    /// Whether the device itself may not choose another exit.
+    pub exit_locked: bool,
+    /// Whether its traffic is paused.
+    pub paused: bool,
 }
 
 /// A device's gateway for plain WireGuard devices: its WireGuard key and `host:port`.
@@ -114,6 +133,7 @@ impl Record {
             Self::Dns(records) => format!("{DNS_PREFIX}{}", records.name),
             Self::Exit(node) => format!("{EXIT_PREFIX}{node}"),
             Self::Gateway(gateway) => format!("{GATEWAY_PREFIX}{}", gateway.node),
+            Self::Device(settings) => format!("{DEVICE_PREFIX}{}", settings.node),
         }
     }
 
@@ -134,6 +154,11 @@ impl Record {
                 key: gateway.key,
                 endpoint: gateway.endpoint.clone(),
             },
+            Self::Device(settings) => Body::Device {
+                exit: settings.exit,
+                exit_locked: settings.exit_locked,
+                paused: settings.paused,
+            },
         };
         envelope::encode(registry::CONTROL_RECORD, RECORD_VERSION, &body)
     }
@@ -146,6 +171,7 @@ impl Record {
             (Kind::Dns, DNS_PREFIX),
             (Kind::Exit, EXIT_PREFIX),
             (Kind::Gateway, GATEWAY_PREFIX),
+            (Kind::Device, DEVICE_PREFIX),
         ]
         .into_iter()
         .find_map(|(kind, prefix)| Some((kind, key.strip_prefix(prefix)?)))?;
@@ -196,6 +222,19 @@ impl Record {
                     endpoint,
                 }))
             }
+            Body::Device {
+                exit,
+                exit_locked,
+                paused,
+            } => {
+                let node = name.parse().map_err(|_| RecordError::InvalidKey)?;
+                Ok(Self::Device(DeviceSettings {
+                    node,
+                    exit,
+                    exit_locked,
+                    paused,
+                }))
+            }
         }
     }
 
@@ -205,6 +244,7 @@ impl Record {
             Self::Relay(relay) => Some(relay.node),
             Self::Exit(node) => Some(*node),
             Self::Gateway(gateway) => Some(gateway.node),
+            Self::Device(settings) => Some(settings.node),
             Self::Dns(_) => None,
         }
     }
@@ -309,15 +349,30 @@ enum Kind {
     Dns,
     Exit,
     Gateway,
+    Device,
 }
 
 #[derive(Serialize, Deserialize)]
 enum Body {
     Route(NodeId),
-    Relay { address: String, node: NodeId },
-    Dns { ttl: u32, data: Vec<DnsData> },
+    Relay {
+        address: String,
+        node: NodeId,
+    },
+    Dns {
+        ttl: u32,
+        data: Vec<DnsData>,
+    },
     Exit,
-    Gateway { key: [u8; 32], endpoint: String },
+    Gateway {
+        key: [u8; 32],
+        endpoint: String,
+    },
+    Device {
+        exit: Option<NodeId>,
+        exit_locked: bool,
+        paused: bool,
+    },
 }
 
 impl Body {
@@ -328,6 +383,7 @@ impl Body {
             Self::Dns { .. } => Kind::Dns,
             Self::Exit => Kind::Exit,
             Self::Gateway { .. } => Kind::Gateway,
+            Self::Device { .. } => Kind::Device,
         }
     }
 }

@@ -287,6 +287,7 @@ fn fake_status() -> Status {
     Status {
         node: Some(NodeId::from_bytes([0x12; 32])),
         networks: vec![NetworkSummary {
+            my_settings: None,
             id: NET,
             name: "home".into(),
             peers_online: 2,
@@ -328,6 +329,8 @@ fn fake_peers() -> Vec<PeerInfo> {
     let phone = PHONE;
     vec![
         PeerInfo {
+            settings: None,
+            via_this_exit: false,
             node: NODE,
             name: "nas".into(),
             address: "100.64.0.2".into(),
@@ -344,6 +347,8 @@ fn fake_peers() -> Vec<PeerInfo> {
             invite: None,
         },
         PeerInfo {
+            settings: None,
+            via_this_exit: false,
             node: phone,
             name: "phone".into(),
             address: "100.64.0.3".into(),
@@ -360,6 +365,8 @@ fn fake_peers() -> Vec<PeerInfo> {
             invite: None,
         },
         PeerInfo {
+            settings: None,
+            via_this_exit: false,
             node: NodeId::from_bytes([0xdd; 32]),
             name: "pixel".into(),
             address: "100.64.0.4".into(),
