@@ -75,15 +75,21 @@ Props:
     display: grid;
     gap: var(--s-2);
   }
+  /* The ghost button's label lines up with the text above it, like the chart's `Show data`. */
+  .days > div > :global(button) {
+    margin-inline-start: calc(-1 * var(--s-3));
+  }
   .meta {
     color: var(--ink-3);
   }
   .problem {
     color: var(--danger);
   }
+  /* The same table as the chart's `Show data`: small figures, small-caps headers, flush edges. */
   table {
     width: 100%;
     border-collapse: collapse;
+    font: var(--t-small);
     font-variant-numeric: tabular-nums;
   }
   th,
@@ -93,11 +99,18 @@ Props:
     text-align: end;
   }
   th:first-child {
+    padding-inline-start: 0;
     text-align: start;
     font-weight: 400;
   }
+  th:last-child,
+  td:last-child {
+    padding-inline-end: 0;
+  }
   thead th {
-    font: var(--t-small);
+    font: var(--t-micro);
+    letter-spacing: var(--t-micro-tracking);
+    font-variant-caps: all-small-caps;
     color: var(--ink-3);
   }
 </style>

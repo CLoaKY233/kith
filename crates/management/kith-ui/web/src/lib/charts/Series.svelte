@@ -797,6 +797,7 @@ Props:
     width: 100%;
     border-collapse: collapse;
     font: var(--t-small);
+    font-variant-numeric: tabular-nums;
   }
   caption {
     position: absolute;
@@ -820,8 +821,13 @@ Props:
     text-align: right;
   }
   th:first-child {
+    padding-inline-start: 0;
     text-align: left;
     font-weight: inherit;
+  }
+  th:last-child,
+  td:last-child {
+    padding-inline-end: 0;
   }
   td {
     color: var(--ink-1);

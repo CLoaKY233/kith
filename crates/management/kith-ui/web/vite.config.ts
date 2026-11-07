@@ -23,6 +23,15 @@ export default defineConfig({
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
     reportCompressedSize: false,
+    // Six hash characters name a build well enough, and every chunk the first load imports
+    // spells its name out.
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/[name]-[hash:6].js',
+        chunkFileNames: 'assets/[name]-[hash:6].js',
+        assetFileNames: 'assets/[name]-[hash:6][extname]',
+      },
+    },
   },
   test: {
     include: ['src/**/*.test.ts'],

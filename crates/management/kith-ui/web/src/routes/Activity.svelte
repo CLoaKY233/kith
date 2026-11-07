@@ -403,11 +403,12 @@ Props:
     align-items: center;
     gap: var(--s-3);
   }
+  /* Under the times, left-aligned like everything else on the page. */
   .older {
     display: grid;
-    justify-items: center;
+    justify-items: start;
     gap: var(--s-2);
-    padding: var(--s-4) 0;
+    padding: var(--s-4) var(--s-3);
   }
   .older .quiet {
     color: var(--ink-3);
