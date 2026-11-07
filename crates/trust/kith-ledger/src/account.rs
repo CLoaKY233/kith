@@ -245,7 +245,8 @@ impl AccountChange {
             | OpBody::AssignDevice { .. }
             | OpBody::SetRecoveryKey { .. }
             | OpBody::Approved { .. }
-            | OpBody::Acted { .. } => return None,
+            | OpBody::Acted { .. }
+            | OpBody::Leave => return None,
         })
     }
 }
@@ -378,7 +379,8 @@ impl AdminChange {
             | OpBody::RevokeConsole { .. }
             | OpBody::SetRecoveryKey { .. }
             | OpBody::Approved { .. }
-            | OpBody::Acted { .. } => return None,
+            | OpBody::Acted { .. }
+            | OpBody::Leave => return None,
         })
     }
 }
