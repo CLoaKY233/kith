@@ -3,3 +3,8 @@ extend-exclude = ["LICENSE-*", "*.lock"]
 
 [default.extend-identifiers]
 UPnP = "UPnP"
+
+[default.extend-words]
+# WebAuthn's key format, and a key fingerprint.
+cose = "cose"
+fpr = "fpr"

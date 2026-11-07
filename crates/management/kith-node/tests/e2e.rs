@@ -2220,7 +2220,8 @@ mod tests {
             }
             sleep(Duration::from_millis(100)).await;
         }
-        Err(format!("the exit never became {exit:?}").into())
+        let status = node.request(Request::Status).await;
+        Err(format!("the exit never became {exit:?}: {status:?}").into())
     }
 
     #[tokio::test(flavor = "current_thread")]

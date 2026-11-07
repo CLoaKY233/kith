@@ -67,11 +67,11 @@ fn golden_bytes() {
         path_mtu: Some(1216),
         invite: None,
     }]));
-    let mut expected = vec![65, b'k', b't', 0x70, 17, 0, 6, 1];
+    let mut expected = vec![67, b'k', b't', 0x70, 17, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,
-        b'e', 1, 0xc0, 0x09, 0,
+        b'e', 1, 0xc0, 0x09, 0, 0, 0,
     ]);
     assert_eq!(encode(&peers).unwrap(), expected);
 }
