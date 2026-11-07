@@ -115,3 +115,7 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[package.metadata.cargo-machete]
+# Used by build.rs, which cargo-machete does not read.
+ignored = ["brotli", "tauri-build"]
