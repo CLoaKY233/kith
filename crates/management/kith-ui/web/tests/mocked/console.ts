@@ -1,33 +1,58 @@
-// A mocked Console for the page under `vite preview`: every /api call is answered here
-// from the office fixture plus a little account state, the event stream is a fake the test
-// pushes entries into, and Chrome's virtual authenticator plays the passkey.
+// A mocked Console for the page under `vite preview`: every /api call is answered here,
+// in the shapes of docs/plans/kith-ui-api.md, from the office fixture plus a little account
+// state; the event stream is a fake the test pushes entries into, and Chrome's virtual
+// authenticator plays the passkey. The real server's flow is tests/playwright/console.spec.ts;
+// these cover the failures that one cannot cause on demand.
 
 import { test as base, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { Me, Person } from '../../src/lib/types';
-import type { Boot, Entry, Fixture } from '../../src/lib/types.gen';
+import type { Boot, Entry, Fixture, Me, PeerInfo, PersonView } from '../../src/lib/types.gen';
 
 const fixturePath = fileURLToPath(new URL('../../fixtures/office.json', import.meta.url));
 export const office = JSON.parse(readFileSync(fixturePath, 'utf8')) as Fixture;
 const firstNetwork = office.status.networks[0];
 if (!firstNetwork) throw new Error('the office fixture has no network');
 export const network = firstNetwork;
+const firstPeer: PeerInfo | undefined = office.peers[network.id]?.[0];
+if (!firstPeer) throw new Error('the office fixture has no device');
+/** Bo's device, from the recording. */
+export const boDevice = firstPeer;
 const SEQ = 1000;
 
-export const ana: Me = { id: 'p-ana', name: 'Ana', role: 'owner' };
-export const bo: Me = { id: 'p-bo', name: 'Bo', role: 'admin' };
-export const cy: Me = { id: 'p-cy', name: 'Cy', role: 'member' };
+export const ana: Me = { id: 'a-ana', name: 'Ana', role: 'owner' };
+export const bo: Me = { id: 'a-bo', name: 'Bo', role: 'admin' };
+export const cy: Me = { id: 'a-cy', name: 'Cy', role: 'member' };
 
-export function startingPeople(): Person[] {
+/** `who` as `GET /api/people` lists them. */
+export function view(who: Me, devices: string[] = [], state: PersonView['state'] = 'active'): PersonView {
+  return {
+    ...who,
+    state,
+    devices,
+    passkeys: state === 'invited' ? 0 : 1,
+    invited_by: state === 'active' ? null : ana.id,
+    expires_at_ms: state === 'invited' ? Date.now() + 7 * 24 * 3600 * 1000 : null,
+    me: false,
+  };
+}
+
+export function startingPeople(): PersonView[] {
   return [
-    { ...ana, pending: false, devices: [{ node: office.status.node ?? 'self', name: 'laptop', online: true }] },
-    { ...bo, pending: false, devices: [{ node: 'n-bo-phone', name: 'bo-phone', online: false }] },
-    { ...cy, pending: false, devices: [] },
-    { id: 'p-di', name: 'Di', role: 'member', pending: true, devices: [] },
+    view(ana, office.status.node ? [office.status.node] : []),
+    view(bo, [boDevice.node]),
+    view(cy),
+    view({ id: 'p-di', name: 'Di', role: 'member' }, [], 'invited'),
   ];
 }
+
+const challenge = (): string => randomBytes(32).toString('base64url');
+const authority = (change: string): unknown => ({
+  change,
+  public_key: { challenge: challenge(), rpId: 'localhost', allowCredentials: [], userVerification: 'required' },
+  expires_at_ms: Date.now() + 5 * 60 * 1000,
+});
 
 /** One request the page made, as the test checks it. */
 export type Call = { readonly method: string; readonly path: string; readonly body: unknown };
@@ -35,7 +60,7 @@ export type Call = { readonly method: string; readonly path: string; readonly bo
 /** What the mocked server knows and answers; tests change it as they go. */
 export class Console {
   signedIn: Me | null = null;
-  people: Person[] = startingPeople();
+  people: PersonView[] = startingPeople();
   calls: Call[] = [];
   /** Answers for one path, used once each before the default. */
   readonly once = new Map<string, { status: number; json: unknown }[]>();
@@ -89,45 +114,57 @@ async function answer(server: Console, route: Route): Promise<void> {
       return reply(office.pending);
     case '/api/setup/begin':
       return reply({
-        publicKey: {
+        public_key: {
           rp: { id: 'localhost', name: 'kith' },
-          user: { id: 'cC1hbmE', name: 'ana', displayName: 'Ana' },
-          challenge: randomBytes(32).toString('base64url'),
+          user: { id: 'cC1hbmE', name: 'Ana', displayName: 'Ana' },
+          challenge: challenge(),
           pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
-          authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+          excludeCredentials: [],
+          authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
+          attestation: 'none',
         },
       });
     case '/api/setup/finish':
       server.signedIn = ana;
-      return reply({ authority: { challenge: randomBytes(32).toString('base64url'), rpId: 'localhost' } });
+      return reply({ person: { ...view(ana), me: true }, authority: authority('authorize_console') });
+    case '/api/setup/recovery':
+      return reply({ words: WORDS });
     case '/api/authority/begin':
-      return reply({ publicKey: { challenge: randomBytes(32).toString('base64url'), rpId: 'localhost' } });
+      return reply(authority('add_account'));
     case '/api/authority/finish':
-      return reply(server.sent('/api/setup/finish').length > 0 ? { recovery_words: WORDS } : {});
+      return reply({ state: 'accepted', op: null });
     case '/api/login/begin':
-      return reply({ publicKey: { challenge: randomBytes(32).toString('base64url'), rpId: 'localhost' } });
+      return reply({ public_key: { challenge: challenge(), rpId: 'localhost', allowCredentials: [], userVerification: 'required' } });
     case '/api/login/finish':
       server.signedIn = ana;
-      return reply({ person: ana });
+      return reply({ mode: 'public', person: { ...view(ana), me: true }, network: { id: network.id, name: network.name } });
     case '/api/logout':
       server.signedIn = null;
-      return reply({});
+      return route.fulfill({ status: 204 });
     case '/api/people':
       if (request.method() === 'POST') {
-        const { name, role } = body as { name: string; role: Person['role'] };
-        const id = `p-${name.toLowerCase()}`;
-        server.people = [...server.people, { id, name, role, pending: true, devices: [] }];
-        return reply({ id, link: `https://vpn.example.com/welcome/${id}-token` });
+        const { name, role } = body as { name: string; role: Me['role'] };
+        const person = view({ id: `p-${name.toLowerCase()}`, name, role }, [], 'invited');
+        server.people = [...server.people, person];
+        return reply({
+          person,
+          link: `https://vpn.example.com/register/${person.id}-token`,
+          expires_at_ms: person.expires_at_ms,
+          qr_svg: null,
+        });
       }
-      return reply(server.people);
+      return reply(server.people.map((p) => ({ ...p, me: p.id === server.signedIn?.id })));
     case '/api/device-codes':
       return reply({
         code: 'K7Q4XM',
         expires_at_ms: Date.now() + 10 * 60 * 1000,
-        qr_svg: '<svg xmlns="http://www.w3.org/2000/svg"/>',
+        link: 'https://vpn.example.com/j/K7Q4XM',
         command: 'kith join https://vpn.example.com/j/K7Q4XM',
+        qr_svg: null,
+        person: server.signedIn?.id ?? '',
       });
     default:
+      if (path.startsWith('/api/setup/')) return reply({ network: null, expires_at_ms: Date.now() + 30 * 60 * 1000 });
       return reply({ code: 'not_found', message: path }, 404);
   }
 }

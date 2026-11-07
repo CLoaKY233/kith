@@ -50,15 +50,27 @@ pub(crate) async fn status(
         Source::Daemon(daemon) => read(&shared, daemon, false).await?.view,
     };
     view.mode = mode;
-    if principal.account().is_some() {
-        let (_, person) = crate::console::signed_in(&shared, Some(&principal)).await?;
-        view.me = Some(Me {
-            id: person.id,
-            name: person.name,
-            role: person.role,
-        });
-    }
+    view.me = me(&shared, Some(&principal)).await?;
     Ok(Json(json!(view)))
+}
+
+/// The signed-in person, as `me` in the status; `None` for the local link's session.
+pub(crate) async fn me(
+    shared: &Shared,
+    principal: Option<&crate::console::Principal>,
+) -> Result<Option<Me>, ApiError> {
+    if principal
+        .and_then(crate::console::Principal::account)
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let (_, person) = crate::console::signed_in(shared, principal).await?;
+    Ok(Some(Me {
+        id: person.id,
+        name: person.name,
+        role: person.role,
+    }))
 }
 
 /// How this server is reached, as the page reads it.
@@ -85,8 +97,15 @@ pub(crate) async fn pending(State(shared): State<Arc<Shared>>) -> Answer {
 }
 
 /// `GET /api/boot`: what `index.html` inlines, for a page that started without it.
-pub(crate) async fn boot(State(shared): State<Arc<Shared>>) -> Answer {
-    Ok(Json(json!(crate::ipc::snapshot(&shared).await?)))
+pub(crate) async fn boot(
+    State(shared): State<Arc<Shared>>,
+    axum::extract::Extension(crate::session::Caller(principal)): axum::extract::Extension<
+        crate::session::Caller,
+    >,
+) -> Answer {
+    Ok(Json(json!(
+        crate::ipc::snapshot(&shared, principal.as_ref()).await?
+    )))
 }
 
 /// The boot snapshot as the source has it; [`crate::ipc::snapshot`] puts the current

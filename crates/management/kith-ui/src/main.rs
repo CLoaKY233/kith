@@ -14,7 +14,7 @@ use kith_config::Config as KithConfig;
 use kith_ui_core::public::{self, PublicConfig};
 use kith_ui_core::{
     Asset, Config, DEFAULT_PORT, Mode, Source, SqliteStore, Storage, Token, bind, load_fixture,
-    now_ms, router, setup_link,
+    now_ms, router, setup_link, setup_link_at,
 };
 
 /// The built page, or `fallback.html` when it was not built; see `build.rs`.
@@ -31,6 +31,10 @@ const SETUP_LINK: &str = "setup-link";
 /// at a domain over HTTPS instead, for people who sign in with passkeys.
 #[derive(Debug, Clone, Bpaf)]
 #[bpaf(options, version)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is a command-line switch of its own"
+)]
 struct Opts {
     /// Daemon socket (default: from the config file)
     #[bpaf(long, env("KITH_SOCKET"), argument("PATH"))]
@@ -45,6 +49,9 @@ struct Opts {
     /// Serve a recorded network instead of talking to the daemon
     #[bpaf(long, argument("FILE"))]
     fixture: Option<PathBuf>,
+    /// With --fixture, also print a Console setup link on localhost, to try setup, passkeys
+    /// and people against the simulated network. For tests only
+    fixture_console: bool,
     /// Serve the Console at this domain over HTTPS (ports 443 and 80), with a certificate
     /// from Let's Encrypt
     #[bpaf(long, argument("DOMAIN"))]
@@ -222,6 +229,9 @@ async fn run(opts: Opts) -> Result<(), String> {
     if let Some(domain) = opts.public.clone() {
         return run_public(opts, domain).await;
     }
+    if opts.fixture_console && opts.fixture.is_none() {
+        return Err("--fixture-console needs --fixture".to_owned());
+    }
     let store = store(&opts)?;
     let source = source(&opts)?;
     let listener = bind(opts.port)
@@ -238,6 +248,16 @@ async fn run(opts: Opts) -> Result<(), String> {
         format!("http://127.0.0.1:{port}")
     };
     let link = format!("{origin}/#t={}", token.hex());
+    let setup = if opts.fixture_console {
+        let origin = if opts.dev {
+            VITE.to_owned()
+        } else {
+            format!("http://localhost:{port}")
+        };
+        setup_link_at(&*store, &origin, now_ms()).map_err(|error| error.to_string())?
+    } else {
+        None
+    };
     let app = router(Config {
         source,
         port,
@@ -254,6 +274,12 @@ async fn run(opts: Opts) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     let mut out = std::io::stdout().lock();
     let _ignored = writeln!(out, "kith ui is at {link}");
+    if let Some(setup) = setup {
+        let _ignored = writeln!(
+            out,
+            "Set up the simulated Console within 30 minutes; the link works once:\n  {setup}"
+        );
+    }
     if !opts.no_open && opener::open(&link).is_err() {
         let _ignored = writeln!(out, "Could not open a browser; open the link above.");
     }

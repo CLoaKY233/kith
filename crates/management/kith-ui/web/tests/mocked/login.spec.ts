@@ -18,9 +18,9 @@ test('signed out, the page shows one button and nothing about the network', asyn
   await expect(page.getByRole('button', { name: copy.account.signOut })).toBeVisible();
   await expect(page.getByText(ana.name, { exact: true })).toBeVisible();
   await expect(page.getByText(copy.account.role.owner, { exact: true })).toBeVisible();
-  const finish = server.sent('/api/login/finish')[0]?.body as { assertion: { id: string; response: Record<string, unknown> } };
-  expect(isBase64url(finish.assertion.response['authenticatorData'])).toBe(true);
-  expect(isBase64url(finish.assertion.response['userHandle'])).toBe(true);
+  const finish = server.sent('/api/login/finish')[0]?.body as { credential: { id: string; response: Record<string, unknown> } };
+  expect(isBase64url(finish.credential.response['authenticatorData'])).toBe(true);
+  expect(isBase64url(finish.credential.response['userHandle'])).toBe(true);
 });
 
 test('a passkey kith does not know is explained', async ({ page, server, authenticator }) => {

@@ -14,10 +14,12 @@ Props:
   import { SvelteSet } from 'svelte/reactivity';
   import { setQuery } from '../router';
   import { copy, copyScreens } from '../lib/copy';
+  import { copyConsole } from '../lib/copy.console';
   import {
     ACTIVITY_KINDS,
     buildFeed,
     matches,
+    olderEntries,
     startOfDay,
     type FeedRow,
     type Filter,
@@ -27,7 +29,8 @@ Props:
   import { liveContext } from '../lib/kith/liveContext';
   import { devicesByName, findNetwork, membershipOf } from '../lib/kith/network';
   import VirtualList from '../lib/kith/VirtualList.svelte';
-  import { live, notifications } from '../lib/live/store.svelte';
+  import { errorText } from '../lib/api';
+  import { actions, live, notifications } from '../lib/live/store.svelte';
   import { SORT_FREEZE_MS, TINT_MS } from '../lib/live/timing';
   import { readPx } from '../lib/tokens';
   import type { Entry } from '../lib/types.gen';
@@ -120,9 +123,44 @@ Props:
     }, SORT_FREEZE_MS);
   }
 
-  const shown = $derived(
-    cutoff === null ? live.journal : live.journal.filter((e) => e.seq <= (cutoff ?? 0)),
-  );
+  // Older entries the Console kept (up to 30 days), from GET /api/history/journal, below
+  // the live journal (see olderEntries).
+  let older = $state.raw<Entry[]>([]);
+  let olderBefore: number | null = null;
+  let olderDone = $state(false);
+  let olderLoading = $state(false);
+  let olderError = $state<string | null>(null);
+  /** Pages read at most per click while every entry on them is one the page holds. */
+  const OLDER_PAGES = 5;
+
+  async function showOlder(): Promise<void> {
+    if (olderLoading || olderDone) return;
+    olderLoading = true;
+    olderError = null;
+    let added: Entry[] = [];
+    let before = olderBefore;
+    for (let page = 0; page < OLDER_PAGES && added.length === 0; page += 1) {
+      const handle = await actions.journalHistory(before).done;
+      if (!handle.result) {
+        if (handle.error) olderError = errorText(handle.error);
+        break;
+      }
+      added = olderEntries(handle.result.entries, live.journal, live.boot, older[0]?.seq ?? 0);
+      before = handle.result.next_before;
+      if (before === null) {
+        olderDone = true;
+        break;
+      }
+    }
+    olderBefore = before;
+    older = [...added, ...older];
+    olderLoading = false;
+  }
+
+  const shown = $derived.by(() => {
+    const current = cutoff === null ? live.journal : live.journal.filter((e) => e.seq <= (cutoff ?? 0));
+    return older.length === 0 ? current : [...older, ...current];
+  });
   const newer = $derived(
     cutoff === null
       ? 0
@@ -186,8 +224,29 @@ Props:
     pausePx = readPx('journal-pause');
   });
 
-  const rowKey = (row: FeedRow): string => row.key;
+  /** The feed's rows and, last, the control that reads older ones, so it moves with them. */
+  type Row = FeedRow | { readonly type: 'older'; readonly key: 'older' };
+  const listed: Row[] = $derived([...rows, { type: 'older', key: 'older' }]);
+  const rowKey = (row: Row): string => row.key;
 </script>
+
+{#snippet olderControl()}
+  <div class="older">
+    {#if olderDone}
+      <p class="quiet">{copyConsole.history.olderNone}</p>
+    {:else}
+      <Button
+        variant="secondary"
+        pending={olderLoading}
+        pendingLabel={copyConsole.history.olderReading}
+        onclick={showOlder}
+      >
+        {copyConsole.history.older}
+      </Button>
+    {/if}
+    {#if olderError}<p class="problem" role="alert">{olderError}</p>{/if}
+  </div>
+{/snippet}
 
 <section class="screen" aria-label={copy.nav.activity}>
   {#if ask}
@@ -264,9 +323,11 @@ Props:
     {/if}
     <div role="log" aria-live="off" aria-label={copyScreens.activity.feed}>
       {#if hasEntries}
-        <VirtualList bind:this={list} items={rows} key={rowKey} estimate={rowPx} onScroll={scrolled}>
-          {#snippet row(item: FeedRow)}
-            {#if item.type === 'day'}
+        <VirtualList bind:this={list} items={listed} key={rowKey} estimate={rowPx} onScroll={scrolled}>
+          {#snippet row(item: Row)}
+            {#if item.type === 'older'}
+              {@render olderControl()}
+            {:else if item.type === 'day'}
               <h2 class="divider">{item.label}</h2>
             {:else if item.type === 'gap'}
               <p class="gap">{item.text}</p>
@@ -298,6 +359,7 @@ Props:
           {#if item.type === 'gap'}<p class="gap">{item.text}</p>{/if}
         {/each}
         <p class="empty">{emptyText}</p>
+        {@render olderControl()}
       {/if}
     </div>
   </div>
@@ -340,6 +402,18 @@ Props:
     flex-wrap: wrap;
     align-items: center;
     gap: var(--s-3);
+  }
+  .older {
+    display: grid;
+    justify-items: center;
+    gap: var(--s-2);
+    padding: var(--s-4) 0;
+  }
+  .older .quiet {
+    color: var(--ink-3);
+  }
+  .older .problem {
+    color: var(--danger);
   }
   .select.kinds-narrow {
     display: none;

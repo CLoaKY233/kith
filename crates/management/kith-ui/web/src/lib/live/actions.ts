@@ -7,6 +7,8 @@ import type {
   AllowIn,
   AllowPreview,
   CreateNetworkIn,
+  DeviceCodeIn,
+  DeviceCodeView,
   Entry,
   ExitIn,
   ExitView,
@@ -16,9 +18,14 @@ import type {
   InviteIn,
   JoinIn,
   JoinRequestState,
+  JournalPage,
   NameCheck,
   Outcome,
   PeerInfo,
+  PersonIn,
+  PersonInvite,
+  PersonRole,
+  PersonView,
   PhoneConfig,
   PhoneConfigIn,
   PhoneCreated,
@@ -29,15 +36,10 @@ import type {
   RemoveIn,
   RequestJoinIn,
   StatusView,
+  TrafficHistory,
 } from '../types.gen';
 import type {
   ActionHandle,
-  AddPersonIn,
-  DeviceCode,
-  DeviceCodeIn,
-  Person,
-  PersonAdded,
-  PersonRole,
   InvitePreview,
   OpenInvite,
   PolicyIn,
@@ -414,16 +416,45 @@ export function createActions(host: ActionsHost, runner: Runner) {
     // People (docs/plans/console.md). Role changes and removals are authority ops the
     // person's passkey signs: see lib/authority.svelte.ts.
     loadPeople: () =>
-      runner.run<Person[]>({ read: true, latest: 'people', run: (signal) => api.get<Person[]>('/api/people', { signal }) }),
-    /** A pending person and their one-time sign-up link. */
-    addPerson: (name: string, role: PersonRole) =>
-      runner.run<PersonAdded>({
-        run: () => api.post<PersonAdded>('/api/people', { name, role } satisfies AddPersonIn),
+      runner.run<PersonView[]>({
+        read: true,
+        latest: 'people',
+        run: (signal) => api.get<PersonView[]>('/api/people', { signal }),
       }),
-    /** A 6-character code that joins one computer for `person`. */
-    deviceCode: (person: string) =>
-      runner.run<DeviceCode>({
-        run: () => api.post<DeviceCode>('/api/device-codes', { person } satisfies DeviceCodeIn),
+    /** An invited person and their one-time registration link. */
+    addPerson: (name: string, role: PersonRole) =>
+      runner.run<PersonInvite>({
+        run: () => api.post<PersonInvite>('/api/people', { name, role } satisfies PersonIn),
+      }),
+    /** Takes back an invite nobody approved yet; no passkey needed, nothing was signed. */
+    cancelInvite: (person: string) =>
+      runner.run<Outcome>({
+        run: () => api.post<Outcome>(`/api/people/${enc(person)}/remove`),
+      }),
+    /** A 6-character code that joins one computer for `person`; `null` is the signed-in one. */
+    deviceCode: (person: string | null) =>
+      runner.run<DeviceCodeView>({
+        run: () => api.post<DeviceCodeView>('/api/device-codes', { person } satisfies DeviceCodeIn),
+      }),
+
+    /** Journal entries the Console kept, newest first, older than the row `before`. */
+    journalHistory: (before: number | null) =>
+      runner.run<JournalPage>({
+        read: true,
+        latest: 'journal-history',
+        run: (signal) =>
+          api.get<JournalPage>(`/api/history/journal${before === null ? '' : `?before=${before}`}`, { signal }),
+      }),
+    /** One device's bytes per minute the Console kept since `sinceMs` (at most 30 days). */
+    trafficHistory: (network: string, node: string, sinceMs: number) =>
+      runner.run<TrafficHistory[]>({
+        read: true,
+        latest: `traffic-history:${network}/${node}`,
+        run: (signal) =>
+          api.get<TrafficHistory[]>(
+            `/api/history/traffic?${new URLSearchParams({ network, node, since_ms: String(Math.floor(sinceMs)) }).toString()}`,
+            { signal },
+          ),
       }),
   } as const;
 }

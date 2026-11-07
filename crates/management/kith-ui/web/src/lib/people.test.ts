@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { addableRoles, canRemove, roleChoices, sortPeople } from './people';
+import { addableRoles, canApprove, canRemove, roleChoices, sortPeople } from './people';
 import { viewerStatus } from './viewer';
-import type { Me, Person, PersonRole } from './types';
-import type { StatusView } from './types.gen';
+import type { Me, PersonRole, PersonState, PersonView, StatusView } from './types.gen';
 
-const person = (id: string, role: PersonRole): Person => ({ id, name: id, role, pending: false, devices: [] });
+const person = (id: string, role: PersonRole, state: PersonState = 'active'): PersonView => ({
+  id,
+  name: id,
+  role,
+  state,
+  devices: [],
+  passkeys: state === 'invited' ? 0 : 1,
+  invited_by: state === 'active' ? null : 'ana',
+  expires_at_ms: state === 'invited' ? 1 : null,
+  me: false,
+});
 const as = (role: PersonRole): Me => ({ id: 'me', name: 'me', role });
 
 const owner = person('ana', 'owner');
@@ -19,11 +28,12 @@ describe('who may do what with people', () => {
     expect(addableRoles(null)).toEqual([]);
   });
 
-  it('lets only the owner change roles, never their own or the owner', () => {
+  it('lets only the owner change roles, of people in the ledger, never their own', () => {
     expect(roleChoices(as('owner'), admin)).toEqual(['member']);
     expect(roleChoices(as('owner'), member)).toEqual(['admin']);
     expect(roleChoices(as('owner'), owner)).toEqual([]);
-    expect(roleChoices({ ...as('owner'), id: 'bo' }, { ...admin, role: 'member' })).toEqual([]);
+    expect(roleChoices(as('owner'), { ...member, me: true })).toEqual([]);
+    expect(roleChoices(as('owner'), person('di', 'member', 'registered'))).toEqual([]);
     expect(roleChoices(as('admin'), member)).toEqual([]);
   });
 
@@ -34,11 +44,27 @@ describe('who may do what with people', () => {
     expect(canRemove(as('owner'), owner)).toBe(false);
     expect(canRemove(as('member'), member)).toBe(false);
     expect(canRemove({ ...as('admin'), id: 'cy' }, member)).toBe(false);
+    expect(canRemove(as('admin'), person('di', 'admin', 'invited'))).toBe(false);
   });
 
-  it('lists the owner, then admins, then members, by name', () => {
-    const list = [person('zed', 'member'), member, admin, owner, person('al', 'admin')];
-    expect(sortPeople(list).map((p) => p.id)).toEqual(['ana', 'al', 'bo', 'cy', 'zed']);
+  it('asks whoever may add the person to approve them once they made a passkey', () => {
+    const waiting = person('di', 'admin', 'registered');
+    expect(canApprove(as('owner'), waiting)).toBe(true);
+    expect(canApprove(as('admin'), waiting)).toBe(false);
+    expect(canApprove(as('admin'), person('ed', 'member', 'registered'))).toBe(true);
+    expect(canApprove(as('owner'), person('fy', 'member', 'invited'))).toBe(false);
+  });
+
+  it('lists people waiting first, then the owner, admins and members by name, then invites', () => {
+    const list = [
+      person('zed', 'member'),
+      person('al', 'member', 'invited'),
+      member,
+      admin,
+      owner,
+      person('di', 'admin', 'registered'),
+    ];
+    expect(sortPeople(list).map((p) => p.id)).toEqual(['di', 'ana', 'bo', 'cy', 'zed', 'al']);
   });
 });
 

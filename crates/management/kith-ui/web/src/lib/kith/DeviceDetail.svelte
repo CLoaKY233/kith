@@ -5,7 +5,8 @@ DeviceDetail (spec §6.4): everything about one device, sections 32 px apart:
   2. verdict: one sentence and its cause (§12.4), with an action only when one exists;
   3. path: `This Mac ─ vps ─ nas` with the latency on the line, endpoint, MTU, reason and
      who reported it;
-  4. traffic: the chart with the `1m · 15m · 1h` range and the window totals;
+  4. traffic: the chart with the `1m · 15m · 1h` range and the window totals, then, on
+     request, bytes per day for the 30 days the Console keeps;
   5. names pointing here, with Copy;
   6. history: the last 10 entries, then `All →` into Activity;
   7. actions: admins `Rename`, `Use as exit` or `Allow as exit…`, then `Remove from home…`;
@@ -34,6 +35,7 @@ Props:
   import { removalLine, removalOf } from '../../sheets/removals.svelte';
   import { announce } from '../announce';
   import Series from '../charts/Series.svelte';
+  import TrafficDays from './TrafficDays.svelte';
   import { copy } from '../copy';
   import { bytes, rtt as formatRtt } from '../format';
   import Icon from '../icons/Icon.svelte';
@@ -899,6 +901,7 @@ Props:
           <p class="meta">{copy.deviceView.totals[range](bytes(totals.rx), bytes(totals.tx))}</p>
           <Series peer={key} {range} {events} {at} />
         {/if}
+        <TrafficDays network={net} {node} />
       </section>
     {/if}
 

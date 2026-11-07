@@ -10,6 +10,7 @@ import {
   describe as say,
   gapText,
   logLine,
+  olderEntries,
   rangeFor,
   redact,
   showsUnder,
@@ -49,6 +50,28 @@ const flap = (ms: number): Entry =>
   at(ms, { kind: 'path_changed', network: NET, node: 'l', name: 'laptop', from: 'direct', to: 'relay' });
 const log = (ms: number, level: string): Entry =>
   at(ms, { kind: 'log', level, target: 'kith_node::daemon', message: `a ${level} line` });
+
+describe('older entries from the Console', () => {
+  it('keeps what the live journal lacks, oldest first, numbered below every seq so far', () => {
+    const live = [log(NOW, 'warn'), log(NOW + MIN, 'warn')];
+    const first = live[0]?.seq ?? 0;
+    const previousRun = log(NOW - 9 * MIN, 'warn');
+    const kept = [
+      { id: 9, boot: 'b2', entry: live[1] as Entry },
+      { id: 8, boot: 'b2', entry: live[0] as Entry },
+      { id: 7, boot: 'b2', entry: { ...log(NOW - MIN, 'warn'), seq: first - 1 } },
+      { id: 6, boot: 'b1', entry: { ...previousRun, seq: first + 5 } },
+    ];
+    const older = olderEntries(kept, live, 'b2', -2);
+    expect(older.map((e) => [e.seq, e.at_ms])).toEqual([
+      [-4, NOW - 9 * MIN],
+      [-3, NOW - MIN],
+    ]);
+    const feed = buildFeed(live, [...older, ...live], { ...all, network: null }, ctx, [], NOW);
+    const entries = feed.flatMap((row) => (row.type === 'entry' ? [row.entry.at_ms] : []));
+    expect(entries).toEqual([NOW + MIN, NOW, NOW - MIN, NOW - 9 * MIN]);
+  });
+});
 
 describe('activity templates (spec §12.3)', () => {
   it('words each kind of entry', () => {

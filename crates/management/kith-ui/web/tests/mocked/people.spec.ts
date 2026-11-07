@@ -1,6 +1,6 @@
 import { copy } from '../../src/lib/copy';
 import { copyConsole } from '../../src/lib/copy.console';
-import { ana, cy, expect, network, test } from './console';
+import { ana, bo as boPerson, boDevice, cy, expect, network, test, view } from './console';
 
 const peoplePage = `/n/${network.name}/people`;
 
@@ -10,7 +10,7 @@ test('the owner sees everyone with roles and devices, and adds a member by link'
   const list = page.getByRole('list', { name: copyConsole.people.title });
   const bo = list.getByRole('listitem').filter({ hasText: 'Bo' });
   await expect(bo).toContainText(copy.account.role.admin);
-  await expect(bo).toContainText(copyConsole.people.device('bo-phone', false));
+  await expect(bo).toContainText(copyConsole.people.device(boDevice.name, boDevice.online));
   await expect(list.getByRole('listitem').filter({ hasText: 'Di' })).toContainText(copyConsole.people.pending);
 
   await page.getByRole('button', { name: copyConsole.people.add }).click();
@@ -18,7 +18,7 @@ test('the owner sees everyone with roles and devices, and adds a member by link'
   await sheet.getByLabel(copyConsole.people.nameLabel).fill('Eve');
   await sheet.getByRole('button', { name: copyConsole.people.createLink }).click();
   await expect(sheet.getByText(copyConsole.people.linkFor('Eve'))).toBeVisible();
-  await expect(sheet.getByText('https://vpn.example.com/welcome/p-eve-token')).toBeVisible();
+  await expect(sheet.getByText('https://vpn.example.com/register/p-eve-token')).toBeVisible();
   expect(server.sent('/api/people').find((c) => c.method === 'POST')?.body).toEqual({ name: 'Eve', role: 'member' });
   expect(server.sent('/api/authority/begin')).toHaveLength(0);
 });
@@ -60,7 +60,22 @@ test('changing a role says what changes, then the passkey signs it', async ({ pa
   await expect(remove).toContainText(copyConsole.people.removeBody('Bo', 1, network.name));
   await remove.getByRole('button', { name: copyConsole.people.removeConfirm('Bo') }).click();
   await expect(remove).toBeHidden();
-  expect(server.sent('/api/authority/begin')[1]?.body).toEqual({ change: { kind: 'remove_person', person: 'p-bo' } });
+  expect(server.sent('/api/authority/begin')[1]?.body).toEqual({ change: { kind: 'remove_person', person: boPerson.id } });
+});
+
+test('someone who made their passkey waits at the top with one button to approve them', async ({ page, server, authenticator }) => {
+  await authenticator.withKey();
+  server.signedIn = ana;
+  server.people = [...server.people, view({ id: 'p-eve', name: 'Eve', role: 'admin' }, [], 'registered')];
+  await page.goto(peoplePage);
+  const rows = page.getByRole('list', { name: copyConsole.people.title }).getByRole('listitem');
+  await expect(rows.first()).toContainText(copyConsole.people.waiting('admin'));
+  await rows.first().getByRole('button', { name: copyConsole.people.approve }).click();
+  const dialog = page.getByRole('alertdialog', { name: copyConsole.people.approveTitle('Eve') });
+  await dialog.getByRole('button', { name: copyConsole.people.approveLabel('Eve') }).click();
+  await expect(dialog).toBeHidden();
+  expect(server.sent('/api/authority/begin')[0]?.body).toEqual({ change: { kind: 'add_admin', person: 'p-eve' } });
+  expect(server.sent('/api/authority/finish')).toHaveLength(1);
 });
 
 test('members see the list read-only and who to ask', async ({ page, server }) => {

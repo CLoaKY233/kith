@@ -103,14 +103,20 @@ fn script_safe(json: &str) -> String {
 
 /// `index.html` with the boot snapshot for a signed-in page. The no-script signed-out
 /// page shows only locally, and not on the pages that sign people in.
-async fn page(shared: &Shared, index: &Asset, signed_in: bool, path: &str) -> Response {
+async fn page(
+    shared: &Shared,
+    index: &Asset,
+    principal: Option<&crate::console::Principal>,
+    path: &str,
+) -> Response {
+    let signed_in = principal.is_some();
     let signing_in = ["/login", "/setup/", "/register/"]
         .iter()
         .any(|prefix| path.starts_with(prefix));
     let show_signed_out = !signed_in && !signing_in && shared.mode == crate::console::Mode::Local;
     let html = String::from_utf8_lossy(index.body);
     let boot = if signed_in {
-        match snapshot(shared).await {
+        match snapshot(shared, principal).await {
             Ok(boot) => serde_json::to_string(&boot).unwrap_or_else(|_| "null".to_owned()),
             Err(_) => "null".to_owned(),
         }
@@ -180,12 +186,12 @@ pub(crate) async fn serve(State(shared): State<Arc<Shared>>, request: Request) -
         return not_found();
     };
     if is_page(path) {
-        let signed_in = request
+        let principal = request
             .extensions()
             .get::<crate::session::Caller>()
-            .is_some_and(|caller| caller.0.is_some());
+            .and_then(|caller| caller.0.as_ref());
         return match assets.iter().find(|asset| asset.path == "index.html") {
-            Some(index) => page(&shared, index, signed_in, path).await,
+            Some(index) => page(&shared, index, principal, path).await,
             None => not_found(),
         };
     }

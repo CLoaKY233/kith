@@ -128,6 +128,16 @@ pub fn setup_link(
     domain: &str,
     now_ms: u64,
 ) -> Result<Option<String>, StoreError> {
+    setup_link_at(store, &format!("https://{domain}"), now_ms)
+}
+
+/// [`setup_link`] for a page at `origin`, such as `http://localhost:41680` for a local
+/// server, where passkeys work only on `localhost`.
+pub fn setup_link_at(
+    store: &dyn Storage,
+    origin: &str,
+    now_ms: u64,
+) -> Result<Option<String>, StoreError> {
     if store.setting(console::SETUP_DONE_KEY)?.is_some() {
         return Ok(None);
     }
@@ -139,7 +149,7 @@ pub fn setup_link(
         now_ms,
         now_ms.saturating_add(SETUP_MS),
     )?;
-    Ok(Some(format!("https://{domain}/setup/{token}")))
+    Ok(Some(format!("{origin}/setup/{token}")))
 }
 
 /// [`router`], with tier-3 changes confirmed by `gate` and, when given, people kept by

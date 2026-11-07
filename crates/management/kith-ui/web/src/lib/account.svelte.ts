@@ -1,21 +1,17 @@
-// The person signed in to the Console (docs/plans/console.md). In local mode nobody signs
-// in and none of this shows.
+// The person signed in to the Console (docs/plans/console.md): with a passkey, in public
+// mode or on `localhost`. The local one-time link signs nobody in and none of this shows.
 
 import { api } from './api';
 import { live } from './live/store.svelte';
-import type { ConsoleMode, ConsoleStatus, Me } from './types';
+import type { ConsoleMode, Me } from './types.gen';
 
-function consoleStatus(): ConsoleStatus | null {
-  return live.status as ConsoleStatus | null;
-}
-
-/** Who is signed in; null in local mode. */
+/** Who is signed in; null for the local link's session. */
 export function me(): Me | null {
-  return consoleStatus()?.me ?? null;
+  return live.status?.me ?? null;
 }
 
 export function consoleMode(): ConsoleMode {
-  return consoleStatus()?.mode ?? 'local';
+  return live.status?.mode ?? 'local';
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
@@ -26,15 +22,16 @@ class SignedOut {
   #asked = false;
 
   /**
-   * Without a session the snapshot can't say which mode this is, so ask `/api/status`;
-   * when that refuses too, a loopback host is the local `kith ui`.
+   * Without a session the snapshot can't say which mode this is, so ask `/api/status`,
+   * which a public Console answers signed out; when that refuses too, a loopback host is
+   * the local `kith ui`.
    */
   ask(): void {
     if (this.#asked) return;
     this.#asked = true;
     const guess: ConsoleMode = LOOPBACK.has(location.hostname) ? 'local' : 'public';
     api
-      .get<ConsoleStatus>('/api/status')
+      .get<{ mode?: ConsoleMode }>('/api/status')
       .then((status) => (this.mode = status.mode ?? guess))
       .catch(() => (this.mode = guess));
   }
@@ -42,10 +39,11 @@ class SignedOut {
 
 export const signedOut = new SignedOut();
 
+/** Ends this browser's session and goes to the passkey sign-in page. */
 export async function signOut(): Promise<void> {
   try {
     await api.post('/api/logout');
   } finally {
-    location.assign('/');
+    location.assign('/login');
   }
 }
