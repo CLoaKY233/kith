@@ -972,7 +972,7 @@ export const copy = {
         approveLive: "Approve it live",
         sendInvite: "Send an invite link",
         notInstalled: "Not installed yet?",
-        installCommand: "curl -fsSL https://kith.sh/install | sh",
+        installCommand: "curl -fsSL https://raw.githubusercontent.com/CLoaKY233/kith/main/install.sh | sh",
         runOnNew: "On the new device, run:",
         joinCommand: (network: string, admin: string): string =>
             `kith join ${network}@${admin}`,
