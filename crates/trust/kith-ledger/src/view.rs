@@ -84,6 +84,7 @@ pub struct NetworkView {
     pub(crate) heads: Vec<OpId>,
     pub(crate) accounts: BTreeMap<AccountId, Account>,
     pub(crate) consoles: BTreeSet<NodeId>,
+    pub(crate) ever_consoles: BTreeSet<NodeId>,
     pub(crate) recovery_key: Option<VerifyingKey>,
     pub(crate) device_owners: BTreeMap<NodeId, AccountId>,
     pub(crate) account_changes: Vec<OpId>,
@@ -158,6 +159,12 @@ impl NetworkView {
     /// Whether `device` is an authorized console.
     pub fn is_console(&self, device: &NodeId) -> bool {
         self.consoles.contains(device)
+    }
+
+    /// Whether `device` was ever an authorized console. Such a device signs admin ops only
+    /// on behalf of a person, even after it is revoked.
+    pub fn was_console(&self, device: &NodeId) -> bool {
+        self.ever_consoles.contains(device)
     }
 
     /// The recovery key's public half, once set.

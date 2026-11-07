@@ -2003,6 +2003,97 @@ mod tests {
         shutdown([a, b, c]).await
     }
 
+    /// The founding admin device that becomes the Console, as on a server: its own changes
+    /// are refused with a clear reason, and its changes for the owner reach the device.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_console_server_changes_a_device_only_for_a_person() -> TestResult {
+        let s = start().await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = node_id(&s).await?;
+        let alpha = peer_info(&s, network, "alpha").await?.node;
+        let secret = p256::ecdsa::SigningKey::from_slice(&[9; 32])?;
+        let credential = PasskeyCredential {
+            credential_id: vec![4, 5, 6],
+            public_key: secret.verifying_key().to_sec1_bytes().to_vec(),
+            rp_id: "vpn.example.com".into(),
+        };
+        let added = s
+            .request(Request::AddAccount {
+                network,
+                name: "lay".into(),
+                role: AccountRole::Owner,
+                credential,
+            })
+            .await;
+        let Response::AccountAdded { account: lay } = added else {
+            return Err(format!("adding the owner failed: {added:?}").into());
+        };
+        let prepared = s
+            .request(Request::PrepareAuthority {
+                network,
+                change: AuthorityChange::AuthorizeConsole { device: server },
+            })
+            .await;
+        let Response::AuthorityPrepared {
+            op_bytes,
+            challenge,
+        } = prepared
+        else {
+            return Err(format!("preparing the console failed: {prepared:?}").into());
+        };
+        let submitted = s
+            .request(Request::SubmitAuthority {
+                network,
+                op_bytes,
+                assertion: passkey_assertion(&secret, lay, &[4, 5, 6], &challenge),
+            })
+            .await;
+        if submitted != Response::AuthorityApplied {
+            return Err(format!("authorizing the console failed: {submitted:?}").into());
+        }
+
+        let paused = DeviceSettingsInfo {
+            paused: true,
+            ..DeviceSettingsInfo::default()
+        };
+        let own = s
+            .request(Request::SetDeviceSettings {
+                network,
+                node: alpha,
+                settings: paused,
+            })
+            .await;
+        let Response::Error { message, .. } = own else {
+            return Err(format!("the console changed a device for nobody: {own:?}").into());
+        };
+        if !message.contains("Console") {
+            return Err(format!("unclear refusal: {message}").into());
+        }
+        let for_lay = s
+            .request(Request::AsActor {
+                actor: lay,
+                request: Box::new(Request::SetDeviceSettings {
+                    network,
+                    node: alpha,
+                    settings: paused,
+                }),
+            })
+            .await;
+        if for_lay != Response::DeviceSettingsSet {
+            return Err(format!("the console's change for lay failed: {for_lay:?}").into());
+        }
+        for _ in 0..100 {
+            if let Response::PauseState { paused: true, .. } = a.request(Request::PauseState).await
+            {
+                return shutdown([a, s]).await;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err("the device never applied the console's change".into())
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_revoked_invite_is_unlisted_and_cannot_join() -> TestResult {
         let a = start().await?;

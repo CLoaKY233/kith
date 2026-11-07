@@ -1077,6 +1077,7 @@ pub(crate) fn evaluate(
     if let Some(state) = people.linear.final_state() {
         view.accounts.clone_from(&state.accounts);
         view.consoles.clone_from(&state.consoles);
+        view.ever_consoles.clone_from(&state.ever_consoles);
         view.recovery_key = state.recovery;
     }
     let (devices, admitted) = stage.devices(&graph);

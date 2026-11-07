@@ -245,7 +245,22 @@ impl NetworkRuntime {
         now: Timestamp,
     ) -> Result<(), NodeError> {
         let value = (!value.is_empty()).then_some(value);
-        self.append(identity, OpBody::SetRecord { key, value }, now)
+        self.append(
+            identity,
+            OpBody::SetRecord {
+                key: key.clone(),
+                value: value.clone(),
+            },
+            now,
+        )?;
+        // The ledger keeps ops it does not accept, so check the change took effect.
+        let applied = self.with_ledger(|ledger| ledger.view().records().get(&key).cloned())?;
+        if applied != value {
+            return Err(NodeError::InvalidArgument(format!(
+                "the network did not accept the change to {key}: this device may not make it"
+            )));
+        }
+        Ok(())
     }
 
     /// The policy in force: the default for a network that never set one.

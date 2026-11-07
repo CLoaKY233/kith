@@ -921,9 +921,9 @@ impl Daemon {
         self.member_map(network)?;
         let own_device = max_uses == 1 && self.console_for_person(network)?;
         if !own_device && !self.is_admin(network)? {
-            return Err(NodeError::InvalidArgument(
-                "only an admin of this network can create invites; ask an admin to run `kith invite`"
-                    .to_owned(),
+            return Err(self.not_admin(
+                network,
+                "only an admin of this network can create invites; ask an admin to run `kith invite`",
             ));
         }
         let bootstrap = self.bootstrap();
@@ -1082,9 +1082,7 @@ impl Daemon {
             )));
         }
         if !self.is_admin(network)? {
-            return Err(NodeError::InvalidArgument(
-                "only an admin of this network can remove devices".to_owned(),
-            ));
+            return Err(self.not_admin(network, "only an admin of this network can remove devices"));
         }
         let identity = Arc::clone(&self.identity);
         self.runtime_mut(network)?
@@ -1188,13 +1186,30 @@ impl Daemon {
             .with_ledger(|ledger| {
                 let view = ledger.view();
                 let device = view.admins().contains(&local);
-                actor.map_or(device, |actor| {
+                actor.map_or(device && !view.was_console(&local), |actor| {
                     (device || view.is_console(&local))
                         && view
                             .account(&actor)
                             .is_some_and(|account| account.role.can_administer())
                 })
             })
+    }
+
+    /// Why this device may not make an admin change: `otherwise`, unless it runs the
+    /// Console, whose changes the network accepts only on behalf of a signed-in person.
+    fn not_admin(&self, network: NetworkId, otherwise: &str) -> NodeError {
+        let local = self.identity.node_id();
+        let console = self.networks.actor().is_none()
+            && self.networks.get(&network).is_some_and(|runtime| {
+                runtime
+                    .with_ledger(|ledger| ledger.view().was_console(&local))
+                    .unwrap_or(false)
+            });
+        NodeError::InvalidArgument(if console {
+            "this device runs the Console, so the network accepts its changes only on behalf of a person: make this change in the Console, or from another admin device".to_owned()
+        } else {
+            otherwise.to_owned()
+        })
     }
 
     /// Whether this device is an authorized console acting for a person of `network`, in
@@ -1232,9 +1247,10 @@ impl Daemon {
             )));
         }
         if !self.is_admin(network)? && !self.actor_owns(network, node)? {
-            return Err(NodeError::InvalidArgument(format!(
-                "only an admin or the owner of {node} can change its settings"
-            )));
+            return Err(self.not_admin(
+                network,
+                &format!("only an admin or the owner of {node} can change its settings"),
+            ));
         }
         let record = Record::Device(DeviceSettings {
             node,
@@ -1414,9 +1430,10 @@ impl Daemon {
         present: bool,
     ) -> Result<(), NodeError> {
         if !self.is_admin(network)? {
-            return Err(NodeError::InvalidArgument(format!(
-                "this device is not an admin of {network}"
-            )));
+            return Err(self.not_admin(
+                network,
+                &format!("this device is not an admin of {network}"),
+            ));
         }
         let value = if present {
             record
