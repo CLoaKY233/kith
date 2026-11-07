@@ -2070,7 +2070,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn phones_default_to_the_exit_server_as_gateway() -> TestResult {
-        let s = start_server(true, true, Some("203.0.113.9")).await?;
+        let s = start_server(true, true, Some("1.2.3.4")).await?;
         let a = start().await?;
         let network = create(&s, "server").await?;
         join(&s, &a, network, "alpha").await?;
@@ -2086,7 +2086,7 @@ mod tests {
             return Err(format!("grant failed: {make_admin:?}").into());
         }
         let mut gateways = Vec::new();
-        for _ in 0..300 {
+        for _ in 0..100 {
             if let Response::Gateways(list) = a.request(Request::Gateways { network }).await
                 && list.iter().any(|g| g.node == server && g.exit)
             {
@@ -2098,7 +2098,7 @@ mod tests {
         let first = gateways.first().ok_or("no gateways")?;
         if first.node != server
             || !first.default
-            || first.endpoint != format!("203.0.113.9:{}", s.control_addr().port())
+            || first.endpoint != format!("1.2.3.4:{}", s.control_addr().port())
         {
             return Err(format!("the exit server is not the default gateway: {gateways:?}").into());
         }
