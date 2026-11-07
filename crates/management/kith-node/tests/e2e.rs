@@ -2231,6 +2231,16 @@ mod tests {
         join(&s, &a, network, "alpha").await?;
         let server = peer_info(&a, network, "server").await?.node;
         let alpha = peer_info(&s, network, "alpha").await?.node;
+        let granted = s
+            .request(Request::SetExitGrant {
+                network,
+                node: server,
+                allowed: true,
+            })
+            .await;
+        if granted != Response::ExitGrantSet {
+            return Err(format!("grant failed: {granted:?}").into());
+        }
         let locked = DeviceSettingsInfo {
             exit: Some(server),
             exit_locked: true,

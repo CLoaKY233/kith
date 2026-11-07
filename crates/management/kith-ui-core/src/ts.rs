@@ -34,6 +34,7 @@ pub fn declarations() -> String {
     push::<kith_ipc::NetworkSummary>(&mut out, &config);
     push::<kith_ipc::ImportedInfo>(&mut out, &config);
     push::<kith_ipc::Status>(&mut out, &config);
+    push::<kith_ipc::DeviceSettingsInfo>(&mut out, &config);
     push::<kith_ipc::PeerInfo>(&mut out, &config);
     push::<kith_ipc::EntryKind>(&mut out, &config);
     push::<kith_ipc::Entry>(&mut out, &config);

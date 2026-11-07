@@ -115,7 +115,7 @@ test('add a phone from the command palette', async ({ app }) => {
   await expect(app.getByRole('dialog').getByLabel(copy.addPhone.name, { exact: true })).toHaveValue(name);
   await keys.tabTo(app.getByRole('button', { name: copy.addPhone.create, exact: true }));
   await keys.press('Enter');
-  await expect.poll(() => created).toEqual([{ name, tags: [copy.addPhone.tagDefault] }]);
+  await expect.poll(() => created).toEqual([{ name, tags: [copy.addPhone.tagDefault], gateway: expect.any(String) }]);
 
   await keys.tabTo(app.getByRole('button', { name: copy.addPhone.reveal, exact: true }));
   await keys.press('Enter');

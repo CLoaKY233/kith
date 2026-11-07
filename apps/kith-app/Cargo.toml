@@ -33,7 +33,13 @@ tauri-plugin-autostart = "=2.7.0"
 tauri-plugin-deep-link = "=2.6.2"
 tauri-plugin-dialog = "=2.8.3"
 tauri-plugin-single-instance = { version = "=2.5.4", features = ["deep-link"] }
-tokio = { version = "1.54.1", default-features = false, features = ["macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1.54.1", default-features = false, features = [
+  "macros",
+  "net",
+  "rt",
+  "sync",
+  "time",
+] }
 tower = { version = "0.5.3", default-features = false, features = ["util"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -33,23 +33,6 @@ secs_ago: number,
 message: string, };
 
 /**
- * What an admin, or the device's owner, has chosen for one device.
- */
-export type DeviceSettingsInfo = { 
-/**
- * The exit device it sends its internet traffic through; `None` is its own connection.
- */
-exit: string | null, 
-/**
- * Whether the device itself may not change its exit.
- */
-exit_locked: boolean, 
-/**
- * Whether the device is paused.
- */
-paused: boolean, };
-
-/**
  * One network in [`Status`].
  */
 export type NetworkSummary = { 
@@ -82,7 +65,7 @@ problems: Array<Problem>,
  */
 admin: boolean, 
 /**
- * The settings chosen for the local device in this network.
+ * The settings chosen for this device in the network, if any were.
  */
 my_settings: DeviceSettingsInfo | null, };
 
@@ -177,6 +160,23 @@ warnings: Array<Warning>,
 imported: Array<ImportedInfo>, };
 
 /**
+ * The settings chosen for a device in a network, from `device/<node>`.
+ */
+export type DeviceSettingsInfo = { 
+/**
+ * The exit for its internet traffic; `None` is its own connection.
+ */
+exit: string | null, 
+/**
+ * Whether the device itself may not choose another exit.
+ */
+exit_locked: boolean, 
+/**
+ * Whether its traffic is paused.
+ */
+paused: boolean, };
+
+/**
  * One peer in [`Response::Peers`].
  */
 export type PeerInfo = { 
@@ -242,11 +242,12 @@ path_mtu: number | null,
  */
 invite: string | null, 
 /**
- * The settings chosen for this device in the network.
+ * The settings chosen for it, if any were.
  */
 settings: DeviceSettingsInfo | null, 
 /**
- * Whether this peer sent internet traffic through the local device in the last minute.
+ * Whether this device is an exit and the peer sent internet traffic through it in
+ * the last minute: the chosen exit is in use.
  */
 via_this_exit: boolean, };
 
@@ -1885,6 +1886,23 @@ name: string,
  * The op this edit was based on, to detect a concurrent change.
  */
 based_on: string | null, };
+
+/**
+ * `POST /api/networks/:net/devices/:node/settings`.
+ */
+export type DeviceSettingsIn = { 
+/**
+ * The device that carries its internet traffic, or `null` for its own connection.
+ */
+exit: string | null, 
+/**
+ * The device itself may not choose another exit.
+ */
+exit_locked: boolean, 
+/**
+ * Its traffic is paused.
+ */
+paused: boolean, };
 
 /**
  * `POST /api/networks/:net/devices/:node/remove`.
