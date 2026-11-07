@@ -11,6 +11,6 @@ mod id;
 mod net;
 mod time;
 
-pub use id::{NetworkId, NodeId, OpId, ParseIdError, ShortId};
+pub use id::{AccountId, NetworkId, NodeId, OpId, ParseIdError, ShortId};
 pub use net::{IpPrefix, Ipv4Prefix, Ipv6Prefix, PrefixError};
 pub use time::Timestamp;

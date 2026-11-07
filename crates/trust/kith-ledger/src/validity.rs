@@ -10,12 +10,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use kith_crypto::VerifyingKey;
-use kith_types::{NodeId, OpId, Timestamp};
+use kith_types::{AccountId, NodeId, OpId, Timestamp};
 
 use crate::limits::MAX_ADMINS;
 use crate::op::Kind;
-use crate::view::{Device, Invite, NetworkView, Via};
-use crate::{OpBody, SignedOp, client_id};
+use crate::view::{Account, Device, Invite, NetworkView, Via};
+use crate::{Approval, OpBody, Role, SignedOp, client_id};
 
 /// A set of op indices, as a bitmap: `n` ops take `n / 8` bytes.
 struct OpSet(Vec<u64>);
@@ -171,66 +171,73 @@ impl Authority {
             | OpBody::SetRecord { .. }
             | OpBody::AddClient { .. }
             | OpBody::RenameDevice { .. }
-            | OpBody::Join(_) => return None,
+            | OpBody::Join(_)
+            | OpBody::AddAccount { .. }
+            | OpBody::RemoveAccount { .. }
+            | OpBody::SetRole { .. }
+            | OpBody::AssignDevice { .. }
+            | OpBody::AuthorizeConsole { .. }
+            | OpBody::RevokeConsole { .. }
+            | OpBody::SetRecoveryKey { .. }
+            | OpBody::Approved { .. }
+            | OpBody::Acted { .. } => return None,
         }
         Some(next)
     }
 }
 
-/// A valid `RemoveAdmin` on the winning chain.
-struct AdminRemoval {
-    admin: NodeId,
-    /// Its position in the chain.
-    position: usize,
-    ancestors: OpSet,
-}
-
-/// Stage A's result.
-struct Chain {
-    /// `states[k]` is the authority state after chain link `k`; link 0 is genesis.
-    states: Vec<Authority>,
-    /// For each op, the position of the latest chain link in its causal past.
+/// A linear chain of ops of one kind from genesis, and the state after each link.
+///
+/// Candidates for the link after head H are ops of the kind descending from H that the
+/// state at H accepts. Of the earliest candidates (those not descending from another) the
+/// lowest `OpId` wins, so every losing branch is invalid.
+struct Linear<S> {
+    /// Op indices of the links; link 0 is genesis.
+    links: Vec<usize>,
+    /// `states[k]` is the state after link `k`.
+    states: Vec<S>,
+    /// For each op, the position of the latest link in its causal past.
     latest_in_past: Vec<usize>,
-    removals: Vec<AdminRemoval>,
 }
 
-impl Chain {
-    /// Stage A: builds the linear authority chain from genesis.
-    fn build(graph: &Graph<'_>, genesis: Authority) -> Self {
+impl<S> Linear<S> {
+    /// `step` returns the state after a candidate, or `None` if the state refuses it.
+    fn build(
+        graph: &Graph<'_>,
+        genesis: S,
+        kind: Kind,
+        mut step: impl FnMut(&S, usize, &SignedOp) -> Option<S>,
+    ) -> Self {
         let mut links = vec![0_usize];
         let mut states = vec![genesis];
         while let (Some(&head), Some(state)) = (links.last(), states.last()) {
             let below = graph.descendants(head);
-            let candidates: Vec<usize> = graph
-                .indexed()
-                .filter(|(index, op)| {
-                    below.contains(*index)
-                        && op.op().body.kind() == Kind::Authority
-                        && state.authorizes(op)
-                })
-                .map(|(index, _)| index)
-                .collect();
-            let direct: Vec<usize> = if candidates.len() <= 1 {
-                candidates
-            } else {
-                candidates
-                    .iter()
-                    .copied()
-                    .filter(|candidate| {
+            let mut candidates: Vec<(usize, S)> = Vec::new();
+            for (index, op) in graph.indexed() {
+                if below.contains(index)
+                    && op.op().body.kind() == kind
+                    && let Some(next) = step(state, index, op)
+                {
+                    candidates.push((index, next));
+                }
+            }
+            let indices: Vec<usize> = candidates.iter().map(|(index, _)| *index).collect();
+            let winner = candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, (candidate, _))| {
+                    indices.len() <= 1 || {
                         let past = graph.ancestors(*candidate);
-                        !candidates.iter().any(|other| past.contains(*other))
-                    })
-                    .collect()
-            };
-            let winner = direct
-                .into_iter()
-                .filter_map(|index| graph.get(index).map(|op| (op.id(), index)))
-                .min();
-            let Some((_, winner)) = winner else { break };
-            let Some(next) = graph.get(winner).and_then(|op| state.apply(&op.op().body)) else {
+                        !indices.iter().any(|other| past.contains(*other))
+                    }
+                })
+                .filter_map(|(slot, (index, _))| graph.get(*index).map(|op| (op.id(), slot)))
+                .min()
+                .map(|(_, slot)| slot);
+            let Some((index, next)) = winner.map(|slot| candidates.swap_remove(slot)) else {
                 break;
             };
-            links.push(winner);
+            links.push(index);
             states.push(next);
         }
 
@@ -259,47 +266,80 @@ impl Chain {
                 *slot = latest;
             }
         }
-
-        let removals = links
-            .iter()
-            .enumerate()
-            .filter_map(|(link, index)| match &graph.get(*index)?.op().body {
-                OpBody::RemoveAdmin { admin } => Some(AdminRemoval {
-                    admin: *admin,
-                    position: link,
-                    ancestors: graph.ancestors(*index),
-                }),
-                OpBody::Genesis { .. }
-                | OpBody::AddAdmin { .. }
-                | OpBody::SetThreshold { .. }
-                | OpBody::AddDevice { .. }
-                | OpBody::RemoveDevice { .. }
-                | OpBody::CreateInvite { .. }
-                | OpBody::RevokeInvite { .. }
-                | OpBody::SetRecord { .. }
-                | OpBody::AddClient { .. }
-                | OpBody::RenameDevice { .. }
-                | OpBody::Join(_) => None,
-            })
-            .collect();
-
         Self {
+            links,
             states,
             latest_in_past,
-            removals,
         }
+    }
+
+    /// The position of the latest link in `index`'s causal past.
+    fn latest(&self, index: usize) -> usize {
+        self.latest_in_past.get(index).copied().unwrap_or(0)
+    }
+
+    /// The state in `index`'s causal past.
+    fn state_at(&self, index: usize) -> Option<&S> {
+        self.states.get(self.latest(index))
+    }
+
+    fn final_state(&self) -> Option<&S> {
+        self.states.last()
+    }
+}
+
+/// A valid `RemoveAdmin` on the winning chain.
+struct AdminRemoval {
+    admin: NodeId,
+    /// Its position in the chain.
+    position: usize,
+    ancestors: OpSet,
+}
+
+/// Stage A's result: the admin devices' authority chain.
+struct Chain {
+    linear: Linear<Authority>,
+    removals: Vec<AdminRemoval>,
+}
+
+impl Chain {
+    /// Stage A: builds the linear authority chain from genesis.
+    fn build(graph: &Graph<'_>, genesis: Authority) -> Self {
+        let linear = Linear::build(graph, genesis, Kind::Authority, |state, _, op| {
+            if state.authorizes(op) {
+                state.apply(&op.op().body)
+            } else {
+                None
+            }
+        });
+        let removals = linear
+            .links
+            .iter()
+            .enumerate()
+            .filter_map(|(link, index)| {
+                if let OpBody::RemoveAdmin { admin } = &graph.get(*index)?.op().body {
+                    Some(AdminRemoval {
+                        admin: *admin,
+                        position: link,
+                        ancestors: graph.ancestors(*index),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Self { linear, removals }
     }
 
     /// The authority state in `index`'s causal past.
     fn state_at(&self, index: usize) -> Option<&Authority> {
-        let link = self.latest_in_past.get(index).copied()?;
-        self.states.get(link)
+        self.linear.state_at(index)
     }
 
     /// Rules 1 and 2 for admin ops: `author` is an admin in `index`'s causal past, and no
     /// removal of that admin on the chain is concurrent with `index`.
     fn admin_may_act(&self, index: usize, author: NodeId) -> bool {
-        let latest = self.latest_in_past.get(index).copied().unwrap_or(0);
+        let latest = self.linear.latest(index);
         self.state_at(index)
             .is_some_and(|state| state.admins.contains(&author))
             && self.removals.iter().all(|removal| {
@@ -309,9 +349,265 @@ impl Chain {
             })
     }
 
-    fn final_state(&self) -> Option<&Authority> {
-        self.states.last()
+    /// Whether `op` is approved as an authority op would be at `index`: its author may act
+    /// as an admin, and enough admins signed.
+    fn devices_approve(&self, index: usize, op: &SignedOp) -> bool {
+        self.admin_may_act(index, op.op().author)
+            && self.state_at(index).is_some_and(|state| {
+                op.signers()
+                    .filter(|signer| state.admins.contains(signer))
+                    .count()
+                    >= usize::from(state.threshold)
+            })
     }
+
+    fn final_state(&self) -> Option<&Authority> {
+        self.linear.final_state()
+    }
+}
+
+/// People, consoles and the recovery key at some point of the account chain.
+#[derive(Debug, Clone, Default)]
+struct People {
+    accounts: BTreeMap<AccountId, Account>,
+    consoles: BTreeSet<NodeId>,
+    recovery: Option<VerifyingKey>,
+}
+
+/// Who approved an account op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Approver {
+    /// The admin devices, before the network has any account.
+    Devices,
+    /// The recovery key.
+    Recovery,
+    /// A person's passkey.
+    Account(Role),
+}
+
+impl People {
+    fn owners(&self) -> usize {
+        self.accounts
+            .values()
+            .filter(|account| account.role == Role::Owner)
+            .count()
+    }
+
+    /// The state after `change` approved by `by`, or `None` if it is not allowed.
+    fn apply(&self, change: &OpBody, by: Approver, op: OpId) -> Option<Self> {
+        let mut next = self.clone();
+        match change {
+            OpBody::AddAccount {
+                name,
+                role,
+                credential,
+            } => {
+                let allowed = match by {
+                    Approver::Devices => *role == Role::Owner && self.accounts.is_empty(),
+                    Approver::Recovery | Approver::Account(Role::Owner) => true,
+                    Approver::Account(Role::Admin) => *role != Role::Owner,
+                    Approver::Account(Role::Member) => false,
+                };
+                let account = Account {
+                    name: name.clone(),
+                    role: *role,
+                    credentials: vec![credential.clone()],
+                    added_by: op,
+                };
+                if !allowed
+                    || next
+                        .accounts
+                        .insert(credential.account_id(), account)
+                        .is_some()
+                {
+                    return None;
+                }
+            }
+            OpBody::RemoveAccount { account } => {
+                let target = self.accounts.get(account)?.role;
+                let allowed = match by {
+                    Approver::Account(Role::Owner) => true,
+                    Approver::Account(Role::Admin) => target != Role::Owner,
+                    Approver::Account(Role::Member) | Approver::Devices | Approver::Recovery => {
+                        false
+                    }
+                };
+                if !allowed || (target == Role::Owner && self.owners() <= 1) {
+                    return None;
+                }
+                next.accounts.remove(account);
+            }
+            OpBody::SetRole { account, role } => {
+                let last_owner = self.owners() <= 1;
+                let entry = next.accounts.get_mut(account)?;
+                if by != Approver::Account(Role::Owner)
+                    || entry.role == *role
+                    || (entry.role == Role::Owner && last_owner)
+                {
+                    return None;
+                }
+                entry.role = *role;
+            }
+            OpBody::AuthorizeConsole { device } => {
+                let allowed = matches!(by, Approver::Account(Role::Owner) | Approver::Recovery);
+                if !allowed || !next.consoles.insert(*device) {
+                    return None;
+                }
+            }
+            OpBody::RevokeConsole { device } => {
+                let allowed = matches!(by, Approver::Account(Role::Owner | Role::Admin));
+                if !allowed || !next.consoles.remove(device) {
+                    return None;
+                }
+            }
+            OpBody::SetRecoveryKey { key } => {
+                if by != Approver::Devices || next.recovery.replace(*key).is_some() {
+                    return None;
+                }
+            }
+            OpBody::Genesis { .. }
+            | OpBody::AddAdmin { .. }
+            | OpBody::RemoveAdmin { .. }
+            | OpBody::SetThreshold { .. }
+            | OpBody::AddDevice { .. }
+            | OpBody::RemoveDevice { .. }
+            | OpBody::CreateInvite { .. }
+            | OpBody::RevokeInvite { .. }
+            | OpBody::SetRecord { .. }
+            | OpBody::Join(_)
+            | OpBody::AddClient { .. }
+            | OpBody::RenameDevice { .. }
+            | OpBody::AssignDevice { .. }
+            | OpBody::Approved { .. }
+            | OpBody::Acted { .. } => return None,
+        }
+        Some(next)
+    }
+}
+
+/// Approvals already checked, by op index and the key they were checked against: the
+/// account chain considers each candidate once per link, and signatures are slow.
+#[derive(Default)]
+struct Verified(BTreeMap<usize, (Vec<u8>, bool)>);
+
+impl Verified {
+    fn check(&mut self, index: usize, key: Vec<u8>, verify: impl FnOnce() -> bool) -> bool {
+        if let Some((checked, valid)) = self.0.get(&index)
+            && *checked == key
+        {
+            return *valid;
+        }
+        let valid = verify();
+        self.0.insert(index, (key, valid));
+        valid
+    }
+}
+
+/// Stage A2: the account chain of people, consoles and the recovery key. It depends only
+/// on stage A, which admits the first owner and the recovery key.
+struct PeopleChain {
+    linear: Linear<People>,
+    /// The causal past of each link, by position.
+    ancestors: Vec<OpSet>,
+}
+
+impl PeopleChain {
+    fn build(graph: &Graph<'_>, chain: &Chain) -> Self {
+        let mut verified = Verified::default();
+        let linear = Linear::build(
+            graph,
+            People::default(),
+            Kind::Account,
+            |state, index, op| people_step(state, index, op, chain, &mut verified),
+        );
+        let ancestors = linear
+            .links
+            .iter()
+            .map(|link| graph.ancestors(*link))
+            .collect();
+        Self { linear, ancestors }
+    }
+
+    /// Whether `holds` is true of the state in `index`'s causal past and after every link
+    /// concurrent with `index`: a concurrent removal wins.
+    fn holds(&self, index: usize, holds: impl Fn(&People) -> bool) -> bool {
+        let latest = self.linear.latest(index);
+        self.linear.state_at(index).is_some_and(&holds)
+            && self
+                .linear
+                .states
+                .iter()
+                .zip(&self.ancestors)
+                .skip(latest.saturating_add(1))
+                .all(|(state, past)| past.contains(index) || holds(state))
+    }
+
+    /// Whether `actor` may make everyday admin changes in an op at `index`.
+    fn may_act(&self, index: usize, actor: &AccountId) -> bool {
+        self.holds(index, |people| {
+            people
+                .accounts
+                .get(actor)
+                .is_some_and(|account| account.role.can_administer())
+        })
+    }
+
+    /// Whether `device` is an authorized console for an op at `index`.
+    fn console_may_act(&self, index: usize, device: &NodeId) -> bool {
+        self.holds(index, |people| people.consoles.contains(device))
+    }
+
+    /// Whether `account` exists in `index`'s causal past.
+    fn exists_at(&self, index: usize, account: &AccountId) -> bool {
+        self.linear
+            .state_at(index)
+            .is_some_and(|people| people.accounts.contains_key(account))
+    }
+}
+
+/// The state after account op `op`, or `None` if `state` does not accept it.
+fn people_step(
+    state: &People,
+    index: usize,
+    op: &SignedOp,
+    chain: &Chain,
+    verified: &mut Verified,
+) -> Option<People> {
+    let body = &op.op().body;
+    if let OpBody::Approved { approval, .. } = body {
+        let challenge = op.challenge()?;
+        let by = match approval {
+            Approval::Passkey(assertion) => {
+                let account = state.accounts.get(&assertion.account)?;
+                let credential = account
+                    .credentials
+                    .iter()
+                    .find(|credential| credential.id == assertion.credential_id)?;
+                let mut key = credential.public_key.clone();
+                key.extend_from_slice(credential.rp_id.as_bytes());
+                let valid = verified.check(index, key, || {
+                    assertion.verify(credential, &challenge).is_ok()
+                });
+                valid.then_some(Approver::Account(account.role))?
+            }
+            Approval::Recovery(signature) => {
+                let key = state.recovery.as_ref()?;
+                let valid = verified.check(index, key.to_bytes().to_vec(), || {
+                    Approval::verify_recovery(key, &challenge, signature)
+                });
+                valid.then_some(Approver::Recovery)?
+            }
+        };
+        return state.apply(op.effect(), by, op.id());
+    }
+    let device_path = matches!(
+        body,
+        OpBody::AddAccount { .. } | OpBody::SetRecoveryKey { .. }
+    );
+    if device_path && state.accounts.is_empty() && chain.devices_approve(index, op) {
+        return state.apply(body, Approver::Devices, op.id());
+    }
+    None
 }
 
 /// A valid `RemoveDevice` or `RevokeInvite`, with what is needed to compare it causally.
@@ -369,6 +665,8 @@ struct StageB<'a> {
     renames: Vec<(usize, NodeId, &'a String)>,
     /// Tags granted to each valid join, from its invite.
     joined_tags: BTreeMap<usize, &'a [String]>,
+    /// Valid `AssignDevice` ops, in order: (index, device, account).
+    assignments: Vec<(usize, NodeId, AccountId)>,
 }
 
 impl<'a> StageB<'a> {
@@ -376,13 +674,22 @@ impl<'a> StageB<'a> {
         self.device_removals.get(device).map_or(&[], Vec::as_slice)
     }
 
-    /// Admin ops depend only on stage A, so their validity is settled in one pass.
-    fn admin_ops(&mut self, graph: &Graph<'a>, chain: &Chain) {
+    /// Admin ops depend only on stages A and A2, so their validity is settled in one pass.
+    /// An op made for a person also needs that person to hold an admin role, and may come
+    /// from an authorized console instead of an admin device.
+    fn admin_ops(&mut self, graph: &Graph<'a>, chain: &Chain, people: &PeopleChain) {
         for (index, op) in graph.indexed() {
-            if op.op().body.kind() != Kind::Admin || !chain.admin_may_act(index, op.op().author) {
+            let author = op.op().author;
+            let valid = if let OpBody::Acted { actor, .. } = &op.op().body {
+                (chain.admin_may_act(index, author) || people.console_may_act(index, &author))
+                    && people.may_act(index, actor)
+            } else {
+                op.op().body.kind() == Kind::Admin && chain.admin_may_act(index, author)
+            };
+            if !valid {
                 continue;
             }
-            match &op.op().body {
+            match op.effect() {
                 OpBody::AddDevice { device, .. } => {
                     self.adds.entry(*device).or_default().push(index);
                 }
@@ -422,13 +729,68 @@ impl<'a> StageB<'a> {
                 OpBody::RenameDevice { device, name } => {
                     self.renames.push((index, *device, name));
                 }
+                OpBody::AssignDevice { device, account } => {
+                    if people.exists_at(index, account) {
+                        self.assignments.push((index, *device, *account));
+                    }
+                }
                 OpBody::Genesis { .. }
                 | OpBody::AddAdmin { .. }
                 | OpBody::RemoveAdmin { .. }
                 | OpBody::SetThreshold { .. }
-                | OpBody::Join(_) => {}
+                | OpBody::Join(_)
+                | OpBody::AddAccount { .. }
+                | OpBody::RemoveAccount { .. }
+                | OpBody::SetRole { .. }
+                | OpBody::AuthorizeConsole { .. }
+                | OpBody::RevokeConsole { .. }
+                | OpBody::SetRecoveryKey { .. }
+                | OpBody::Approved { .. }
+                | OpBody::Acted { .. } => {}
             }
         }
+    }
+
+    /// A `RemoveAccount` on the account chain removes, like a `RemoveDevice` at the same
+    /// point, every device last assigned to the account in its causal past.
+    fn account_removals(&mut self, graph: &Graph<'a>, people: &PeopleChain) {
+        for (link, past) in people.linear.links.iter().zip(&people.ancestors) {
+            let Some(OpBody::RemoveAccount { account }) = graph.get(*link).map(SignedOp::effect)
+            else {
+                continue;
+            };
+            let mut owners: BTreeMap<NodeId, AccountId> = BTreeMap::new();
+            for (index, device, owner) in &self.assignments {
+                if past.contains(*index) {
+                    owners.insert(*device, *owner);
+                }
+            }
+            for (device, owner) in owners {
+                if owner == *account {
+                    self.device_removals
+                        .entry(device)
+                        .or_default()
+                        .push(Removal::new(graph, *link));
+                }
+            }
+        }
+    }
+
+    /// Whose each device is: the latest valid assignment after its admitting add, to an
+    /// account that still exists.
+    fn owners(
+        &self,
+        admitted: &BTreeMap<NodeId, usize>,
+        accounts: &BTreeMap<AccountId, Account>,
+    ) -> BTreeMap<NodeId, AccountId> {
+        let mut owners = BTreeMap::new();
+        for (index, device, account) in &self.assignments {
+            if admitted.get(device).is_some_and(|add| index > add) {
+                owners.insert(*device, *account);
+            }
+        }
+        owners.retain(|_, account| accounts.contains_key(account));
+        owners
     }
 
     /// Joins depend on earlier joins (a sponsor may have joined itself) and on invite use
@@ -472,8 +834,10 @@ impl<'a> StageB<'a> {
 
     /// A device is a member if some valid add of it has every valid removal of it in its
     /// causal past. After a re-add, the latest such add describes the device.
-    fn devices(&self, graph: &Graph<'a>) -> BTreeMap<NodeId, Device> {
+    /// Also returns the index of each member's admitting add.
+    fn devices(&self, graph: &Graph<'a>) -> (BTreeMap<NodeId, Device>, BTreeMap<NodeId, usize>) {
         let mut devices = BTreeMap::new();
+        let mut admitted = BTreeMap::new();
         for (device, list) in &self.adds {
             let removals = self.removals_of(device);
             let admitting = list
@@ -484,7 +848,7 @@ impl<'a> StageB<'a> {
             let Some((add, op)) = admitting.and_then(|add| Some((add, graph.get(add)?))) else {
                 continue;
             };
-            let (name, tags, via) = match &op.op().body {
+            let (name, tags, via) = match op.effect() {
                 OpBody::Genesis { founder_name, .. } => (founder_name.clone(), Vec::new(), None),
                 OpBody::AddDevice { name, tags, .. } => (name.clone(), tags.clone(), None),
                 OpBody::AddClient {
@@ -518,7 +882,16 @@ impl<'a> StageB<'a> {
                 | OpBody::CreateInvite { .. }
                 | OpBody::RevokeInvite { .. }
                 | OpBody::SetRecord { .. }
-                | OpBody::RenameDevice { .. } => continue,
+                | OpBody::RenameDevice { .. }
+                | OpBody::AddAccount { .. }
+                | OpBody::RemoveAccount { .. }
+                | OpBody::SetRole { .. }
+                | OpBody::AssignDevice { .. }
+                | OpBody::AuthorizeConsole { .. }
+                | OpBody::RevokeConsole { .. }
+                | OpBody::SetRecoveryKey { .. }
+                | OpBody::Approved { .. }
+                | OpBody::Acted { .. } => continue,
             };
             // Last writer wins among renames ordered after the admitting add.
             let name = self
@@ -537,8 +910,9 @@ impl<'a> StageB<'a> {
                     via,
                 },
             );
+            admitted.insert(*device, add);
         }
-        devices
+        (devices, admitted)
     }
 
     /// Invites neither revoked (revocation is permanent, whatever its causal relation to
@@ -595,9 +969,11 @@ pub(crate) fn evaluate(
             threshold: genesis_view.threshold,
         },
     );
+    let people = PeopleChain::build(&graph, &chain);
     let mut stage = StageB::default();
     stage.adds.entry(founder).or_default().push(0);
-    stage.admin_ops(&graph, &chain);
+    stage.admin_ops(&graph, &chain, &people);
+    stage.account_removals(&graph, &people);
     stage.joins(&graph);
 
     let mut view = genesis_view.clone();
@@ -605,9 +981,23 @@ pub(crate) fn evaluate(
         view.admins.clone_from(&state.admins);
         view.threshold = state.threshold;
     }
-    view.devices = stage.devices(&graph);
+    if let Some(state) = people.linear.final_state() {
+        view.accounts.clone_from(&state.accounts);
+        view.consoles.clone_from(&state.consoles);
+        view.recovery_key = state.recovery;
+    }
+    let (devices, admitted) = stage.devices(&graph);
+    view.device_owners = stage.owners(&admitted, &view.accounts);
+    view.devices = devices;
     view.invites = stage.invites();
     view.records = stage.records();
+    view.account_changes = people
+        .linear
+        .links
+        .iter()
+        .skip(1)
+        .filter_map(|index| graph.get(*index).map(SignedOp::id))
+        .collect();
     view.heads = heads;
     view
 }

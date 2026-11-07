@@ -1,6 +1,6 @@
 [package]
 name = "kith-crypto"
-description = "The narrow cryptography facade: Ed25519, X25519, ChaCha20-Poly1305 and BLAKE3"
+description = "The narrow cryptography facade: Ed25519, X25519, ChaCha20-Poly1305, BLAKE3 and P-256 passkeys"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,16 +18,21 @@ getrandom = ["dep:getrandom"]
 blake2 = { workspace = true, features = ["zeroize"] }
 blake3 = { workspace = true, features = ["zeroize"] }
 chacha20poly1305 = { workspace = true, features = ["alloc", "zeroize"] }
+data-encoding = { workspace = true, features = ["alloc"] }
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 getrandom = { workspace = true, optional = true }
 kith-types.workspace = true
-serde.workspace = true
+p256 = { workspace = true, features = ["ecdsa"] }
+serde = { workspace = true, features = ["alloc", "derive"] }
+serde_json = { workspace = true, features = ["alloc"] }
+sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 x25519-dalek = { workspace = true, features = ["static_secrets", "zeroize"] }
 zeroize.workspace = true
 
 [dev-dependencies]
+p256 = { workspace = true, features = ["ecdsa", "alloc"] }
 postcard = { workspace = true, features = ["alloc"] }
 proptest.workspace = true
 

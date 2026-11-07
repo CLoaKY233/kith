@@ -94,6 +94,11 @@ impl Ledger {
             invites: BTreeMap::new(),
             records: BTreeMap::new(),
             heads: Vec::new(),
+            accounts: BTreeMap::new(),
+            consoles: BTreeSet::new(),
+            recovery_key: None,
+            device_owners: BTreeMap::new(),
+            account_changes: Vec::new(),
         };
         let founder = genesis.op().author;
         let mut ledger = Self {
