@@ -31,6 +31,8 @@ use tokio::time::Instant;
 mod manage;
 mod people;
 
+pub(crate) use manage::hex;
+
 use crate::blocked::BlockedLog;
 use crate::channel::{ChannelLayer, now, pick_targets};
 use crate::connectivity::{Connectivity, Output};
@@ -281,9 +283,22 @@ impl NodeHandle {
 
 /// Runs the real daemon until SIGINT or SIGTERM, then reverts OS changes.
 pub async fn run(config: Config, journal: Journal) -> Result<(), NodeError> {
-    let node = Node::start(NodeOptions::new(config, OsSystem).journal(journal)).await?;
-    shutdown_signal().await?;
-    node.shutdown().await
+    let mut node = Node::start(NodeOptions::new(config, OsSystem).journal(journal)).await?;
+    // If the loop ends on its own, the process exits too, so the service manager
+    // restarts it instead of leaving a daemon that does nothing.
+    tokio::select! {
+        signal = shutdown_signal() => {
+            signal?;
+            node.shutdown().await
+        }
+        ended = &mut node.task => {
+            tracing::error!("the daemon's main loop stopped; exiting so it is restarted");
+            match ended {
+                Ok(Ok(())) | Err(_) => Err(NodeError::Stopped),
+                Ok(Err(error)) => Err(error),
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -358,6 +373,10 @@ pub(crate) struct Daemon {
     /// This device's own join requests, kept so asking again reuses the same request.
     asks: BTreeMap<NetworkId, AdmissionRequest>,
     blocked: BlockedLog,
+    /// Whether traffic is paused.
+    paused: bool,
+    /// When a pause ends on its own.
+    resume_at: Option<Instant>,
 }
 
 impl Drop for Daemon {
@@ -512,6 +531,7 @@ fn start_ipc(
 
 impl Daemon {
     /// Loads state, creates the TUN and dataplane, and starts every subsystem.
+    #[expect(clippy::too_many_lines, reason = "starts every subsystem in order")]
     pub(crate) async fn build(
         options: NodeOptions,
         commands: mpsc::Sender<Command>,
@@ -553,8 +573,14 @@ impl Daemon {
             &config.daemon.state_dir,
         );
         let relay_listen = SocketAddr::new(options.listen_ip, bound.port().saturating_add(1));
-        let server =
-            start_server(config, &identity, relay_listen, &connectivity, &commands).await?;
+        let server = start_server(
+            (config, &state),
+            &identity,
+            relay_listen,
+            &connectivity,
+            &commands,
+        )
+        .await?;
         let external = restore_external(&state, config).await?;
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
@@ -606,6 +632,8 @@ impl Daemon {
             share_links: config.network.share_links,
             asks: BTreeMap::new(),
             blocked: BlockedLog::default(),
+            paused: false,
+            resume_at: None,
         };
         daemon.refresh(None).await?;
         daemon.restore_exit().await?;
@@ -622,7 +650,12 @@ impl Daemon {
             self.save_endpoints_if_due(false);
             self.save_last_seen_if_due(false).await;
             self.tick_peers_if_due().await;
-            let deadline = earliest(self.connectivity.poll_timeout(), self.peer_tick_deadline());
+            self.resume_if_due().await;
+            self.drop_revoked_exit().await;
+            let deadline = earliest(
+                earliest(self.connectivity.poll_timeout(), self.peer_tick_deadline()),
+                self.resume_at.filter(|_| self.paused),
+            );
             tokio::select! {
                 command = commands.recv() => match command {
                     Some(Command::Shutdown { reply }) => {
@@ -707,6 +740,7 @@ impl Daemon {
     }
 
     /// Performs a local action and builds its IPC response.
+    #[expect(clippy::too_many_lines, reason = "one arm per action")]
     pub(crate) async fn execute(&mut self, action: Action) -> Result<Response, NodeError> {
         let identity = Arc::clone(&self.identity);
         match action {
@@ -778,7 +812,21 @@ impl Daemon {
                 network,
                 device_name,
                 tags,
-            } => self.export(network, device_name, tags).await,
+                gateway,
+            } => self.export(network, device_name, tags, gateway).await,
+            Action::Gateways { network } => Ok(Response::Gateways(self.gateways(network)?)),
+            Action::Pause { duration } => self.pause(duration).await,
+            Action::Resume => {
+                if core::mem::take(&mut self.paused) {
+                    self.resume_at = None;
+                    self.journal.push(EntryKind::Warning {
+                        message: "traffic resumed".to_owned(),
+                    });
+                    self.refresh(None).await?;
+                }
+                Ok(self.pause_state())
+            }
+            Action::PauseState => Ok(self.pause_state()),
             Action::RequestCode { network } => self.request_code(network),
             Action::RequestJoin { code, device_name } => {
                 self.request_join(&code, &device_name).await
@@ -810,6 +858,8 @@ impl Daemon {
         device_name: &str,
     ) -> Result<Response, NodeError> {
         let runtime = NetworkRuntime::create(&self.identity, name, device_name, now())?;
+        let range = runtime.netmap().ipv4_range();
+        self.refuse_overlap(range, name)?;
         let network = runtime.id();
         if self.networks.get(&network).is_some() {
             return Err(NodeError::InvalidArgument(format!(
@@ -882,6 +932,7 @@ impl Daemon {
                 "the sponsor returned another network",
             )));
         }
+        self.refuse_overlap(ledger.view().params().ipv4, ledger.view().name())?;
         self.networks.insert(NetworkRuntime::from_ledger(
             ledger,
             self.identity.node_id(),
@@ -909,6 +960,24 @@ impl Daemon {
             .and_then(NetMap::local_device)
             .map_or_else(|| device_name.to_owned(), |device| device.label.clone());
         Ok(Response::Joined { network, device })
+    }
+
+    /// Refuses a network whose addresses overlap one this device is already in: both
+    /// would claim the same routes, and traffic for one would go to the other.
+    fn refuse_overlap(&self, range: Ipv4Prefix, name: &str) -> Result<(), NodeError> {
+        let clash = member_maps(self.networks.maps()).find(|map| {
+            let other = map.ipv4_range();
+            other.contains(range.addr()) || range.contains(other.addr())
+        });
+        match clash {
+            Some(map) => Err(NodeError::InvalidArgument(format!(
+                "this device is already in {}, and {name} uses the same addresses; kith runs \
+                 one such network per device for now; leave {} first to use {name}",
+                map.name(),
+                map.name()
+            ))),
+            None => Ok(()),
+        }
     }
 
     async fn leave(&mut self, network: NetworkId) -> Result<Response, NodeError> {
@@ -1091,11 +1160,11 @@ impl Daemon {
         if let Some(host) = &self.public_hostname {
             return Some(format!("{host}:{}", bound.port()));
         }
-        let public = self
-            .connectivity
-            .local_endpoints()
-            .into_iter()
-            .find(|addr| is_public(addr.ip()))
+        let endpoints = self.connectivity.local_endpoints();
+        let public = endpoints
+            .iter()
+            .find(|addr| addr.is_ipv4() && is_public(addr.ip()))
+            .or_else(|| endpoints.iter().find(|addr| is_public(addr.ip())))
             .map(|addr| SocketAddr::new(addr.ip(), bound.port()));
         let fallback = (!bound.ip().is_unspecified()).then_some(bound);
         public.or(fallback).map(|addr| addr.to_string())
@@ -1149,6 +1218,9 @@ impl Daemon {
                 .collect();
         for (network, network_name, device, advertised, granted) in networks {
             let admin = self.is_admin(network)?;
+            if admin && (exit || relay) {
+                self.publish_gateway(network).await?;
+            }
             if let Some(address) = address.as_ref().filter(|_| !advertised) {
                 if admin {
                     let relay = Relay::new(device.clone(), address.clone(), local)
@@ -1180,6 +1252,7 @@ impl Daemon {
     }
 
     async fn server_mode(&mut self, exit: bool, relay: bool) -> Result<Response, NodeError> {
+        self.state.save_server_roles(exit, relay)?;
         self.server = None;
         if exit || relay {
             self.server = Some(
@@ -1206,13 +1279,42 @@ impl Daemon {
         network: NetworkId,
         device_name: String,
         tags: Vec<String>,
+        gateway: Option<NodeId>,
     ) -> Result<Response, NodeError> {
         if !self.is_admin(network)? {
             return Err(NodeError::InvalidArgument(
                 "only an admin of this network can add a device".to_owned(),
             ));
         }
-        let gateway = self.external.gateway_public_key(&self.state)?;
+        let local = self.identity.node_id();
+        let candidates = self.gateways(network)?;
+        let chosen = match gateway {
+            Some(node) => candidates
+                .iter()
+                .find(|info| info.node == node)
+                .ok_or_else(|| {
+                    NodeError::InvalidArgument(format!(
+                        "{node} cannot be a gateway: it never offered itself as one"
+                    ))
+                })?,
+            None => candidates
+                .first()
+                .ok_or_else(|| NodeError::NotFound("a gateway".to_owned()))?,
+        }
+        .clone();
+        let (gateway_node, gateway, endpoint) = if chosen.node == local {
+            let key = self.external.gateway_public_key(&self.state)?;
+            self.publish_gateway(network).await?;
+            (local, key, chosen.endpoint.clone())
+        } else {
+            let record = self
+                .member_map(network)?
+                .gateways()
+                .get(&chosen.node)
+                .cloned()
+                .ok_or_else(|| NodeError::NotFound(format!("gateway {}", chosen.node)))?;
+            (record.node, record.key, record.endpoint)
+        };
         let secret = AgreementSecret::generate()
             .map_err(|error| NodeError::Io(std::io::Error::other(error)))?;
         let key = secret.public_key().to_bytes();
@@ -1221,10 +1323,6 @@ impl Daemon {
             .get(&network)
             .ok_or_else(|| NodeError::NotFound(network.to_string()))?;
         let addresses = runtime.client_addresses(&key)?;
-        let endpoint = self.bootstrap().first().map_or_else(
-            || self.channel.local_addr().to_string(),
-            |b| b.addr().to_string(),
-        );
         let map = self.member_map(network)?;
         let invalid =
             |error: kith_types::PrefixError| NodeError::InvalidArgument(error.to_string());
@@ -1248,7 +1346,9 @@ impl Daemon {
             })
         };
         let mesh = config(&mesh_ranges)?;
-        let everything = if self.server.as_ref().is_some_and(ServerMode::is_exit) {
+        let gateway_exits = map.exit_nodes().contains(&gateway_node)
+            || (gateway_node == local && self.server.as_ref().is_some_and(ServerMode::is_exit));
+        let everything = if gateway_exits {
             Some(config(&everything_ranges)?)
         } else {
             None
@@ -1257,7 +1357,7 @@ impl Daemon {
         self.runtime_mut(network)?.add_client(
             &identity,
             key,
-            (device_name, tags),
+            (device_name, tags, gateway_node),
             addresses,
             now(),
         )?;
@@ -1276,6 +1376,174 @@ impl Daemon {
             mesh,
             everything,
         })
+    }
+
+    /// Where plain WireGuard devices reach this device: `public_hostname`, else a public
+    /// IPv4 address, else any public address, else whatever joiners use.
+    fn phone_endpoint(&self) -> String {
+        let port = self.channel.local_addr().port();
+        if let Some(host) = &self.public_hostname {
+            // WireGuard listens on IPv4 only, and dual-stack clients prefer an AAAA
+            // record, so a hostname with both becomes its IPv4 address.
+            let resolved = &self.notes.public_addresses;
+            let v4 = resolved.iter().find(|addr| addr.is_ipv4());
+            return match (host.parse::<IpAddr>(), v4) {
+                (Ok(ip), _) => SocketAddr::new(ip, port).to_string(),
+                (Err(_), Some(v4)) if resolved.iter().any(SocketAddr::is_ipv6) => {
+                    SocketAddr::new(v4.ip(), port).to_string()
+                }
+                (Err(_), _) => format!("{host}:{port}"),
+            };
+        }
+        let underlay = self.underlay_endpoints();
+        let public = |v4: bool| {
+            underlay
+                .iter()
+                .find(|addr| is_public(addr.ip()) && addr.is_ipv4() == v4)
+                .map(|addr| SocketAddr::new(addr.ip(), port).to_string())
+        };
+        public(true).or_else(|| public(false)).unwrap_or_else(|| {
+            self.bootstrap().first().map_or_else(
+                || self.channel.local_addr().to_string(),
+                |entry| entry.addr().to_string(),
+            )
+        })
+    }
+
+    /// The devices phones in `network` can connect through, default first: an exit with
+    /// a stable address (this device first among equals), else this device.
+    fn gateways(&self, network: NetworkId) -> Result<Vec<kith_ipc::GatewayInfo>, NodeError> {
+        let map = self.member_map(network)?;
+        let local = self.identity.node_id();
+        let local_exit = self.server.as_ref().is_some_and(ServerMode::is_exit)
+            || map.exit_nodes().contains(&local);
+        let mut infos = vec![kith_ipc::GatewayInfo {
+            node: local,
+            name: map
+                .local_device()
+                .map_or_else(|| "this device".to_owned(), |device| device.label.clone()),
+            endpoint: self.phone_endpoint(),
+            exit: local_exit,
+            default: false,
+        }];
+        for (node, gateway) in map.gateways() {
+            if let Some(peer) = map.peers().get(node) {
+                infos.push(kith_ipc::GatewayInfo {
+                    node: *node,
+                    name: peer.label.clone(),
+                    endpoint: gateway.endpoint.clone(),
+                    exit: map.exit_nodes().contains(node),
+                    default: false,
+                });
+            }
+        }
+        let preferred = infos
+            .iter()
+            .position(|info| info.exit && stable_endpoint(&info.endpoint))
+            .unwrap_or(0);
+        if let Some(info) = infos.get_mut(preferred) {
+            info.default = true;
+        }
+        infos.swap(0, preferred);
+        Ok(infos)
+    }
+
+    /// Writes this device's gateway key and endpoint into `network` when they changed,
+    /// if this device may.
+    async fn publish_gateway(&mut self, network: NetworkId) -> Result<(), NodeError> {
+        if !self.is_admin(network)? {
+            return Ok(());
+        }
+        let local = self.identity.node_id();
+        let wanted = kith_control::records::Gateway {
+            node: local,
+            key: self.external.gateway_public_key(&self.state)?,
+            endpoint: self.phone_endpoint(),
+        };
+        if self.member_map(network)?.gateways().get(&local) == Some(&wanted) {
+            return Ok(());
+        }
+        self.write_admin_record(network, &Record::Gateway(wanted), true)
+            .await
+    }
+
+    /// Stops carrying traffic: routes, DNS and tunnels go; the control channel stays.
+    async fn pause(
+        &mut self,
+        duration: Option<core::time::Duration>,
+    ) -> Result<Response, NodeError> {
+        self.paused = true;
+        self.resume_at = duration.map(|duration| Instant::now() + duration);
+        self.journal.push(EntryKind::Warning {
+            message: match duration {
+                Some(duration) => {
+                    format!("traffic paused for {} minutes", duration.as_secs() / 60)
+                }
+                None => "traffic paused until resumed".to_owned(),
+            },
+        });
+        self.refresh(None).await?;
+        Ok(self.pause_state())
+    }
+
+    async fn resume_if_due(&mut self) {
+        if self
+            .resume_at
+            .filter(|_| self.paused)
+            .is_some_and(|until| until <= Instant::now())
+        {
+            self.paused = false;
+            self.resume_at = None;
+            self.journal.push(EntryKind::Warning {
+                message: "traffic resumed".to_owned(),
+            });
+            let resumed = self.refresh(None).await;
+            self.report(resumed);
+        }
+    }
+
+    fn pause_state(&self) -> Response {
+        Response::PauseState {
+            paused: self.paused,
+            resume_in_secs: self
+                .resume_at
+                .filter(|_| self.paused)
+                .map(|until| until.saturating_duration_since(Instant::now()).as_secs()),
+        }
+    }
+
+    /// Stops using an exit that was removed or lost its grant, so traffic is not sent
+    /// into a dead end, and says so.
+    async fn drop_revoked_exit(&mut self) {
+        let Some((network, node)) = self.exit else {
+            return;
+        };
+        let granted = self
+            .networks
+            .maps()
+            .get(&network)
+            .is_some_and(|map| map.is_member() && map.exit_nodes().contains(&node));
+        if granted {
+            return;
+        }
+        self.exit = None;
+        let message = format!(
+            "the exit node {} was removed or is no longer an exit; traffic goes out directly again",
+            node.short()
+        );
+        tracing::warn!("{message}");
+        self.journal.push(EntryKind::ExitChanged { exit: None });
+        let _receivers = self.events.send(Event::Warning {
+            message: message.clone(),
+        });
+        self.notes.warnings.push_back((Instant::now(), message));
+        let dropped = async {
+            self.dataplane.set_exit(None).await?;
+            self.state.save_exit(None)?;
+            self.refresh(None).await
+        }
+        .await;
+        self.report(dropped);
     }
 
     /// Our endpoints, minus any inside a mesh range: those exist only through the tunnel,
@@ -1454,6 +1722,7 @@ impl Daemon {
     fn peer_infos(&self, network: NetworkId, map: &NetMap, stats: &Stats) -> Vec<PeerInfo> {
         let at = wall_instant();
         let age = |when: std::time::Instant| at.saturating_duration_since(when);
+        let runtime = self.networks.get(&network);
         let mut infos: Vec<PeerInfo> = map
             .peers()
             .iter()
@@ -1484,6 +1753,9 @@ impl Daemon {
                     display_name: peer.name.clone(),
                     gateway: None,
                     path_mtu: self.connectivity.path_mtu(node).filter(|_| online),
+                    invite: runtime
+                        .and_then(|runtime| runtime.invite_of(node))
+                        .map(str::to_owned),
                 }
             })
             .collect();
@@ -1542,6 +1814,7 @@ impl Daemon {
                 display_name: client.peer.name.clone(),
                 gateway: label_of(&client.gateway),
                 path_mtu,
+                invite: None,
             });
         }
         infos
@@ -1779,6 +2052,7 @@ impl Daemon {
             if found.is_empty() {
                 tracing::warn!(%host, "public_hostname does not resolve; peers outside this network cannot reach us directly");
             }
+            self.notes.public_addresses.clone_from(&found);
             self.connectivity.set_configured_endpoints(found);
         }
     }
@@ -1907,7 +2181,7 @@ impl Daemon {
             .networks
             .maps()
             .iter()
-            .filter(|(_, map)| map.is_member())
+            .filter(|(_, map)| map.is_member() && !self.paused)
         {
             for (node, peer) in map.peers() {
                 let mut allowed_ips = host_prefixes(peer.addresses)?.to_vec();
@@ -1936,7 +2210,11 @@ impl Daemon {
     }
 
     async fn push_external(&mut self) -> Result<(), NodeError> {
-        let interfaces = self.external.interfaces(self.local_clients()?);
+        let interfaces = if self.paused {
+            Vec::new()
+        } else {
+            self.external.interfaces(self.local_clients()?)
+        };
         let names: BTreeSet<String> = interfaces.iter().map(|i| i.name.clone()).collect();
         for interface in interfaces {
             self.dataplane.set_external(interface).await?;
@@ -1976,6 +2254,9 @@ impl Daemon {
     }
 
     fn apply_os(&mut self) -> Result<(), NodeError> {
+        if self.paused {
+            return self.os.revert();
+        }
         let maps = self.networks.maps();
         let exit_endpoints = self.exit_bypass(maps);
         let dns = self.dns.as_ref().and_then(|dns| {
@@ -2483,18 +2764,24 @@ async fn bind_sockets(
 ) -> Result<(UdpLink, ChannelLayer), NodeError> {
     const ATTEMPTS: usize = 16;
     let mut attempt = 0;
+    let mut listen = listen;
     loop {
         attempt += 1;
         let retry = listen.port() == 0 && attempt < ATTEMPTS;
         let link = match UdpLink::bind(listen) {
             Ok(link) => link,
             Err(kith_transport_udp::UdpError::Bind { source, .. })
-                if source.kind() == std::io::ErrorKind::AddrInUse =>
+                if source.kind() == std::io::ErrorKind::AddrInUse && listen.port() != 0 =>
             {
-                return Err(NodeError::PortInUse {
-                    port: listen.port(),
-                    protocol: "UDP, WireGuard",
-                });
+                // Another VPN, usually Tailscale on 41641, holds the port: take a free
+                // one; peers learn it through the control channel and relays.
+                tracing::warn!(
+                    port = listen.port(),
+                    "the WireGuard port is taken, often by Tailscale; using a free port instead; \
+                     set network.listen_port to choose one"
+                );
+                listen.set_port(0);
+                continue;
             }
             Err(error) => return Err(error.into()),
         };
@@ -2552,6 +2839,8 @@ struct Notes {
     public_resolved: Option<Instant>,
     /// What each relay `host:port` resolved to, for STUN.
     relay_addresses: BTreeMap<String, Vec<SocketAddr>>,
+    /// What `public_hostname` last resolved to.
+    public_addresses: Vec<SocketAddr>,
 }
 
 impl Default for Notes {
@@ -2563,20 +2852,34 @@ impl Default for Notes {
             last_seen_writes: WriteThrottle::new(ENDPOINT_SAVE_INTERVAL),
             public_resolved: None,
             relay_addresses: BTreeMap::new(),
+            public_addresses: Vec::new(),
         }
     }
 }
 
 /// Starts server mode when the config enables it.
 async fn start_server(
-    config: &Config,
+    (config, state): (&Config, &StateDir),
     identity: &DeviceIdentity,
     relay_listen: SocketAddr,
     connectivity: &Connectivity,
     commands: &mpsc::Sender<Command>,
 ) -> Result<Option<ServerMode>, NodeError> {
     if !config.server.enabled {
-        return Ok(None);
+        // Roles set at runtime, by `kith server` or the Console, come back too.
+        let Some((exit, relay)) = state.load_server_roles()?.filter(|(e, r)| *e || *r) else {
+            return Ok(None);
+        };
+        return Ok(Some(
+            ServerMode::start(
+                identity,
+                Listeners::relay_only(relay.then_some(relay_listen)),
+                exit,
+                connectivity.quic_links(),
+                commands.clone(),
+            )
+            .await?,
+        ));
     }
     let server = ServerMode::start(
         identity,
@@ -2669,6 +2972,13 @@ fn drop_reasons(drops: &DropCounters) -> BTreeMap<String, u64> {
     .filter(|(_, count)| *count > 0)
     .map(|(name, count)| (name.to_owned(), count))
     .collect()
+}
+
+/// Whether phones can count on reaching `endpoint`: a hostname or a public IP.
+fn stable_endpoint(endpoint: &str) -> bool {
+    endpoint
+        .parse::<SocketAddr>()
+        .map_or(true, |addr| is_public(addr.ip()))
 }
 
 fn is_public(ip: IpAddr) -> bool {

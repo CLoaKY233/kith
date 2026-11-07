@@ -67,9 +67,6 @@ pub(crate) fn apply<S: System>(sys: &mut Sys<S>, plan: &Plan) -> Result<(), Erro
             }
         }
     }
-    if let Some(dns) = &plan.dns {
-        apply_dns(sys, dev, dns)?;
-    }
     if plan.forwarding {
         sys.enable_sysctls(&["net.ipv4.ip_forward", "net.ipv6.conf.all.forwarding"])?;
     }
@@ -96,6 +93,18 @@ pub(crate) fn apply<S: System>(sys: &mut Sys<S>, plan: &Plan) -> Result<(), Erro
         );
         sys.run(Cmd::new("nft").args(["-f", "-"]).stdin(ruleset))?;
         allow_through_docker(sys, dev)?;
+    }
+    // Last, and not fatal: without systemd-resolved or resolvconf, as on a stock Debian,
+    // a DNS failure must not take routes, the exit and NAT down with it.
+    if let Some(dns) = &plan.dns
+        && let Err(error) = apply_dns(sys, dev, dns)
+    {
+        tracing::warn!(
+            %error,
+            "could not point the system's DNS at kith, so mesh names will not resolve; \
+             routes and the exit still work; install systemd-resolved, or let kith write \
+             /etc/resolv.conf"
+        );
     }
     Ok(())
 }

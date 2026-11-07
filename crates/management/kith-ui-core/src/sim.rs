@@ -84,6 +84,7 @@ impl Sim {
             node,
             name,
             address,
+            invite: None,
         });
         Ok(accepted())
     }
@@ -806,6 +807,7 @@ impl Sim {
             node,
             name: name.clone(),
             address,
+            invite: None,
         });
         Ok((
             PhoneCreated {
@@ -992,6 +994,7 @@ fn add_device(
         display_name: name.to_owned(),
         gateway,
         path_mtu: None,
+        invite: None,
     });
     set_peers(world, net, &peers)?;
     let suffix = suffix_of(world, net);
@@ -1276,6 +1279,7 @@ mod tests {
                     node: pixel,
                     name: "pixel-8".into(),
                     address: "100.64.0.13".into(),
+                    invite: None,
                 },
                 EntryKind::DeviceRenamed {
                     network,

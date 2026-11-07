@@ -9,6 +9,7 @@ use kith_ledger::{JoinProof, Ledger, NetworkParams, OpBody, SignedOp};
 use kith_policy::{Addresses, Policy};
 use kith_types::{AccountId, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, Timestamp};
 
+use crate::daemon::hex;
 use crate::types::NodeError;
 
 /// A ledger shared between the loop and control connections; never locked across `.await`.
@@ -24,6 +25,8 @@ pub(crate) struct NetworkRuntime {
     local: NodeId,
     ledger: SharedLedger,
     netmap: NetMap,
+    /// The invite each member joined with, as an invite id, for those that joined by one.
+    invites: BTreeMap<NodeId, String>,
     /// The person admin ops are made for, while a request acts for one.
     actor: Option<AccountId>,
 }
@@ -48,7 +51,7 @@ impl NetworkRuntime {
         let params = NetworkParams {
             ipv4: Ipv4Prefix::new(Ipv4Addr::new(100, 64, 0, 0), 10)
                 .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
-            ipv6: Ipv6Prefix::new(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0), 48)
+            ipv6: Ipv6Prefix::new(random_ula()?, 48)
                 .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
         };
         let ledger = Ledger::create(
@@ -69,6 +72,7 @@ impl NetworkRuntime {
         Ok(Self {
             id: ledger.network_id(),
             local,
+            invites: joined_with(&ledger),
             ledger: Arc::new(Mutex::new(ledger)),
             netmap,
             actor: None,
@@ -104,6 +108,11 @@ impl NetworkRuntime {
         &self.netmap
     }
 
+    /// The invite id `device` joined with, if it joined by an invite.
+    pub(crate) fn invite_of(&self, device: &NodeId) -> Option<&str> {
+        self.invites.get(device).map(String::as_str)
+    }
+
     /// Runs `f` with the ledger locked.
     pub(crate) fn with_ledger<R>(&self, f: impl FnOnce(&mut Ledger) -> R) -> Result<R, NodeError> {
         let mut ledger = self.ledger.lock().map_err(|_| NodeError::Poisoned)?;
@@ -112,7 +121,10 @@ impl NetworkRuntime {
 
     /// Re-derives the map from the ledger; `None` when it did not change.
     pub(crate) fn rebuild(&mut self, local: NodeId) -> Result<Option<Change>, NodeError> {
-        let netmap = self.with_ledger(|ledger| build_netmap(ledger.view(), local))??;
+        let (netmap, invites) = self.with_ledger(|ledger| {
+            build_netmap(ledger.view(), local).map(|netmap| (netmap, joined_with(ledger)))
+        })??;
+        self.invites = invites;
         self.local = local;
         let diff = NetMap::diff(&self.netmap, &netmap);
         self.netmap = netmap;
@@ -200,13 +212,13 @@ impl NetworkRuntime {
         &mut self,
         identity: &DeviceIdentity,
         key: [u8; 32],
-        (name, tags): (String, Vec<String>),
+        (name, tags, gateway): (String, Vec<String>, NodeId),
         addresses: Addresses,
         now: Timestamp,
     ) -> Result<(), NodeError> {
         let body = OpBody::AddClient {
             key,
-            gateway: identity.node_id(),
+            gateway,
             name,
             tags,
             v4: addresses.v4,
@@ -251,6 +263,50 @@ impl NetworkRuntime {
             .map_err(|e| NodeError::InvalidArgument(e.to_string()))?;
         self.set_record(identity, String::from(records::POLICY), bytes, now)
     }
+}
+
+/// A random unique-local /48 (RFC 4193) for a new network; never Tailscale's
+/// `fd7a:115c:a1e0::/48`, which older networks keep since the range is fixed at genesis.
+fn random_ula() -> Result<Ipv6Addr, NodeError> {
+    let mut bytes = [0_u8; 5];
+    loop {
+        kith_crypto::fill_random(&mut bytes)
+            .map_err(|error| NodeError::Io(std::io::Error::other(error)))?;
+        let [first, rest @ ..] = bytes;
+        let [g0, g1, g2, g3] = rest;
+        let address = Ipv6Addr::new(
+            0xfd00 | u16::from(first),
+            u16::from_be_bytes([g0, g1]),
+            u16::from_be_bytes([g2, g3]),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        if address.segments().get(..3) != Some(&[0xfd7a, 0x115c, 0xa1e0][..]) {
+            return Ok(address);
+        }
+    }
+}
+
+/// The invite each member was admitted with, as the invite id `kith invite list` shows.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only a join names an invite"
+)]
+fn joined_with(ledger: &Ledger) -> BTreeMap<NodeId, String> {
+    ledger
+        .view()
+        .devices()
+        .iter()
+        .filter_map(
+            |(node, device)| match &ledger.get(&device.admitted_by)?.op().body {
+                OpBody::Join(proof) => Some((*node, hex(&proof.invite_key.to_bytes()))),
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 /// Drafts and signs an admin op by `identity`, made for `actor` when there is one.
@@ -397,5 +453,19 @@ impl NetworkSet {
     /// The ledger registry, shared with the control channel's handler.
     pub(crate) fn registry(&self) -> LedgerRegistry {
         Arc::clone(&self.registry)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn new_networks_get_their_own_ipv6_range_never_tailscales() {
+        let first = super::random_ula().unwrap();
+        let second = super::random_ula().unwrap();
+        assert_ne!(first, second);
+        for address in [first, second] {
+            assert_eq!(address.segments()[0] & 0xff00, 0xfd00);
+            assert_ne!(address.segments()[..3], [0xfd7a, 0x115c, 0xa1e0]);
+        }
     }
 }

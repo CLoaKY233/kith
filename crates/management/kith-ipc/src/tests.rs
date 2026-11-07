@@ -36,7 +36,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 15, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 16, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -46,7 +46,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 15, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 16, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -63,12 +63,13 @@ fn golden_bytes() {
         display_name: "D".to_owned(),
         gateway: Some("e".to_owned()),
         path_mtu: Some(1216),
+        invite: None,
     }]));
-    let mut expected = vec![64, b'k', b't', 0x70, 15, 0, 6, 1];
+    let mut expected = vec![65, b'k', b't', 0x70, 16, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,
-        b'e', 1, 0xc0, 0x09,
+        b'e', 1, 0xc0, 0x09, 0,
     ]);
     assert_eq!(encode(&peers).unwrap(), expected);
 }
@@ -225,12 +226,14 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                 proptest::option::of(text()),
                 any::<Option<u16>>(),
             ),
+            proptest::option::of(text()),
         )
             .prop_map(
                 |(
                     (node, name, address, path),
                     (last_seen_secs, endpoint, rx_bytes, tx_bytes),
                     (online, display_name, gateway, path_mtu),
+                    invite,
                 )| {
                     PeerInfo {
                         node,
@@ -246,6 +249,7 @@ fn server_message() -> impl Strategy<Value = ServerMessage> {
                         display_name,
                         gateway,
                         path_mtu,
+                        invite,
                     }
                 },
             ),
@@ -549,6 +553,11 @@ fn request_index(request: &Request) -> u8 {
         Request::RecoverAuthority { .. } => 43,
         Request::RecoveryKey { .. } => 44,
         Request::AsActor { .. } => 45,
+        Request::Gateways { .. } => 46,
+        Request::ExportWireGuardVia { .. } => 47,
+        Request::Pause { .. } => 48,
+        Request::Resume => 49,
+        Request::PauseState => 50,
     }
 }
 
@@ -600,6 +609,8 @@ fn response_index(response: &Response) -> u8 {
         Response::AuthorityPrepared { .. } => 43,
         Response::AuthorityApplied => 44,
         Response::RecoveryKey { .. } => 45,
+        Response::Gateways(_) => 46,
+        Response::PauseState { .. } => 47,
     }
 }
 
@@ -796,6 +807,18 @@ fn requests() -> Vec<Request> {
                 name: s("nas"),
             }),
         },
+        Request::Gateways { network: NET },
+        Request::ExportWireGuardVia {
+            network: NET,
+            device_name: s("phone"),
+            tags: vec![s("phones")],
+            gateway: Some(NODE),
+        },
+        Request::Pause {
+            for_secs: Some(3600),
+        },
+        Request::Resume,
+        Request::PauseState,
     ]
 }
 
@@ -1006,6 +1029,17 @@ fn responses() -> Vec<Response> {
         Response::RecoveryKey {
             words: s("acorn actor"),
         },
+        Response::Gateways(vec![crate::GatewayInfo {
+            node: NODE,
+            name: s("vps"),
+            endpoint: s("vpn.example.com:41641"),
+            exit: true,
+            default: true,
+        }]),
+        Response::PauseState {
+            paused: true,
+            resume_in_secs: Some(60),
+        },
     ]
 }
 
@@ -1024,6 +1058,7 @@ fn sample_peer() -> PeerInfo {
         display_name: "nas".to_owned(),
         gateway: None,
         path_mtu: None,
+        invite: Some("ab".repeat(32)),
     }
 }
 
@@ -1078,6 +1113,7 @@ fn entry_kinds() -> Vec<EntryKind> {
             node: NODE,
             name: s("tv"),
             address: s("100.64.0.9"),
+            invite: Some("cd".repeat(32)),
         },
         EntryKind::DeviceRemoved {
             network: NET,
@@ -1185,7 +1221,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (15, 0x308d_b488_a84d_fa05),
+        (16, 0xf17f_6c7e_9596_e5cb),
         "the wire format changed"
     );
 }
