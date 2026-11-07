@@ -283,9 +283,22 @@ impl NodeHandle {
 
 /// Runs the real daemon until SIGINT or SIGTERM, then reverts OS changes.
 pub async fn run(config: Config, journal: Journal) -> Result<(), NodeError> {
-    let node = Node::start(NodeOptions::new(config, OsSystem).journal(journal)).await?;
-    shutdown_signal().await?;
-    node.shutdown().await
+    let mut node = Node::start(NodeOptions::new(config, OsSystem).journal(journal)).await?;
+    // If the loop ends on its own, the process exits too, so the service manager
+    // restarts it instead of leaving a daemon that does nothing.
+    tokio::select! {
+        signal = shutdown_signal() => {
+            signal?;
+            node.shutdown().await
+        }
+        ended = &mut node.task => {
+            tracing::error!("the daemon's main loop stopped; exiting so it is restarted");
+            match ended {
+                Ok(Ok(())) | Err(_) => Err(NodeError::Stopped),
+                Ok(Err(error)) => Err(error),
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -518,6 +531,7 @@ fn start_ipc(
 
 impl Daemon {
     /// Loads state, creates the TUN and dataplane, and starts every subsystem.
+    #[expect(clippy::too_many_lines, reason = "starts every subsystem in order")]
     pub(crate) async fn build(
         options: NodeOptions,
         commands: mpsc::Sender<Command>,
@@ -559,8 +573,14 @@ impl Daemon {
             &config.daemon.state_dir,
         );
         let relay_listen = SocketAddr::new(options.listen_ip, bound.port().saturating_add(1));
-        let server =
-            start_server(config, &identity, relay_listen, &connectivity, &commands).await?;
+        let server = start_server(
+            (config, &state),
+            &identity,
+            relay_listen,
+            &connectivity,
+            &commands,
+        )
+        .await?;
         let external = restore_external(&state, config).await?;
         let endpoints = state.load_endpoints()?.into_iter().collect();
         let (events, _) = broadcast::channel(ipc::EVENT_BUFFER);
@@ -1232,6 +1252,7 @@ impl Daemon {
     }
 
     async fn server_mode(&mut self, exit: bool, relay: bool) -> Result<Response, NodeError> {
+        self.state.save_server_roles(exit, relay)?;
         self.server = None;
         if exit || relay {
             self.server = Some(
@@ -2832,14 +2853,27 @@ impl Default for Notes {
 
 /// Starts server mode when the config enables it.
 async fn start_server(
-    config: &Config,
+    (config, state): (&Config, &StateDir),
     identity: &DeviceIdentity,
     relay_listen: SocketAddr,
     connectivity: &Connectivity,
     commands: &mpsc::Sender<Command>,
 ) -> Result<Option<ServerMode>, NodeError> {
     if !config.server.enabled {
-        return Ok(None);
+        // Roles set at runtime, by `kith server` or the Console, come back too.
+        let Some((exit, relay)) = state.load_server_roles()?.filter(|(e, r)| *e || *r) else {
+            return Ok(None);
+        };
+        return Ok(Some(
+            ServerMode::start(
+                identity,
+                Listeners::relay_only(relay.then_some(relay_listen)),
+                exit,
+                connectivity.quic_links(),
+                commands.clone(),
+            )
+            .await?,
+        ));
     }
     let server = ServerMode::start(
         identity,

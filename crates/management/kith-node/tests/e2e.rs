@@ -2164,4 +2164,28 @@ mod tests {
         }
         Err("the revoked exit is still in use, or nobody was told".into())
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_roles_set_at_runtime_survive_a_restart() -> TestResult {
+        let disk = Disk::new("roles")?;
+        let node = disk.start().await?;
+        let set = node
+            .request(Request::ServerMode {
+                exit: true,
+                relay: false,
+            })
+            .await;
+        if !matches!(set, Response::ServerModeSet { .. }) {
+            return Err(format!("server mode failed: {set:?}").into());
+        }
+        node.shutdown().await?;
+        let node = disk.start().await?;
+        let Response::Status(status) = node.request(Request::Status).await else {
+            return Err("no status".into());
+        };
+        if !status.exit {
+            return Err("the exit role was lost on restart".into());
+        }
+        shutdown([node]).await
+    }
 }
