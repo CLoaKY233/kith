@@ -259,7 +259,23 @@ pub(crate) enum Action {
         device_name: String,
         /// Its policy tags.
         tags: Vec<String>,
+        /// The gateway; `None` picks the default.
+        gateway: Option<NodeId>,
     },
+    /// The devices plain WireGuard devices can connect through, default first.
+    Gateways {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Stop carrying traffic for a while, or until resumed.
+    Pause {
+        /// How long; `None` until resumed.
+        duration: Option<Duration>,
+    },
+    /// Carry traffic again.
+    Resume,
+    /// Whether traffic is paused.
+    PauseState,
     /// Make a request code for a network.
     RequestCode {
         /// The network.

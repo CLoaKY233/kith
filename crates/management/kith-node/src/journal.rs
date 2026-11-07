@@ -125,6 +125,7 @@ pub(crate) struct PeerView {
     path: Option<PathKind>,
     gateway: Option<String>,
     endpoint: Option<String>,
+    invite: Option<String>,
 }
 
 impl PeerView {
@@ -136,6 +137,7 @@ impl PeerView {
             path: info.path,
             gateway: info.gateway.clone(),
             endpoint: info.endpoint.clone(),
+            invite: info.invite.clone(),
         }
     }
 }
@@ -262,7 +264,17 @@ pub(crate) fn changes(
                 node,
                 name,
                 address: peer.address.clone(),
+                invite: peer.invite.clone(),
             });
+            if peer.online {
+                kinds.push(EntryKind::PeerOnline {
+                    network,
+                    node,
+                    name: peer.name.clone(),
+                    path: peer.path,
+                    gateway: peer.gateway.clone(),
+                });
+            }
             continue;
         };
         if old.name != peer.name {
@@ -366,6 +378,7 @@ mod tests {
             path,
             gateway: None,
             endpoint: Some(endpoint.to_owned()).filter(|e| !e.is_empty()),
+            invite: None,
         }
     }
 
@@ -458,6 +471,7 @@ mod tests {
             display_name: "laptop".into(),
             gateway: None,
             path_mtu: None,
+            invite: None,
         };
         activity.observe(&[(NET, vec![info])], &BTreeMap::new(), &journal);
         assert!(

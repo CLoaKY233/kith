@@ -55,17 +55,42 @@ impl StateDir {
                 tracing::warn!(%key, "ignoring unrecognised network entry");
                 continue;
             };
-            let Some(bytes) = self.store.get(&key)? else {
-                continue;
+            // One unreadable network must not keep the daemon, and every other network,
+            // down: it is set aside under `networks-quarantine` and the rest load.
+            let bytes = match self.store.get(&key) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::error!(%key, %error, "network file is unreadable; skipping it");
+                    continue;
+                }
             };
-            let ops = decode_ops(&bytes)
-                .ok_or_else(|| corrupt(&key, "truncated op list"))?
-                .into_iter()
-                .map(SignedOp::from_bytes)
-                .collect::<Result<Vec<_>, _>>()?;
-            networks.push((network, ops));
+            let ops = decode_ops(&bytes).and_then(|ops| {
+                ops.into_iter()
+                    .map(SignedOp::from_bytes)
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()
+            });
+            match ops {
+                Some(ops) => networks.push((network, ops)),
+                None => self.quarantine(&key, &bytes)?,
+            }
         }
         Ok(networks)
+    }
+
+    /// Moves a corrupt network file aside, keeping its bytes for recovery.
+    fn quarantine(&self, key: &Key, bytes: &[u8]) -> Result<(), NodeError> {
+        let aside =
+            Key::parse(QUARANTINE_NAMESPACE, key.name.as_str()).map_err(kith_store::Error::from)?;
+        self.store.put(&aside, bytes)?;
+        self.store.delete(key)?;
+        tracing::error!(
+            %key,
+            moved_to = %aside,
+            "network file is corrupt; it was moved aside and the network skipped; join it again"
+        );
+        Ok(())
     }
 
     /// Persists every op of `ledger` under `networks/@<network-id>`, genesis first.
@@ -251,6 +276,21 @@ impl StateDir {
         Ok(())
     }
 
+    /// Loads the server roles set at runtime, as (exit, relay), if any were saved.
+    pub(crate) fn load_server_roles(&self) -> Result<Option<(bool, bool)>, NodeError> {
+        Ok(match self.store.get(&server_key()?)?.as_deref() {
+            Some([exit, relay]) => Some((*exit != 0, *relay != 0)),
+            _ => None,
+        })
+    }
+
+    /// Saves the server roles set at runtime, so they come back after a restart.
+    pub(crate) fn save_server_roles(&self, exit: bool, relay: bool) -> Result<(), NodeError> {
+        self.store
+            .put(&server_key()?, &[u8::from(exit), u8::from(relay)])?;
+        Ok(())
+    }
+
     /// Forgets a network's ledger.
     pub(crate) fn remove_network(&self, network: NetworkId) -> Result<(), NodeError> {
         self.store.delete(&network_key(network)?)?;
@@ -261,6 +301,7 @@ impl StateDir {
 const IDENTITY_NAMESPACE: &str = "identity";
 const DEVICE_NAME: &str = "device";
 const NETWORKS_NAMESPACE: &str = "networks";
+const QUARANTINE_NAMESPACE: &str = "networks-quarantine";
 const IMPORTS_NAMESPACE: &str = "imports";
 const PAUSED_IMPORTS_NAMESPACE: &str = "imports-paused";
 const EXTERNAL_NAMESPACE: &str = "external";
@@ -268,10 +309,15 @@ const GATEWAY_NAME: &str = "gateway";
 const PEERS_NAMESPACE: &str = "peers";
 const ENDPOINTS_NAME: &str = "endpoints";
 const EXIT_NAME: &str = "exit";
+const SERVER_NAME: &str = "server-roles";
 const LAST_SEEN_NAME: &str = "last-seen";
 
 fn import_key(namespace: &str, name: &str) -> Result<Key, NodeError> {
     Ok(Key::parse(namespace, &encode_hex(name)).map_err(kith_store::Error::from)?)
+}
+
+fn server_key() -> Result<Key, NodeError> {
+    Ok(Key::parse(PEERS_NAMESPACE, SERVER_NAME).map_err(kith_store::Error::from)?)
 }
 
 fn exit_key() -> Result<Key, NodeError> {
@@ -345,13 +391,6 @@ pub(crate) fn corrupt_value(path: &str, reason: &'static str) -> NodeError {
     })
 }
 
-fn corrupt(key: &Key, reason: &'static str) -> NodeError {
-    NodeError::Store(kith_store::Error::Corrupt {
-        path: key.to_string().into(),
-        reason,
-    })
-}
-
 pub(crate) fn encode_varint(out: &mut Vec<u8>, mut value: usize) {
     loop {
         let [low, ..] = value.to_le_bytes();
@@ -387,4 +426,24 @@ fn decode_ops(mut input: &[u8]) -> Option<Vec<&[u8]>> {
         input = rest;
     }
     input.is_empty().then_some(ops)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_corrupt_network_file_is_set_aside_and_the_rest_still_load() {
+        let state = StateDir::in_memory();
+        let network = NetworkId::from_bytes([5; 32]);
+        let key = network_key(network).unwrap();
+        state.store.put(&key, &[3, 9, 9]).unwrap();
+        assert_eq!(state.load_networks().unwrap().len(), 0);
+        assert!(
+            state.store.get(&key).unwrap().is_none(),
+            "moved out of the way"
+        );
+        let aside = Key::parse(QUARANTINE_NAMESPACE, &network.to_string()).unwrap();
+        assert_eq!(state.store.get(&aside).unwrap().unwrap(), [3, 9, 9]);
+    }
 }

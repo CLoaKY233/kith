@@ -155,6 +155,7 @@ pub(crate) fn answer_locally(request: &Request) -> Option<Response> {
 }
 
 /// Decodes and validates a request into a loop action.
+#[expect(clippy::too_many_lines, reason = "one arm per request")]
 pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
     let action = match request {
         Request::Hello { .. } | Request::Watch => {
@@ -250,7 +251,25 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             network,
             device_name: non_empty("device name", device_name)?,
             tags,
+            gateway: None,
         },
+        Request::ExportWireGuardVia {
+            network,
+            device_name,
+            tags,
+            gateway,
+        } => Action::ExportWireGuard {
+            network,
+            device_name: non_empty("device name", device_name)?,
+            tags,
+            gateway,
+        },
+        Request::Gateways { network } => Action::Gateways { network },
+        Request::Pause { for_secs } => Action::Pause {
+            duration: for_secs.map(Duration::from_secs),
+        },
+        Request::Resume => Action::Resume,
+        Request::PauseState => Action::PauseState,
         other @ (Request::Journal { .. } | _) => return admission_action(other),
     };
     Ok(action)
@@ -606,6 +625,8 @@ pub(crate) const fn is_read_only(request: &Request) -> bool {
             | Request::ListRelays { .. }
             | Request::ListExits { .. }
             | Request::Accounts { .. }
+            | Request::Gateways { .. }
+            | Request::PauseState
     )
 }
 

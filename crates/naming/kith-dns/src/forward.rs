@@ -63,8 +63,8 @@ impl Forwarder {
         let v4 = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
         // IPv6 may be disabled on the host; IPv6 upstreams then fail over like dead ones.
         let v6 = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).await.ok();
-        kith_transport_udp::mark_udp(&v4);
-        v6.iter().for_each(kith_transport_udp::mark_udp);
+        // Not marked to bypass the tunnel: while an exit is in use, upstream queries must
+        // go through it, or they leak to the local network.
         let pending: Arc<PendingTable> = Arc::default();
         let sockets = [Some(Arc::new(v4)), v6.map(Arc::new)];
         let readers = sockets
@@ -221,7 +221,7 @@ async fn ask_tcp(query: &[u8], upstream: SocketAddr) -> Option<Vec<u8>> {
     outgoing.extend_from_slice(&length.to_be_bytes());
     outgoing.extend_from_slice(query);
     outgoing.get_mut(2..4)?.copy_from_slice(&id.to_be_bytes());
-    let mut stream = kith_transport_udp::connect_tcp(upstream).await.ok()?;
+    let mut stream = tokio::net::TcpStream::connect(upstream).await.ok()?;
     stream.write_all(&outgoing).await.ok()?;
     let reply_len = stream.read_u16().await.ok()?;
     let mut reply = vec![0; usize::from(reply_len)];

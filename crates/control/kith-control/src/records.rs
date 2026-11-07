@@ -38,6 +38,9 @@ pub const DNS_PREFIX: &str = "dns/";
 /// The prefix of exit node grants: `exit/<node hex>`.
 pub(crate) const EXIT_PREFIX: &str = "exit/";
 
+/// The prefix of phone gateway advertisements: `gateway/<node hex>`.
+pub(crate) const GATEWAY_PREFIX: &str = "gateway/";
+
 const RECORD_VERSION: u64 = 1;
 
 const MAX_TTL: u32 = 0x7FFF_FFFF;
@@ -87,6 +90,19 @@ pub enum Record {
     Dns(DnsRecords),
     /// `exit/<node hex>`: the device may act as an exit node.
     Exit(NodeId),
+    /// `gateway/<node hex>`: where plain WireGuard devices reach the device as gateway.
+    Gateway(Gateway),
+}
+
+/// A device's gateway for plain WireGuard devices: its WireGuard key and `host:port`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gateway {
+    /// The gateway device.
+    pub node: NodeId,
+    /// Its gateway WireGuard public key.
+    pub key: [u8; 32],
+    /// Where phones reach it, as `host:port`.
+    pub endpoint: String,
 }
 
 impl Record {
@@ -97,6 +113,7 @@ impl Record {
             Self::Relay(relay) => format!("{RELAY_PREFIX}{}", relay.name),
             Self::Dns(records) => format!("{DNS_PREFIX}{}", records.name),
             Self::Exit(node) => format!("{EXIT_PREFIX}{node}"),
+            Self::Gateway(gateway) => format!("{GATEWAY_PREFIX}{}", gateway.node),
         }
     }
 
@@ -113,6 +130,10 @@ impl Record {
                 data: records.data.clone(),
             },
             Self::Exit(_) => Body::Exit,
+            Self::Gateway(gateway) => Body::Gateway {
+                key: gateway.key,
+                endpoint: gateway.endpoint.clone(),
+            },
         };
         envelope::encode(registry::CONTROL_RECORD, RECORD_VERSION, &body)
     }
@@ -124,6 +145,7 @@ impl Record {
             (Kind::Relay, RELAY_PREFIX),
             (Kind::Dns, DNS_PREFIX),
             (Kind::Exit, EXIT_PREFIX),
+            (Kind::Gateway, GATEWAY_PREFIX),
         ]
         .into_iter()
         .find_map(|(kind, prefix)| Some((kind, key.strip_prefix(prefix)?)))?;
@@ -163,6 +185,17 @@ impl Record {
                 .parse()
                 .map(Self::Exit)
                 .map_err(|_| RecordError::InvalidKey),
+            Body::Gateway { key, endpoint } => {
+                if !is_host_port(&endpoint) {
+                    return Err(RecordError::InvalidAddress);
+                }
+                let node = name.parse().map_err(|_| RecordError::InvalidKey)?;
+                Ok(Self::Gateway(Gateway {
+                    node,
+                    key,
+                    endpoint,
+                }))
+            }
         }
     }
 
@@ -171,6 +204,7 @@ impl Record {
             Self::Route { via, .. } => Some(*via),
             Self::Relay(relay) => Some(relay.node),
             Self::Exit(node) => Some(*node),
+            Self::Gateway(gateway) => Some(gateway.node),
             Self::Dns(_) => None,
         }
     }
@@ -274,6 +308,7 @@ enum Kind {
     Relay,
     Dns,
     Exit,
+    Gateway,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -282,6 +317,7 @@ enum Body {
     Relay { address: String, node: NodeId },
     Dns { ttl: u32, data: Vec<DnsData> },
     Exit,
+    Gateway { key: [u8; 32], endpoint: String },
 }
 
 impl Body {
@@ -291,6 +327,7 @@ impl Body {
             Self::Relay { .. } => Kind::Relay,
             Self::Dns { .. } => Kind::Dns,
             Self::Exit => Kind::Exit,
+            Self::Gateway { .. } => Kind::Gateway,
         }
     }
 }
@@ -372,6 +409,15 @@ mod tests {
             &[2, 0xac, 0x02, 2, 0, 100, 64, 0, 5, 3, 1, 2, b'h', b'i'],
         );
         golden(Record::Exit(NODE), &[3]);
+        let gateway = Record::Gateway(super::Gateway {
+            node: NODE,
+            key: [9; 32],
+            endpoint: "vpn.example.com:41641".into(),
+        });
+        golden(
+            gateway,
+            &[&[4], &[9; 32][..], &[21], &b"vpn.example.com:41641"[..]].concat(),
+        );
 
         let alias = DnsData::Cname("nas.home".into());
         let shared = DnsRecords::new(

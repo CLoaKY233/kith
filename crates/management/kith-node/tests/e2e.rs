@@ -896,16 +896,30 @@ mod tests {
         join(&s, &a, network, "alpha").await?;
         let server = peer_info(&a, network, "server").await?;
         let b = start().await?;
-        join(&s, &b, network, "beta").await?;
+        let link = invite(&s, network).await?;
+        let invite_id: String = InviteToken::parse(&link)?
+            .invite_public_key()
+            .to_bytes()
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                use core::fmt::Write as _;
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            });
+        join_with(&b, link, network, "beta").await?;
         let beta = peer(&a, network, "beta").await?;
         let alpha = peer(&b, network, "alpha").await?;
+        if peer_info(&s, network, "beta").await?.invite.as_ref() != Some(&invite_id) {
+            return Err("the peer list does not name the invite beta joined with".into());
+        }
         deliver(&b, &a, &udp_packet(beta, alpha, b"hi")?).await?;
         use_exit(&a, network, Some(server.node)).await?;
 
         let wanted = |entries: &[kith_ipc::Entry]| {
             let joined = entries.iter().any(|e| {
-                matches!(&e.kind, EntryKind::DeviceJoined { name, address, .. }
-                    if name == "beta" && *address == beta.to_string())
+                matches!(&e.kind, EntryKind::DeviceJoined { name, address, invite, .. }
+                    if name == "beta" && *address == beta.to_string()
+                        && invite.as_ref() == Some(&invite_id))
             });
             let exit = entries.iter().any(|e| {
                 matches!(&e.kind, EntryKind::ExitChanged { exit: Some(exit) } if exit == "home/server")
@@ -2024,5 +2038,154 @@ mod tests {
             return Err("a revoked invite admitted a device".into());
         }
         shutdown([a, b]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_paused_device_carries_no_traffic_until_it_resumes() -> TestResult {
+        let s = start().await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer(&a, network, "server").await?;
+        let alpha = peer(&s, network, "alpha").await?;
+        let packet = udp_packet(alpha, server, b"while paused")?;
+        deliver(&a, &s, &packet).await?;
+        let paused = a.request(Request::Pause { for_secs: None }).await;
+        if paused
+            != (Response::PauseState {
+                paused: true,
+                resume_in_secs: None,
+            })
+        {
+            return Err(format!("pause failed: {paused:?}").into());
+        }
+        never_delivered(&a, &s, &packet).await?;
+        if a.request(Request::Resume).await
+            != (Response::PauseState {
+                paused: false,
+                resume_in_secs: None,
+            })
+        {
+            return Err("resume failed".into());
+        }
+        deliver(&a, &s, &packet).await?;
+        shutdown([a, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phones_default_to_the_exit_server_as_gateway() -> TestResult {
+        let s = start_server(true, true, Some("203.0.113.9")).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer_info(&a, network, "server").await?.node;
+        let make_admin = s
+            .request(Request::SetExitGrant {
+                network,
+                node: server,
+                allowed: true,
+            })
+            .await;
+        if make_admin != Response::ExitGrantSet {
+            return Err(format!("grant failed: {make_admin:?}").into());
+        }
+        let mut gateways = Vec::new();
+        for _ in 0..100 {
+            if let Response::Gateways(list) = a.request(Request::Gateways { network }).await
+                && list.iter().any(|g| g.node == server)
+            {
+                gateways = list;
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        let first = gateways.first().ok_or("no gateways")?;
+        if first.node != server
+            || !first.default
+            || first.endpoint != format!("203.0.113.9:{}", s.control_addr().port())
+        {
+            return Err(format!("the exit server is not the default gateway: {gateways:?}").into());
+        }
+        shutdown([a, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_second_network_with_the_same_addresses_is_refused_at_join() -> TestResult {
+        let s = start().await?;
+        let t = start().await?;
+        let a = start().await?;
+        let home = create(&s, "server").await?;
+        let work = create(&t, "other").await?;
+        join(&s, &a, home, "alpha").await?;
+        let outcome = a
+            .request(Request::Join {
+                invite_link: invite(&t, work).await?,
+                device_name: "alpha".into(),
+            })
+            .await;
+        let Response::Error { message, .. } = outcome else {
+            return Err(format!("a clashing second network was joined: {outcome:?}").into());
+        };
+        if !message.contains("same addresses") {
+            return Err(format!("unclear refusal: {message}").into());
+        }
+        shutdown([a, s, t]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_exit_that_loses_its_grant_is_dropped_and_traffic_goes_direct() -> TestResult {
+        let s = start_server(true, false, None).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer_info(&a, network, "server").await?.node;
+        use_exit(&a, network, Some(server)).await?;
+        let revoked = s
+            .request(Request::SetExitGrant {
+                network,
+                node: server,
+                allowed: false,
+            })
+            .await;
+        if revoked != Response::ExitGrantSet {
+            return Err(format!("revoke failed: {revoked:?}").into());
+        }
+        for _ in 0..100 {
+            if let Response::Status(status) = a.request(Request::Status).await
+                && status.exit_node.is_none()
+                && status
+                    .warnings
+                    .iter()
+                    .any(|w| w.message.contains("no longer an exit"))
+            {
+                return shutdown([a, s]).await;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err("the revoked exit is still in use, or nobody was told".into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_roles_set_at_runtime_survive_a_restart() -> TestResult {
+        let disk = Disk::new("roles")?;
+        let node = disk.start().await?;
+        let set = node
+            .request(Request::ServerMode {
+                exit: true,
+                relay: false,
+            })
+            .await;
+        if !matches!(set, Response::ServerModeSet { .. }) {
+            return Err(format!("server mode failed: {set:?}").into());
+        }
+        node.shutdown().await?;
+        let node = disk.start().await?;
+        let Response::Status(status) = node.request(Request::Status).await else {
+            return Err("no status".into());
+        };
+        if !status.exit {
+            return Err("the exit role was lost on restart".into());
+        }
+        shutdown([node]).await
     }
 }

@@ -341,6 +341,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             display_name: "NAS".into(),
             gateway: None,
             path_mtu: None,
+            invite: None,
         },
         PeerInfo {
             node: phone,
@@ -356,6 +357,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             display_name: "Phone \"old\"".into(),
             gateway: None,
             path_mtu: None,
+            invite: None,
         },
         PeerInfo {
             node: NodeId::from_bytes([0xdd; 32]),
@@ -371,6 +373,7 @@ fn fake_peers() -> Vec<PeerInfo> {
             display_name: "Pixel".into(),
             gateway: Some("nas".into()),
             path_mtu: Some(1216),
+            invite: None,
         },
     ]
 }
@@ -434,14 +437,14 @@ async fn status_renders_what_the_daemon_reports() {
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
                 r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
                 r#""endpoint":"198.51.100.7:41641","last_seen_secs":4,"#,
-                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null,"path_mtu":null}},"#,
+                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null,"path_mtu":null,"invite":null}},"#,
                 r#"{{"node":"{phone}","name":"phone","address":"100.64.0.3","#,
                 r#""path":null,"path_reason":null,"#,
                 r#""endpoint":null,"last_seen_secs":null,"#,
-                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null,"path_mtu":null}},"#,
+                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null,"path_mtu":null,"invite":null}},"#,
                 r#"{{"node":"{pixel}","name":"pixel","address":"100.64.0.4","path":null,"#,
                 r#""path_reason":null,"endpoint":"203.0.113.9:51820","last_seen_secs":12,"#,
-                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas","path_mtu":1216}}]}}]}}"#,
+                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas","path_mtu":1216,"invite":null}}]}}]}}"#,
                 "\n",
             ),
             me = NodeId::from_bytes([0x12; 32]),
