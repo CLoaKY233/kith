@@ -229,6 +229,7 @@ fn routes() -> Router<Arc<Shared>> {
         .route("/joins/{node}/deny", post(api::joins::deny))
         .route("/request-code", get(api::joins::request_code))
         .route("/devices/{node}/rename", post(api::devices::rename))
+        .route("/devices/{node}/settings", post(api::devices::settings))
         .route("/devices/{node}/remove", post(api::devices::remove))
         .route("/leave", post(api::devices::leave))
         .route("/policy", get(api::policy::get).post(api::policy::set))

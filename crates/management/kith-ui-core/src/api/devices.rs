@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use kith_ipc::{DnsRecord, EntryKind, PeerInfo, RecordInfo, Request, Response};
+use kith_ipc::{DeviceSettingsInfo, DnsRecord, EntryKind, PeerInfo, RecordInfo, Request, Response};
 use kith_types::{NetworkId, NodeId};
 
 use crate::api::records::{named, relative};
@@ -15,7 +15,7 @@ use crate::api::{
     status_of, summary,
 };
 use crate::ipc::{Daemon, Source};
-use crate::wire::{ApiErrorCode, RemoveIn, RenameIn};
+use crate::wire::{ApiErrorCode, DeviceSettingsIn, PersonRole, RemoveIn, RenameIn};
 use crate::{Shared, now_ms};
 
 /// `POST /api/networks/:net/devices/:node/rename` (tier 2). With `based_on`, the name the
@@ -49,6 +49,60 @@ pub(crate) async fn rename(
         name: input.name,
     };
     let Response::DeviceRenamed = as_admin(daemon, network, request).await? else {
+        return Err(ApiError::unexpected());
+    };
+    Ok(accepted())
+}
+
+/// 403 unless the signed-in person is an owner or admin, or the device is theirs. Without
+/// a signed-in person (the local link), the daemon decides.
+async fn may_set(shared: &Shared, network: NetworkId, node: NodeId) -> Result<(), ApiError> {
+    let Some(me) = crate::accounts::actor() else {
+        return Ok(());
+    };
+    let person = shared
+        .accounts
+        .accounts(network)
+        .await?
+        .into_iter()
+        .find(|one| one.id == me)
+        .ok_or_else(|| crate::console::denied("you are no longer in this network"))?;
+    if person.role.rank() >= PersonRole::Admin.rank() || person.devices.contains(&node) {
+        Ok(())
+    } else {
+        Err(crate::console::denied(
+            "you can change only the devices that are yours",
+        ))
+    }
+}
+
+/// `POST /api/networks/:net/devices/:node/settings` (tier 2): the exit, the lock on it
+/// and the pause of a device, which the device applies itself. Owners and admins may
+/// change any device, a member only their own.
+pub(crate) async fn settings(
+    State(shared): State<Arc<Shared>>,
+    Path((net, node)): Path<(String, String)>,
+    input: Result<Json<DeviceSettingsIn>, JsonRejection>,
+) -> Answer {
+    let Json(input) = input?;
+    let (network, node) = (network_id(&net)?, node_id(&node)?);
+    may_set(&shared, network, node).await?;
+    let exit = input.exit.as_deref().map(node_id).transpose()?;
+    let settings = DeviceSettingsInfo {
+        exit,
+        exit_locked: input.exit_locked,
+        paused: input.paused,
+    };
+    let daemon = match &shared.source {
+        Source::Fixture(sim) => return sim.set_device_settings(&net, node, &settings),
+        Source::Daemon(daemon) => daemon,
+    };
+    let request = Request::SetDeviceSettings {
+        network,
+        node,
+        settings,
+    };
+    let Response::DeviceSettingsSet = as_admin(daemon, network, request).await? else {
         return Err(ApiError::unexpected());
     };
     Ok(accepted())

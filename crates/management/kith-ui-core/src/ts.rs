@@ -104,6 +104,7 @@ pub fn declarations() -> String {
     push::<wire::ExitIn>(&mut out, &config);
     push::<wire::GrantIn>(&mut out, &config);
     push::<wire::RenameIn>(&mut out, &config);
+    push::<wire::DeviceSettingsIn>(&mut out, &config);
     push::<wire::RemoveIn>(&mut out, &config);
     push::<wire::AllowIn>(&mut out, &config);
     push::<wire::AllowPreview>(&mut out, &config);

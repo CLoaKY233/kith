@@ -11,7 +11,8 @@
     "peers_total": 11,
     "relays": 1,
     "problems": [],
-    "admin": true
+    "admin": true,
+    "my_settings": null
    }
   ],
   "exit": false,
@@ -93,7 +94,9 @@
     "display_name": "desk",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "e052d150332481a863450d25e1ac9614de90e74c426943dad0d1c7be79c3c275",
@@ -109,7 +112,9 @@
     "display_name": "nas",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "e8ead1f0455e9c88454182358731b7acf74dec4c4c47765682621c09a73207d7",
@@ -125,7 +130,9 @@
     "display_name": "vps",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "749720fb4784a02bba6fc5ca738891f08689325cb64722f009263758144e17ae",
@@ -141,7 +148,9 @@
     "display_name": "studio-mac",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "12646c77bfc5cf992a88cb5dfcfa83af8025eb3395804e37ad6b33242555be79",
@@ -157,7 +166,9 @@
     "display_name": "dev-box",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "ad72ee64373ac1322735ef4d344eb96b491b2b5f88d748d82e11ffba80fbe939",
@@ -173,7 +184,9 @@
     "display_name": "phone",
     "gateway": "laptop",
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "e3ec88623be806a72fe0dd938e642ce10dc791657fd93b7868980e046b0bcdd1",
@@ -189,7 +202,9 @@
     "display_name": "ipad",
     "gateway": "desk",
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "09b0d7a073e447442a1e73c15f24d1636f3dcb28614db99e7883d43f0837df8a",
@@ -205,7 +220,9 @@
     "display_name": "tv",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "82214a8882a02370a8b55c057b51d5942c0d15a07dc1130df64d6ee0760ba65a",
@@ -221,7 +238,9 @@
     "display_name": "office-pi",
     "gateway": null,
     "path_mtu": 1280,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "44d91a50387cb9551ef23461cb627062bf22b6c7aa7a5d6388e9d224fb5e07da",
@@ -237,7 +256,9 @@
     "display_name": "work-laptop",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    },
    {
     "node": "1a0dfeedff211629067270ecff6ec0e1e00ab4f88311511a4bc4e822212b679e",
@@ -253,7 +274,9 @@
     "display_name": "pi-hole",
     "gateway": null,
     "path_mtu": null,
-    "invite": null
+    "invite": null,
+    "settings": null,
+    "via_this_exit": false
    }
   ]
  },

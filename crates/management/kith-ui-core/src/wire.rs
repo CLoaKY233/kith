@@ -764,6 +764,18 @@ pub struct RenameIn {
     pub based_on: Option<String>,
 }
 
+/// `POST /api/networks/:net/devices/:node/settings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeviceSettingsIn {
+    /// The device that carries its internet traffic, or `null` for its own connection.
+    pub exit: Option<String>,
+    /// The device itself may not choose another exit.
+    pub exit_locked: bool,
+    /// Its traffic is paused.
+    pub paused: bool,
+}
+
 /// `POST /api/networks/:net/devices/:node/remove`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
