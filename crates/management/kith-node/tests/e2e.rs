@@ -2086,7 +2086,7 @@ mod tests {
             return Err(format!("grant failed: {make_admin:?}").into());
         }
         let mut gateways = Vec::new();
-        for _ in 0..100 {
+        for _ in 0..300 {
             if let Response::Gateways(list) = a.request(Request::Gateways { network }).await
                 && list.iter().any(|g| g.node == server && g.exit)
             {

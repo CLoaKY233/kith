@@ -972,7 +972,8 @@
    "network": "5f4e2f4c726e5fa085b73b4ae6ea05e4f15c97d84bc36f7497b32cc69c2ddf90",
    "node": "44d91a50387cb9551ef23461cb627062bf22b6c7aa7a5d6388e9d224fb5e07da",
    "name": "work-laptop",
-   "address": "100.64.0.11"
+   "address": "100.64.0.11",
+   "invite": null
   },
   {
    "seq": 68,
