@@ -176,12 +176,17 @@ Props:
 <section class="screen">
   {#if network}
     <div class="sections">
-      <section>
-        <ExitPicker {net} bind:ready={pickerReady} />
-      </section>
+      {#if consoleMode() !== 'public'}
+        <section>
+          <ExitPicker {net} bind:ready={pickerReady} />
+        </section>
+      {/if}
 
       <!-- Below the picker once it has its height, so nothing moves (§11.9). -->
-      {#if pickerReady}
+      {#if consoleMode() === 'public'}
+        <p class="t-small hint">{copy.exits.consoleUse(network.name)}</p>
+      {/if}
+      {#if pickerReady || consoleMode() === 'public'}
         {#if admin && rows.length > 0}
           <section class="network" aria-labelledby={headingId}>
             <h2 class="t-heading" id={headingId}>{copy.exits.onNetwork}</h2>

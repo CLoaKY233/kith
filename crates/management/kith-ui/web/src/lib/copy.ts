@@ -562,6 +562,8 @@ export const copy = {
         empty: "No device offers itself as an exit yet. On the one that should, run:",
         offerCommand: "kith server --exit",
         emptyThen: "Then an admin allows it here.",
+        consoleUse: (network: string): string =>
+            `Each device picks its own exit. On the device, run: kith exit use ${network} <exit>`,
         exit: "Exit",
         everyone: "Every device",
         nobody: "Nobody",

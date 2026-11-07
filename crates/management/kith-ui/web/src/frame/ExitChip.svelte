@@ -13,6 +13,7 @@ Props:
 -->
 <script lang="ts">
   import { tick } from 'svelte';
+  import { consoleMode } from '../lib/account.svelte';
   import { copy } from '../lib/copy';
   import Icon from '../lib/icons/Icon.svelte';
   import { tintKey } from '../lib/live/keys';
@@ -67,7 +68,7 @@ Props:
   });
 </script>
 
-{#if exit !== null || layers.exit}
+{#if consoleMode() !== 'public' && (exit !== null || layers.exit)}
   <Popover bind:open={layers.exit} align="end" label={copy.exits.heading}>
     {#snippet trigger(props)}
       <button
