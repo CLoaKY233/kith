@@ -211,6 +211,8 @@ pub(crate) struct HeldPhone {
     pub(crate) everything: Option<String>,
     /// When it was made, so the oldest goes first once too many are held.
     pub(crate) made_ms: u64,
+    /// The signed-in person who made it; only they see its config, with no OS prompt.
+    pub(crate) made_by: Option<String>,
 }
 
 /// What the API keeps between requests.

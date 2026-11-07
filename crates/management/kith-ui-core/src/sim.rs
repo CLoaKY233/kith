@@ -818,6 +818,7 @@ impl Sim {
                 mesh: config,
                 everything: None,
                 made_ms: now_ms(),
+                made_by: None,
             },
         ))
     }

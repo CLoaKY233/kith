@@ -1,8 +1,8 @@
 //! `/api/networks/:net/phones`: devices on plain WireGuard, such as phones.
 //!
 //! Making the phone is the flow's one ledger write; its config holds the phone's private
-//! key, so this server keeps it and shows it only after the OS confirms the person at this
-//! computer (tier 3).
+//! key, so this server keeps it and shows it only to the signed-in person who made it, or,
+//! on the local page, after the OS confirms the person at this computer (tier 3).
 
 use std::sync::Arc;
 
@@ -71,6 +71,7 @@ pub(crate) async fn create(
         mesh,
         everything,
         made_ms: now_ms(),
+        made_by: None,
     };
     hold(&shared, &network.to_string(), &created.node, held);
     assign(&shared, &net, &created.node).await;
@@ -89,7 +90,8 @@ async fn assign(shared: &Shared, net: &str, node: &str) {
 }
 
 /// Keeps a phone's config until the page reveals it, dropping the oldest past [`MAX_HELD`].
-fn hold(shared: &Shared, net: &str, node: &str, held: HeldPhone) {
+fn hold(shared: &Shared, net: &str, node: &str, mut held: HeldPhone) {
+    held.made_by = crate::accounts::actor();
     let mut phones = lock(&shared.api.phones);
     phones.insert((net.to_owned(), node.to_owned()), held);
     while phones.len() > MAX_HELD {
@@ -128,7 +130,16 @@ pub(crate) async fn config(
     } else {
         held.mesh
     };
-    if let Source::Daemon(daemon) = &shared.source {
+    // On the Console a server has no one at its screen to ask: the person who just made
+    // the phone, signed in with their passkey, sees its config; nobody else does.
+    if let Some(me) = crate::accounts::actor() {
+        if held.made_by.as_deref() != Some(me.as_str()) {
+            return Err(crate::console::denied(
+                "only the person who added this phone can show its config; remove the \
+                 phone and add it again to get a new one",
+            ));
+        }
+    } else if let Source::Daemon(daemon) = &shared.source {
         let status = crate::api::status_of(daemon).await?;
         let name = summary(&status, network)?.name.clone();
         shared

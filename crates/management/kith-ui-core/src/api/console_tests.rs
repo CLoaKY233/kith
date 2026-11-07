@@ -742,3 +742,37 @@ async fn a_signed_out_persons_event_stream_ends_at_once() -> TestResult {
     assert!(drained.is_ok(), "the stream kept going after sign-out");
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_person_who_made_a_phone_sees_its_config() -> TestResult {
+    let console = Console::public()?;
+    let (_, cookie) = console.set_up().await?;
+    let (network, _, _) = crate::console::network(&console.shared)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    let me = console.send(Call::get("/api/me").with(&cookie)).await?;
+    let ada = me.body["person"]["id"].as_str().ok_or("no id")?.to_owned();
+    let held = |made_by: &str| crate::api::HeldPhone {
+        mesh: "[Interface]".to_owned(),
+        everything: None,
+        made_ms: 0,
+        made_by: Some(made_by.to_owned()),
+    };
+    let mine = kith_types::NodeId::from_bytes([2; 32]).to_string();
+    let theirs = kith_types::NodeId::from_bytes([3; 32]).to_string();
+    {
+        let mut phones = crate::api::lock(&console.shared.api.phones);
+        phones.insert((network.to_string(), mine.clone()), held(&ada));
+        phones.insert((network.to_string(), theirs.clone()), held("someone else"));
+    }
+    let path = |node: &str| format!("/api/networks/{network}/phones/{node}/config");
+    let shown = console
+        .send(Call::post(&path(&mine), json!({"everything": false})).with(&cookie))
+        .await?;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    let refused = console
+        .send(Call::post(&path(&theirs), json!({"everything": false})).with(&cookie))
+        .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    Ok(())
+}
