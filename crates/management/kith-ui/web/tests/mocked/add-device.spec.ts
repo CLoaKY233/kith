@@ -19,6 +19,7 @@ test('a computer joins with a code and the page says whose it is', async ({ page
     node: 'n-dev-box',
     name: 'dev-box',
     address: '100.64.0.40',
+    invite: null,
   });
   await expect(sheet.getByText(copyConsole.deviceCode.joined('dev-box', ana.name))).toBeVisible();
 });

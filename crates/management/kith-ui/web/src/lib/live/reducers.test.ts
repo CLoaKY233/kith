@@ -69,7 +69,7 @@ describe('reducers', () => {
     const fx = noEffects();
     reduce(
       s,
-      entry(1, 10, { kind: 'device_joined', network: NET, node: join.node, name: 'pixel-8', address: '100.64.0.40' }),
+      entry(1, 10, { kind: 'device_joined', network: NET, node: join.node, name: 'pixel-8', address: '100.64.0.40', invite: null }),
       fx,
     );
     expect(s.peers[NET]?.[join.node]?.name).toBe('pixel-8');

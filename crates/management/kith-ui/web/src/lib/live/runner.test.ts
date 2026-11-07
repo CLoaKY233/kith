@@ -15,6 +15,7 @@ const joined = (seq: number, node: string): Entry => ({
   node,
   name: node,
   address: '100.64.0.9',
+  invite: null,
 });
 
 /** A promise the test settles by hand, standing in for the server's answer. */
