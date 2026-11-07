@@ -221,10 +221,16 @@ pub(crate) async fn setup_finish(
         create_network(&shared, &network_name).await?
     };
     choose_network(&shared, network)?;
+    // The recovery key can only be made while the network has no people: before the
+    // owner. A network that already has one keeps it; setup goes on without words.
+    let words = shared.accounts.recovery_key(network).await.ok();
     let owner = shared
         .accounts
         .add_account(network, prompt.name, PersonRole::Owner, passkey)
         .await?;
+    if let Some(words) = words {
+        crate::api::lock(&shared.api.recovery).insert(owner.id.clone(), words);
+    }
     mark_setup_done(&shared)?;
     let (_, _, device) = crate::console::network(&shared).await?;
     let device = device.ok_or_else(ApiError::unexpected)?;
@@ -280,14 +286,22 @@ async fn create_network(shared: &Shared, name: &str) -> Result<NetworkId, ApiErr
     }
 }
 
-/// `POST /api/setup/recovery`: the recovery words, once, to an owner.
+/// `POST /api/setup/recovery`: the recovery words setup made, once, to the owner it added.
 pub(crate) async fn recovery(
     State(shared): State<Arc<Shared>>,
     Extension(Caller(principal)): Extension<Caller>,
 ) -> Answer {
-    let (network, person) = signed_in(&shared, principal.as_ref()).await?;
+    let (_, person) = signed_in(&shared, principal.as_ref()).await?;
     require(&person, PersonRole::Owner)?;
-    let words = shared.accounts.recovery_key(network).await?;
+    let words = crate::api::lock(&shared.api.recovery)
+        .remove(&person.id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                crate::wire::ApiErrorCode::Conflict,
+                "the recovery words were shown already, or were never made here",
+            )
+        })?;
     Ok(Json(json!(RecoveryWords { words })))
 }
 

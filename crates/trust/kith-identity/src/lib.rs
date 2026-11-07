@@ -17,6 +17,7 @@ mod identity;
 mod invite;
 mod keystore;
 mod message_types;
+mod recovery;
 mod request;
 
 pub use bootstrap::{Bootstrap, BootstrapAddr, BootstrapError, Hostname, MAX_HOSTNAME_LEN};
@@ -26,4 +27,5 @@ pub use invite::{
     MAX_NETWORK_NAME_LEN,
 };
 pub use keystore::{KeyStore, KeyStoreError, MemoryKeyStore};
+pub use recovery::{RECOVERY_WORDS, RecoveryCode, RecoveryError};
 pub use request::{REQUEST_PREFIX, RequestCode};

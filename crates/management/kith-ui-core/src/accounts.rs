@@ -2,16 +2,14 @@
 //! [`AccountsBackend`], with the daemon behind it ([`IpcAccounts`]) or, under
 //! `--fixture` and in tests, a ledger in memory ([`MemoryAccounts`]).
 //!
-//! The IPC requests (`Accounts`, `AddAccount`, `RemoveAccount`, `SetRole`,
-//! `AssignDevice`, `PrepareAuthority`, `SubmitAuthority`, `RecoveryKey`) are added to
-//! `kith-ipc` separately. Until then [`Request`] and [`Reply`] here mirror them, and
-//! [`IpcAccounts::ask`] is the one place that maps them onto `kith_ipc::Request`.
-//! `RemoveAccount` and `SetRole` travel as an [`AuthorityChange`] inside
-//! `PrepareAuthority`: both must be signed by a person's passkey.
+//! [`Request`] and [`Reply`] are the Console's side of `kith-ipc`'s people requests
+//! (`Accounts`, `AddAccount`, `AssignDevice`, `PrepareAuthority`, `SubmitAuthority`,
+//! `RecoveryKey`), with ids as the page prints them; [`IpcAccounts`] maps them onto the
+//! IPC types. `RemoveAccount` and `SetRole` exist only as an [`AuthorityChange`]: a
+//! person's passkey signs them.
 //!
-//! Every everyday admin request the Console sends names the person who asked: the guard
-//! runs each request inside [`acting_as`], and [`with_actor`] puts the account on the IPC
-//! request.
+//! Every admin request the Console sends for a signed-in person names them: the guard runs
+//! each request inside [`acting_as`], and [`with_actor`] wraps it in `AsActor`.
 
 use core::fmt;
 use core::pin::Pin;
@@ -19,7 +17,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use axum::http::StatusCode;
-use kith_types::{NetworkId, NodeId};
+use kith_ipc::{AccountRole, PasskeyAssertion, PasskeyCredential};
+use kith_types::{AccountId, NetworkId, NodeId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -115,7 +114,8 @@ pub(crate) enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Reply {
     Accounts(Vec<AccountInfo>),
-    Account(AccountInfo),
+    /// The new account's id.
+    Added(String),
     Prepared(Prepared),
     Done,
     RecoveryKey(Vec<String>),
@@ -135,7 +135,7 @@ pub(crate) trait AccountsBackend: Send + Sync + fmt::Debug {
         Box::pin(async move {
             match self.ask(Request::Accounts { network }).await? {
                 Reply::Accounts(accounts) => Ok(accounts),
-                Reply::Account(_) | Reply::Prepared(_) | Reply::Done | Reply::RecoveryKey(_) => {
+                Reply::Added(_) | Reply::Prepared(_) | Reply::Done | Reply::RecoveryKey(_) => {
                     Err(ApiError::unexpected())
                 }
             }
@@ -153,12 +153,18 @@ pub(crate) trait AccountsBackend: Send + Sync + fmt::Debug {
         Box::pin(async move {
             let request = Request::AddAccount {
                 network,
-                name,
+                name: name.clone(),
                 role,
-                credential,
+                credential: credential.clone(),
             };
             match self.ask(request).await? {
-                Reply::Account(account) => Ok(account),
+                Reply::Added(id) => Ok(AccountInfo {
+                    id,
+                    name,
+                    role,
+                    credentials: vec![credential],
+                    devices: Vec::new(),
+                }),
                 Reply::Accounts(_) | Reply::Prepared(_) | Reply::Done | Reply::RecoveryKey(_) => {
                     Err(ApiError::unexpected())
                 }
@@ -190,7 +196,7 @@ pub(crate) trait AccountsBackend: Send + Sync + fmt::Debug {
                 .await?
             {
                 Reply::Prepared(prepared) => Ok(prepared),
-                Reply::Accounts(_) | Reply::Account(_) | Reply::Done | Reply::RecoveryKey(_) => {
+                Reply::Accounts(_) | Reply::Added(_) | Reply::Done | Reply::RecoveryKey(_) => {
                     Err(ApiError::unexpected())
                 }
             }
@@ -219,7 +225,7 @@ pub(crate) trait AccountsBackend: Send + Sync + fmt::Debug {
         Box::pin(async move {
             match self.ask(Request::RecoveryKey { network }).await? {
                 Reply::RecoveryKey(words) => Ok(words),
-                Reply::Accounts(_) | Reply::Account(_) | Reply::Prepared(_) | Reply::Done => {
+                Reply::Accounts(_) | Reply::Added(_) | Reply::Prepared(_) | Reply::Done => {
                     Err(ApiError::unexpected())
                 }
             }
@@ -230,7 +236,7 @@ pub(crate) trait AccountsBackend: Send + Sync + fmt::Debug {
 fn done(reply: &Reply) -> Result<(), ApiError> {
     match reply {
         Reply::Done => Ok(()),
-        Reply::Accounts(_) | Reply::Account(_) | Reply::Prepared(_) | Reply::RecoveryKey(_) => {
+        Reply::Accounts(_) | Reply::Added(_) | Reply::Prepared(_) | Reply::RecoveryKey(_) => {
             Err(ApiError::unexpected())
         }
     }
@@ -251,13 +257,54 @@ pub(crate) fn actor() -> Option<String> {
     ACTOR.try_with(Clone::clone).ok().flatten()
 }
 
-/// Names the person behind an admin request.
-///
-/// `kith-ipc` gets an optional `actor: Option<AccountId>` on every admin request; once it
-/// has, set it here from [`actor`]. Until then the request goes as it is, signed by this
-/// device alone, as before accounts.
-pub(crate) const fn with_actor(request: kith_ipc::Request) -> kith_ipc::Request {
-    request
+/// Names the person behind a request that changes the network: `AsActor {actor, request}`
+/// while a signed-in person is being served, so the change is valid only while they are
+/// an owner or admin and names them. Reads, requests about this device alone, people
+/// requests (signed by a passkey or by this device) and the local link's session go as
+/// they are.
+pub(crate) fn with_actor(request: kith_ipc::Request) -> kith_ipc::Request {
+    use kith_ipc::Request as Ipc;
+    let unchanged = matches!(
+        request,
+        Ipc::Hello { .. }
+            | Ipc::Status
+            | Ipc::Peers { .. }
+            | Ipc::Records { .. }
+            | Ipc::Journal { .. }
+            | Ipc::Watch
+            | Ipc::Traffic
+            | Ipc::Topology { .. }
+            | Ipc::RequestCode { .. }
+            | Ipc::RequestJoin { .. }
+            | Ipc::PendingJoins
+            | Ipc::Blocked { .. }
+            | Ipc::ListInvites { .. }
+            | Ipc::GetPolicy { .. }
+            | Ipc::ListRelays { .. }
+            | Ipc::ListExits { .. }
+            | Ipc::CreateNetwork { .. }
+            | Ipc::Join { .. }
+            | Ipc::Leave { .. }
+            | Ipc::UseExit { .. }
+            | Ipc::ServerMode { .. }
+            | Ipc::ImportWireGuard { .. }
+            | Ipc::UseImport { .. }
+            | Ipc::RemoveImport { .. }
+            | Ipc::Accounts { .. }
+            | Ipc::AddAccount { .. }
+            | Ipc::PrepareAuthority { .. }
+            | Ipc::SubmitAuthority { .. }
+            | Ipc::RecoverAuthority { .. }
+            | Ipc::RecoveryKey { .. }
+            | Ipc::AsActor { .. }
+    );
+    match actor().and_then(|account| account.parse::<AccountId>().ok()) {
+        Some(actor) if !unchanged => Ipc::AsActor {
+            actor,
+            request: Box::new(request),
+        },
+        Some(_) | None => request,
+    }
 }
 
 /// Accounts through the daemon's IPC.
@@ -272,35 +319,160 @@ impl IpcAccounts {
     }
 }
 
-fn request_name(request: &Request) -> &'static str {
-    match request {
-        Request::Accounts { .. } => "Accounts",
-        Request::AddAccount { .. } => "AddAccount",
-        Request::AssignDevice { .. } => "AssignDevice",
-        Request::PrepareAuthority { .. } => "PrepareAuthority",
-        Request::SubmitAuthority { .. } => "SubmitAuthority",
-        Request::RecoveryKey { .. } => "RecoveryKey",
+impl AccountsBackend for IpcAccounts {
+    /// Maps each [`Request`] onto its `kith_ipc::Request` and the daemon's answer back
+    /// onto [`Reply`].
+    fn ask(&self, request: Request) -> Answer<'_, Reply> {
+        Box::pin(async move {
+            let ipc = to_ipc(request)?;
+            let answer = self.daemon.connect().await?.request(ipc).await?;
+            from_ipc(answer)
+        })
     }
 }
 
-impl AccountsBackend for IpcAccounts {
-    /// The only place that knows the IPC shape: map each [`Request`] onto its
-    /// `kith_ipc::Request`, send it with [`Daemon::ask`], and map the answer back onto
-    /// [`Reply`]. Until `kith-ipc` has the requests, a daemon that answers at all is told
-    /// apart from one that does not keep accounts yet.
-    fn ask(&self, request: Request) -> Answer<'_, Reply> {
-        Box::pin(async move {
-            let _connected = self.daemon.connect().await?;
-            Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                ApiErrorCode::VersionSkew,
-                format!(
-                    "this kith daemon does not keep accounts yet ({})",
-                    request_name(&request)
-                ),
-            ))
-        })
+/// An account id the page sent, or 400.
+fn account_id_of(text: &str) -> Result<AccountId, ApiError> {
+    text.parse().map_err(|_| ApiError::bad("not an account id"))
+}
+
+const fn to_role(role: PersonRole) -> AccountRole {
+    match role {
+        PersonRole::Owner => AccountRole::Owner,
+        PersonRole::Admin => AccountRole::Admin,
+        PersonRole::Member => AccountRole::Member,
     }
+}
+
+const fn from_role(role: AccountRole) -> PersonRole {
+    match role {
+        AccountRole::Owner => PersonRole::Owner,
+        AccountRole::Admin => PersonRole::Admin,
+        AccountRole::Member => PersonRole::Member,
+    }
+}
+
+fn to_passkey(credential: StoredCredential) -> PasskeyCredential {
+    PasskeyCredential {
+        credential_id: credential.credential_id,
+        public_key: credential.public_key,
+        rp_id: credential.rp_id,
+    }
+}
+
+fn to_change(change: AuthorityChange) -> Result<kith_ipc::AuthorityChange, ApiError> {
+    Ok(match change {
+        AuthorityChange::AddAccount {
+            name,
+            role,
+            credential,
+        } => kith_ipc::AuthorityChange::AddAccount {
+            name,
+            role: to_role(role),
+            credential: to_passkey(credential),
+        },
+        AuthorityChange::RemoveAccount { account } => kith_ipc::AuthorityChange::RemoveAccount {
+            account: account_id_of(&account)?,
+        },
+        AuthorityChange::SetRole { account, role } => kith_ipc::AuthorityChange::SetRole {
+            account: account_id_of(&account)?,
+            role: to_role(role),
+        },
+        AuthorityChange::AuthorizeConsole { device } => {
+            kith_ipc::AuthorityChange::AuthorizeConsole { device }
+        }
+        AuthorityChange::RevokeConsole { device } => {
+            kith_ipc::AuthorityChange::RevokeConsole { device }
+        }
+    })
+}
+
+fn to_ipc(request: Request) -> Result<kith_ipc::Request, ApiError> {
+    Ok(match request {
+        Request::Accounts { network } => kith_ipc::Request::Accounts { network },
+        Request::AddAccount {
+            network,
+            name,
+            role,
+            credential,
+        } => kith_ipc::Request::AddAccount {
+            network,
+            name,
+            role: to_role(role),
+            credential: to_passkey(credential),
+        },
+        Request::AssignDevice {
+            network,
+            device,
+            account,
+        } => kith_ipc::Request::AssignDevice {
+            network,
+            device,
+            account: account_id_of(&account)?,
+        },
+        Request::PrepareAuthority { network, change } => kith_ipc::Request::PrepareAuthority {
+            network,
+            change: to_change(change)?,
+        },
+        Request::SubmitAuthority {
+            network,
+            op_bytes,
+            assertion,
+        } => kith_ipc::Request::SubmitAuthority {
+            network,
+            op_bytes,
+            assertion: PasskeyAssertion {
+                account: account_id_of(&assertion.account)?,
+                credential_id: assertion.assertion.credential_id,
+                authenticator_data: assertion.assertion.authenticator_data,
+                client_data_json: assertion.assertion.client_data_json,
+                signature: assertion.assertion.signature,
+            },
+        },
+        Request::RecoveryKey { network } => kith_ipc::Request::RecoveryKey { network },
+    })
+}
+
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "every other answer is unexpected for an accounts request"
+)]
+fn from_ipc(answer: kith_ipc::Response) -> Result<Reply, ApiError> {
+    Ok(match answer {
+        kith_ipc::Response::Accounts(info) => Reply::Accounts(
+            info.accounts
+                .into_iter()
+                .map(|account| AccountInfo {
+                    id: account.id.to_string(),
+                    name: account.name,
+                    role: from_role(account.role),
+                    credentials: account
+                        .credentials
+                        .into_iter()
+                        .map(|one| StoredCredential {
+                            credential_id: one.credential_id,
+                            public_key: one.public_key,
+                            rp_id: one.rp_id,
+                        })
+                        .collect(),
+                    devices: account.devices,
+                })
+                .collect(),
+        ),
+        kith_ipc::Response::AccountAdded { account } => Reply::Added(account.to_string()),
+        kith_ipc::Response::DeviceAssigned | kith_ipc::Response::AuthorityApplied => Reply::Done,
+        kith_ipc::Response::AuthorityPrepared {
+            op_bytes,
+            challenge,
+        } => Reply::Prepared(Prepared {
+            op_bytes,
+            challenge: webauthn::unb64(&challenge).map_err(|_| ApiError::unexpected())?,
+        }),
+        kith_ipc::Response::RecoveryKey { words } => {
+            Reply::RecoveryKey(words.split_whitespace().map(str::to_owned).collect())
+        }
+        _ => return Err(ApiError::unexpected()),
+    })
 }
 
 /// One network's people, consoles and recovery state, as the simulator keeps them.
@@ -386,8 +558,9 @@ impl MemoryAccounts {
                     credentials: vec![credential],
                     devices: Vec::new(),
                 };
-                ledger.accounts.push(account.clone());
-                Ok(Reply::Account(account))
+                let id = account.id.clone();
+                ledger.accounts.push(account);
+                Ok(Reply::Added(id))
             }
             Request::AssignDevice {
                 network,
@@ -472,11 +645,11 @@ fn submit(
 
 /// The simulator's recovery words, once.
 fn recover(ledger: &mut Ledger) -> Result<Reply, ApiError> {
-    if ledger.recovery_shown {
+    if ledger.recovery_shown || !ledger.accounts.is_empty() {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             ApiErrorCode::Conflict,
-            "the recovery words were already shown",
+            "the recovery words are made once, before the first person",
         ));
     }
     let mut seed = [0u8; 12];
@@ -586,4 +759,61 @@ fn apply(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions fail the test; ? keeps the setup short"
+)]
+mod tests {
+    use super::*;
+
+    const NET: NetworkId = NetworkId::from_bytes([1; 32]);
+    const PERSON: AccountId = AccountId::from_bytes([7; 32]);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_persons_changes_go_as_them_and_reads_go_as_they_are() {
+        let rename = || kith_ipc::Request::RenameDevice {
+            network: NET,
+            node: NodeId::from_bytes([2; 32]),
+            name: "nas".to_owned(),
+        };
+        let (wrapped, read) = acting_as(Some(PERSON.to_string()), async {
+            (with_actor(rename()), with_actor(kith_ipc::Request::Status))
+        })
+        .await;
+        assert_eq!(
+            wrapped,
+            kith_ipc::Request::AsActor {
+                actor: PERSON,
+                request: Box::new(rename()),
+            }
+        );
+        assert_eq!(read, kith_ipc::Request::Status);
+        assert_eq!(with_actor(rename()), rename(), "the local link's session");
+    }
+
+    #[test]
+    fn the_daemons_challenge_is_the_bytes_the_passkey_signs() -> Result<(), ApiError> {
+        let prepared = from_ipc(kith_ipc::Response::AuthorityPrepared {
+            op_bytes: vec![1, 2],
+            challenge: webauthn::b64(&[9; 32]),
+        })?;
+        assert_eq!(
+            prepared,
+            Reply::Prepared(Prepared {
+                op_bytes: vec![1, 2],
+                challenge: vec![9; 32],
+            })
+        );
+        let words = from_ipc(kith_ipc::Response::RecoveryKey {
+            words: "amber birch".to_owned(),
+        })?;
+        assert_eq!(
+            words,
+            Reply::RecoveryKey(vec!["amber".to_owned(), "birch".to_owned()])
+        );
+        Ok(())
+    }
 }

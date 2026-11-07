@@ -112,6 +112,7 @@ fn every_command_parses_into_the_right_request() {
             vec!["peers", "home", "--json"],
             Ok(Request::Peers { network: NET }),
         ),
+        (vec!["people"], Ok(Request::Accounts { network: NET })),
         (
             vec!["dns", "set", "home", "nas", "A", "100.64.0.9"],
             Ok(Request::SetRecord {

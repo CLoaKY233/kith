@@ -6,9 +6,9 @@ use alloc::vec::Vec;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
 use kith_crypto::VerifyingKey;
-use kith_types::{NetworkId, NodeId, OpId, Timestamp};
+use kith_types::{AccountId, NetworkId, NodeId, OpId, Timestamp};
 
-use crate::NetworkParams;
+use crate::{Credential, NetworkParams, Role};
 
 /// A member device.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +57,19 @@ pub struct Invite {
     pub created: Timestamp,
 }
 
+/// A person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    /// Their name.
+    pub name: String,
+    /// What they may do.
+    pub role: Role,
+    /// Their passkeys; the first one's key names the account.
+    pub credentials: Vec<Credential>,
+    /// The op that added them.
+    pub added_by: OpId,
+}
+
 /// The state of a network, derived deterministically from the set of ops alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkView {
@@ -69,6 +82,11 @@ pub struct NetworkView {
     pub(crate) invites: BTreeMap<[u8; 32], Invite>,
     pub(crate) records: BTreeMap<String, Vec<u8>>,
     pub(crate) heads: Vec<OpId>,
+    pub(crate) accounts: BTreeMap<AccountId, Account>,
+    pub(crate) consoles: BTreeSet<NodeId>,
+    pub(crate) recovery_key: Option<VerifyingKey>,
+    pub(crate) device_owners: BTreeMap<NodeId, AccountId>,
+    pub(crate) account_changes: Vec<OpId>,
 }
 
 impl NetworkView {
@@ -120,5 +138,49 @@ impl NetworkView {
     /// The DAG tips, sorted.
     pub fn heads(&self) -> &[OpId] {
         &self.heads
+    }
+
+    /// The people; empty in a network that never added one.
+    pub const fn accounts(&self) -> &BTreeMap<AccountId, Account> {
+        &self.accounts
+    }
+
+    /// One person.
+    pub fn account(&self, account: &AccountId) -> Option<&Account> {
+        self.accounts.get(account)
+    }
+
+    /// The devices authorized to sign admin ops on behalf of people.
+    pub const fn consoles(&self) -> &BTreeSet<NodeId> {
+        &self.consoles
+    }
+
+    /// Whether `device` is an authorized console.
+    pub fn is_console(&self, device: &NodeId) -> bool {
+        self.consoles.contains(device)
+    }
+
+    /// The recovery key's public half, once set.
+    pub const fn recovery_key(&self) -> Option<&VerifyingKey> {
+        self.recovery_key.as_ref()
+    }
+
+    /// Whose each member device is, for those assigned to a current account.
+    pub const fn device_owners(&self) -> &BTreeMap<NodeId, AccountId> {
+        &self.device_owners
+    }
+
+    /// The member devices assigned to `account`.
+    pub fn devices_of<'a>(&'a self, account: &'a AccountId) -> impl Iterator<Item = NodeId> + 'a {
+        self.device_owners
+            .iter()
+            .filter(move |(_, owner)| *owner == account)
+            .map(|(device, _)| *device)
+    }
+
+    /// The changes to people, consoles and the recovery key that took effect, oldest
+    /// first: they form one chain, so an op missing here was refused or lost a race.
+    pub fn account_changes(&self) -> &[OpId] {
+        &self.account_changes
     }
 }

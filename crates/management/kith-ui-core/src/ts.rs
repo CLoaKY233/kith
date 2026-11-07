@@ -43,6 +43,10 @@ pub fn declarations() -> String {
     push::<kith_ipc::LinkReport>(&mut out, &config);
     push::<kith_ipc::PendingJoin>(&mut out, &config);
     push::<kith_ipc::BlockedInfo>(&mut out, &config);
+    push::<kith_ipc::AccountRole>(&mut out, &config);
+    push::<kith_ipc::CredentialInfo>(&mut out, &config);
+    push::<kith_ipc::AccountInfo>(&mut out, &config);
+    push::<kith_ipc::AccountsInfo>(&mut out, &config);
     push::<wire::Versions>(&mut out, &config);
     push::<wire::Role>(&mut out, &config);
     push::<wire::Membership>(&mut out, &config);

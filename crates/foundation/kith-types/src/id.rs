@@ -3,6 +3,7 @@
 //! - [`NodeId`]: a device's long-term Ed25519 public key. The key *is* the identity.
 //! - [`NetworkId`]: the hash of a network's genesis operation.
 //! - [`OpId`]: the content hash of one ledger operation.
+//! - [`AccountId`]: a person's account, the hash of their first passkey's public key.
 
 use core::fmt;
 use core::str::FromStr;
@@ -130,6 +131,11 @@ define_id!(
 define_id!(
     /// The content hash of one signed ledger operation.
     OpId
+);
+
+define_id!(
+    /// A person's account: the hash of the public key of their first passkey.
+    AccountId
 );
 
 #[cfg(test)]

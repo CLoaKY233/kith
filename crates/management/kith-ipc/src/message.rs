@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use core::net::{Ipv4Addr, Ipv6Addr};
 
-use kith_types::{NetworkId, NodeId};
+use kith_types::{AccountId, NetworkId, NodeId};
 use serde::{Deserialize, Serialize};
 
 /// A command from the CLI to the daemon.
@@ -253,6 +253,198 @@ pub enum Request {
         /// The imported network.
         network: NetworkId,
     },
+    /// Lists a network's people, its authorized consoles, and whether it has a recovery key.
+    Accounts {
+        /// Network to list.
+        network: NetworkId,
+    },
+    /// Adds a network's first person, as its owner, signed by this device as an admin.
+    /// Valid only while the network has no people; everyone after needs an approval
+    /// through [`Request::PrepareAuthority`].
+    AddAccount {
+        /// The network.
+        network: NetworkId,
+        /// The person's name.
+        name: String,
+        /// Their role; must be [`AccountRole::Owner`].
+        role: AccountRole,
+        /// Their first passkey, whose key names the account.
+        credential: PasskeyCredential,
+    },
+    /// Records whose device `device` is; admins only, or a console acting for one.
+    AssignDevice {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        device: NodeId,
+        /// The person it belongs to.
+        account: AccountId,
+    },
+    /// Drafts a change to people or consoles, authored by this device, for a passkey (or
+    /// the recovery words) to approve. Nothing changes until it is submitted.
+    PrepareAuthority {
+        /// The network.
+        network: NetworkId,
+        /// The change.
+        change: AuthorityChange,
+    },
+    /// Publishes a change from [`Response::AuthorityPrepared`] with a passkey's assertion of
+    /// its challenge. Refused, and not published, unless the network accepts it.
+    SubmitAuthority {
+        /// The network.
+        network: NetworkId,
+        /// `op_bytes` from [`Response::AuthorityPrepared`], unchanged.
+        op_bytes: Vec<u8>,
+        /// The passkey's assertion.
+        assertion: PasskeyAssertion,
+    },
+    /// Publishes a change from [`Response::AuthorityPrepared`] approved by the network's
+    /// recovery key, which counts as an owner for adding people and authorizing consoles.
+    RecoverAuthority {
+        /// The network.
+        network: NetworkId,
+        /// `op_bytes` from [`Response::AuthorityPrepared`], unchanged.
+        op_bytes: Vec<u8>,
+        /// The recovery words.
+        words: String,
+    },
+    /// Creates the network's recovery key and returns it once as words; the network keeps
+    /// only its public half. Valid only before the network has any people, so ask for it
+    /// before the first [`Request::AddAccount`].
+    RecoveryKey {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Runs an admin request on behalf of a person: every change it makes names `actor`,
+    /// and is valid only while `actor` is an owner or admin. Lets an authorized console
+    /// that is not an admin device make everyday changes.
+    AsActor {
+        /// The person who asked.
+        actor: AccountId,
+        /// The request; not itself an `AsActor`.
+        request: Box<Self>,
+    },
+}
+
+/// A person's role in a network, from [`Request::Accounts`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(rename_all = "snake_case"))]
+pub enum AccountRole {
+    /// Everything, including people's roles and consoles.
+    Owner,
+    /// Everyday changes, and adding people other than owners.
+    Admin,
+    /// Uses the network; changes nothing.
+    Member,
+}
+
+/// A passkey as registered: what WebAuthn's `create()` returned, in the ledger's terms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasskeyCredential {
+    /// The credential id (WebAuthn's raw id).
+    pub credential_id: Vec<u8>,
+    /// The P-256 public key as an uncompressed SEC1 point: `0x04 || x || y`, 65 bytes.
+    pub public_key: Vec<u8>,
+    /// The relying party id it was created for, such as `vpn.example.com`.
+    pub rp_id: String,
+}
+
+/// A passkey's answer to WebAuthn's `get()` with a challenge from
+/// [`Response::AuthorityPrepared`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasskeyAssertion {
+    /// The account the passkey belongs to.
+    pub account: AccountId,
+    /// The credential id (WebAuthn's raw id).
+    pub credential_id: Vec<u8>,
+    /// `authenticatorData`, unchanged.
+    pub authenticator_data: Vec<u8>,
+    /// `clientDataJSON`, unchanged.
+    pub client_data_json: Vec<u8>,
+    /// `signature`: ES256, DER-encoded, unchanged.
+    pub signature: Vec<u8>,
+}
+
+/// A change to people or consoles, for [`Request::PrepareAuthority`]. Owners may make any;
+/// admins may add and remove people other than owners and revoke consoles; the recovery
+/// key may add people and authorize consoles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthorityChange {
+    /// Adds a person.
+    AddAccount {
+        /// Their name.
+        name: String,
+        /// Their role.
+        role: AccountRole,
+        /// Their first passkey.
+        credential: PasskeyCredential,
+    },
+    /// Removes a person and every device assigned to them. The last owner stays.
+    RemoveAccount {
+        /// The person.
+        account: AccountId,
+    },
+    /// Changes a person's role; owners only. The last owner stays one.
+    SetRole {
+        /// The person.
+        account: AccountId,
+        /// Their new role.
+        role: AccountRole,
+    },
+    /// Lets a device sign everyday changes on behalf of people: the Console's device.
+    AuthorizeConsole {
+        /// The device.
+        device: NodeId,
+    },
+    /// Takes that power away again.
+    RevokeConsole {
+        /// The device.
+        device: NodeId,
+    },
+}
+
+/// A network's people, from [`Request::Accounts`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AccountsInfo {
+    /// Everyone, by name.
+    pub accounts: Vec<AccountInfo>,
+    /// The devices authorized to act for people.
+    #[cfg_attr(feature = "ts", ts(type = "Array<string>"))]
+    pub consoles: Vec<NodeId>,
+    /// Whether the network has a recovery key.
+    pub recovery_set: bool,
+}
+
+/// One person in [`AccountsInfo`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct AccountInfo {
+    /// The account.
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
+    pub id: AccountId,
+    /// Their name.
+    pub name: String,
+    /// Their role.
+    pub role: AccountRole,
+    /// Their passkeys.
+    pub credentials: Vec<CredentialInfo>,
+    /// The member devices assigned to them.
+    #[cfg_attr(feature = "ts", ts(type = "Array<string>"))]
+    pub devices: Vec<NodeId>,
+}
+
+/// One passkey of an [`AccountInfo`], enough to check a login assertion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct CredentialInfo {
+    /// The credential id.
+    pub credential_id: Vec<u8>,
+    /// The P-256 public key, uncompressed SEC1.
+    pub public_key: Vec<u8>,
+    /// The relying party id.
+    pub rp_id: String,
 }
 
 /// An invite that can still admit devices, from [`Request::ListInvites`].
@@ -493,6 +685,31 @@ pub enum Response {
     ImportUsed,
     /// Answers [`Request::RemoveImport`].
     ImportRemoved,
+    /// Answers [`Request::Accounts`].
+    Accounts(AccountsInfo),
+    /// Answers [`Request::AddAccount`].
+    AccountAdded {
+        /// The new account.
+        account: AccountId,
+    },
+    /// Answers [`Request::AssignDevice`].
+    DeviceAssigned,
+    /// Answers [`Request::PrepareAuthority`].
+    AuthorityPrepared {
+        /// The drafted op, to send back with its approval.
+        op_bytes: Vec<u8>,
+        /// What the passkey signs: the WebAuthn `challenge` as unpadded base64url. It is
+        /// also exactly what the assertion's client data must carry.
+        challenge: String,
+    },
+    /// Answers [`Request::SubmitAuthority`] and [`Request::RecoverAuthority`]: the change
+    /// took effect.
+    AuthorityApplied,
+    /// Answers [`Request::RecoveryKey`]. Shown once: nothing else keeps the words.
+    RecoveryKey {
+        /// The recovery code, as space-separated words.
+        words: String,
+    },
 }
 
 /// One device's report of the peers it reaches, from [`Response::Topology`].

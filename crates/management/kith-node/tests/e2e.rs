@@ -8,11 +8,15 @@ mod tests {
     use std::path::PathBuf;
 
     use kith_config::Config;
+    use kith_crypto::webauthn::sha256;
     use kith_identity::{BootstrapAddr, InviteToken};
-    use kith_ipc::{EntryKind, PeerInfo, Request, Response};
+    use kith_ipc::{
+        AccountRole, AuthorityChange, EntryKind, PasskeyAssertion, PasskeyCredential, PeerInfo,
+        Request, Response,
+    };
     use kith_node::{Node, NodeHandle, NodeOptions, TunMode};
     use kith_sys::NoopSystem;
-    use kith_types::{NetworkId, NodeId};
+    use kith_types::{AccountId, NetworkId, NodeId};
     use tokio::net::UdpSocket;
     use tokio::time::{sleep, timeout};
 
@@ -1854,6 +1858,135 @@ mod tests {
         let seen = peer_info(&c, network, "lounge").await?;
         if seen.node != beta {
             return Err("gamma sees another device as lounge".into());
+        }
+        shutdown([a, b, c]).await
+    }
+
+    /// A passkey answering WebAuthn `get()` for `challenge` as a browser on `rp` would.
+    fn passkey_assertion(
+        secret: &p256::ecdsa::SigningKey,
+        account: AccountId,
+        credential_id: &[u8],
+        challenge: &str,
+    ) -> PasskeyAssertion {
+        use p256::ecdsa::signature::Signer as _;
+        let rp = "vpn.example.com";
+        let mut authenticator_data = sha256(rp.as_bytes()).to_vec();
+        authenticator_data.extend([0x05, 0, 0, 0, 1]);
+        let client_data_json = format!(
+            r#"{{"type":"webauthn.get","challenge":"{challenge}","origin":"https://{rp}"}}"#
+        )
+        .into_bytes();
+        let mut message = authenticator_data.clone();
+        message.extend(sha256(&client_data_json));
+        let signature: p256::ecdsa::DerSignature = secret.sign(&message);
+        PasskeyAssertion {
+            account,
+            credential_id: credential_id.to_vec(),
+            authenticator_data,
+            client_data_json,
+            signature: signature.as_bytes().to_vec(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_console_acts_for_its_owner_and_every_member_sees_it() -> TestResult {
+        let a = start().await?;
+        let b = start().await?;
+        let c = start().await?;
+        let network = create(&a, "alpha").await?;
+        join(&a, &b, network, "console").await?;
+        join(&a, &c, network, "gamma").await?;
+        let console = node_id(&b).await?;
+        let gamma = peer_info(&a, network, "gamma").await?.node;
+
+        // The founding device adds the owner; her passkey lives in a browser.
+        let secret = p256::ecdsa::SigningKey::from_slice(&[7; 32])?;
+        let credential = PasskeyCredential {
+            credential_id: vec![1, 2, 3],
+            public_key: secret.verifying_key().to_sec1_bytes().to_vec(),
+            rp_id: "vpn.example.com".into(),
+        };
+        let added = a
+            .request(Request::AddAccount {
+                network,
+                name: "ann".into(),
+                role: AccountRole::Owner,
+                credential,
+            })
+            .await;
+        let Response::AccountAdded { account: ann } = added else {
+            return Err(format!("adding the owner failed: {added:?}").into());
+        };
+
+        // The console asks for her approval once it knows her.
+        let rename = |name: &str| Request::RenameDevice {
+            network,
+            node: gamma,
+            name: name.into(),
+        };
+        let mut prepared = None;
+        for _ in 0..100 {
+            let request = Request::PrepareAuthority {
+                network,
+                change: AuthorityChange::AuthorizeConsole { device: console },
+            };
+            if let Response::Accounts(info) = b.request(Request::Accounts { network }).await
+                && info.accounts.iter().any(|person| person.id == ann)
+                && let Response::AuthorityPrepared {
+                    op_bytes,
+                    challenge,
+                } = b.request(request).await
+            {
+                prepared = Some((op_bytes, challenge));
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        let (op_bytes, challenge) = prepared.ok_or("the console never learned of ann")?;
+        let forged = b
+            .request(Request::SubmitAuthority {
+                network,
+                op_bytes: op_bytes.clone(),
+                assertion: passkey_assertion(&secret, ann, &[1, 2, 3], "c29tZXRoaW5nIGVsc2U"),
+            })
+            .await;
+        if forged == Response::AuthorityApplied {
+            return Err("an assertion of another challenge was accepted".into());
+        }
+        let submitted = b
+            .request(Request::SubmitAuthority {
+                network,
+                op_bytes,
+                assertion: passkey_assertion(&secret, ann, &[1, 2, 3], &challenge),
+            })
+            .await;
+        if submitted != Response::AuthorityApplied {
+            return Err(format!("authorizing the console failed: {submitted:?}").into());
+        }
+
+        // Not an admin device, it renames only on ann's behalf.
+        if b.request(rename("sneaky")).await == Response::DeviceRenamed {
+            return Err("a console renamed a device for nobody".into());
+        }
+        let renamed = b
+            .request(Request::AsActor {
+                actor: ann,
+                request: Box::new(rename("lounge")),
+            })
+            .await;
+        if renamed != Response::DeviceRenamed {
+            return Err(format!("the console's rename failed: {renamed:?}").into());
+        }
+        let seen = peer_info(&a, network, "lounge").await?;
+        if seen.node != gamma {
+            return Err("alpha sees another device as lounge".into());
+        }
+        let Response::Accounts(info) = c.request(Request::Accounts { network }).await else {
+            return Err("listing people failed".into());
+        };
+        if !info.consoles.contains(&console) || info.accounts.len() != 1 {
+            return Err(format!("gamma sees other people: {info:?}").into());
         }
         shutdown([a, b, c]).await
     }

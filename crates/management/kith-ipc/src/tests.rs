@@ -4,13 +4,17 @@ use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use kith_types::{NetworkId, NodeId};
+use kith_types::{AccountId, NetworkId, NodeId};
 use proptest::prelude::*;
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 
 use crate::codec::{Framed, decode, encode};
 use crate::message::ServerMessage;
+use crate::{
+    AccountInfo, AccountRole, AccountsInfo, AuthorityChange, CredentialInfo, PasskeyAssertion,
+    PasskeyCredential,
+};
 use crate::{
     BlockedInfo, DnsRecord, Entry, EntryKind, ErrorCode, Event, ImportedInfo, InviteInfo, IpcError,
     LinkInfo, LinkReport, MAX_FRAME_LEN, MAX_RESPONSE_LEN, NetworkSummary, PROTOCOL_VERSION,
@@ -32,7 +36,7 @@ fn golden_bytes() {
     let request = Request::Peers {
         network: NetworkId::from_bytes([0xab; 32]),
     };
-    let mut expected = vec![37, b'k', b't', 0x70, 14, 6];
+    let mut expected = vec![37, b'k', b't', 0x70, 15, 6];
     expected.extend([0xab; 32]);
     assert_eq!(encode(&request).unwrap(), expected);
 
@@ -42,7 +46,7 @@ fn golden_bytes() {
     });
     assert_eq!(
         encode(&response).unwrap(),
-        [10, b'k', b't', 0x70, 14, 0, 18, 3, 2, b'n', b'o']
+        [10, b'k', b't', 0x70, 15, 0, 18, 3, 2, b'n', b'o']
     );
 
     let peers = ServerMessage::Response(Response::Peers(vec![PeerInfo {
@@ -60,7 +64,7 @@ fn golden_bytes() {
         gateway: Some("e".to_owned()),
         path_mtu: Some(1216),
     }]));
-    let mut expected = vec![64, b'k', b't', 0x70, 14, 0, 6, 1];
+    let mut expected = vec![64, b'k', b't', 0x70, 15, 0, 6, 1];
     expected.extend([0x11; 32]);
     expected.extend([
         1, b'a', 1, b'b', 1, 0, 0, 1, 0xac, 0x02, 1, 1, b'c', 1, 0x80, 0x01, 1, 1, b'D', 1, 1,
@@ -537,6 +541,14 @@ fn request_index(request: &Request) -> u8 {
         Request::ListExits { .. } => 35,
         Request::UseImport { .. } => 36,
         Request::RemoveImport { .. } => 37,
+        Request::Accounts { .. } => 38,
+        Request::AddAccount { .. } => 39,
+        Request::AssignDevice { .. } => 40,
+        Request::PrepareAuthority { .. } => 41,
+        Request::SubmitAuthority { .. } => 42,
+        Request::RecoverAuthority { .. } => 43,
+        Request::RecoveryKey { .. } => 44,
+        Request::AsActor { .. } => 45,
     }
 }
 
@@ -582,6 +594,12 @@ fn response_index(response: &Response) -> u8 {
         Response::Exits(_) => 37,
         Response::ImportUsed => 38,
         Response::ImportRemoved => 39,
+        Response::Accounts(_) => 40,
+        Response::AccountAdded { .. } => 41,
+        Response::DeviceAssigned => 42,
+        Response::AuthorityPrepared { .. } => 43,
+        Response::AuthorityApplied => 44,
+        Response::RecoveryKey { .. } => 45,
     }
 }
 
@@ -614,6 +632,7 @@ fn entry_index(kind: &EntryKind) -> u8 {
 
 const NET: NetworkId = NetworkId::from_bytes([0xab; 32]);
 const NODE: NodeId = NodeId::from_bytes([0x11; 32]);
+const ACCOUNT: AccountId = AccountId::from_bytes([0x33; 32]);
 
 #[expect(clippy::too_many_lines, reason = "one sample per request variant")]
 fn requests() -> Vec<Request> {
@@ -733,7 +752,59 @@ fn requests() -> Vec<Request> {
             active: true,
         },
         Request::RemoveImport { network: NET },
+        Request::Accounts { network: NET },
+        Request::AddAccount {
+            network: NET,
+            name: s("ann"),
+            role: AccountRole::Owner,
+            credential: sample_credential(),
+        },
+        Request::AssignDevice {
+            network: NET,
+            device: NODE,
+            account: ACCOUNT,
+        },
+        Request::PrepareAuthority {
+            network: NET,
+            change: AuthorityChange::SetRole {
+                account: ACCOUNT,
+                role: AccountRole::Admin,
+            },
+        },
+        Request::SubmitAuthority {
+            network: NET,
+            op_bytes: vec![1, 2],
+            assertion: PasskeyAssertion {
+                account: ACCOUNT,
+                credential_id: vec![3],
+                authenticator_data: vec![4, 5],
+                client_data_json: b"{}".to_vec(),
+                signature: vec![6],
+            },
+        },
+        Request::RecoverAuthority {
+            network: NET,
+            op_bytes: vec![1, 2],
+            words: s("acorn actor"),
+        },
+        Request::RecoveryKey { network: NET },
+        Request::AsActor {
+            actor: ACCOUNT,
+            request: Box::new(Request::RenameDevice {
+                network: NET,
+                node: NODE,
+                name: s("nas"),
+            }),
+        },
     ]
+}
+
+fn sample_credential() -> PasskeyCredential {
+    PasskeyCredential {
+        credential_id: vec![7; 4],
+        public_key: vec![4; 65],
+        rp_id: "vpn.example.com".to_owned(),
+    }
 }
 
 #[expect(clippy::too_many_lines, reason = "one sample per response variant")]
@@ -910,6 +981,31 @@ fn responses() -> Vec<Response> {
         Response::Exits(vec![NODE]),
         Response::ImportUsed,
         Response::ImportRemoved,
+        Response::Accounts(AccountsInfo {
+            accounts: vec![AccountInfo {
+                id: ACCOUNT,
+                name: s("ann"),
+                role: AccountRole::Owner,
+                credentials: vec![CredentialInfo {
+                    credential_id: vec![7; 4],
+                    public_key: vec![4; 65],
+                    rp_id: s("vpn.example.com"),
+                }],
+                devices: vec![NODE],
+            }],
+            consoles: vec![NODE],
+            recovery_set: true,
+        }),
+        Response::AccountAdded { account: ACCOUNT },
+        Response::DeviceAssigned,
+        Response::AuthorityPrepared {
+            op_bytes: vec![1, 2],
+            challenge: s("AAEC"),
+        },
+        Response::AuthorityApplied,
+        Response::RecoveryKey {
+            words: s("acorn actor"),
+        },
     ]
 }
 
@@ -1089,7 +1185,7 @@ fn every_variant_keeps_its_wire_index_and_bytes() {
     }
     assert_eq!(
         (PROTOCOL_VERSION, fingerprint(&all)),
-        (14, 0x08ca_916e_b999_e4a6),
+        (15, 0x308d_b488_a84d_fa05),
         "the wire format changed"
     );
 }

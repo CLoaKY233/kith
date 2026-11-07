@@ -111,4 +111,15 @@ pub enum LedgerError {
     /// A WireGuard client's public key is all zeros.
     #[error("invalid WireGuard client key")]
     BadClientKey,
+    /// A passkey's id or relying party is empty or too long, or its key is not an
+    /// uncompressed P-256 point.
+    #[error("invalid passkey credential")]
+    BadCredential,
+    /// A passkey assertion's fields are empty or too long.
+    #[error("malformed passkey assertion")]
+    BadAssertion,
+    /// The op cannot be wrapped that way: only account changes take an approval, and only
+    /// everyday admin changes take an actor.
+    #[error("this op cannot be wrapped that way")]
+    NotWrappable,
 }

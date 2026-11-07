@@ -220,6 +220,8 @@ pub(crate) struct State {
     /// Phone configs made through this page, per network id and device id, each as the
     /// ids print.
     pub(crate) phones: Mutex<BTreeMap<(String, String), HeldPhone>>,
+    /// Recovery words made during setup, per owner, until the setup page shows them once.
+    pub(crate) recovery: Mutex<BTreeMap<String, Vec<String>>>,
 }
 
 impl State {
@@ -229,6 +231,7 @@ impl State {
             prompt: tokio::sync::Mutex::new(()),
             host: status::host(),
             phones: Mutex::new(BTreeMap::new()),
+            recovery: Mutex::new(BTreeMap::new()),
         }
     }
 

@@ -5,9 +5,10 @@ use kith_channel::Presence;
 use kith_config::WgQuickConfig;
 use kith_identity::{InviteToken, RequestCode};
 use kith_ipc::Response;
+use kith_ledger::{Approval, Credential, OpBody, UnsignedOp};
 use kith_netmon::Change;
 use kith_policy::Policy;
-use kith_types::{NetworkId, NodeId};
+use kith_types::{AccountId, NetworkId, NodeId};
 use tokio::sync::oneshot;
 
 /// Why the node failed.
@@ -334,6 +335,57 @@ pub(crate) enum Action {
     ListExits {
         /// The network.
         network: NetworkId,
+    },
+    /// List a network's people, consoles and whether it has a recovery key.
+    Accounts {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Add a network's first owner, signed by this device as an admin.
+    AddAccount {
+        /// The network.
+        network: NetworkId,
+        /// The person's name.
+        name: String,
+        /// Their first passkey.
+        credential: Credential,
+    },
+    /// Record whose device a device is; admins only.
+    AssignDevice {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        device: NodeId,
+        /// The person.
+        account: AccountId,
+    },
+    /// Draft a change to people or consoles for approval.
+    PrepareAuthority {
+        /// The network.
+        network: NetworkId,
+        /// The plain change.
+        change: Box<OpBody>,
+    },
+    /// Publish a drafted change with its approval.
+    SubmitAuthority {
+        /// The network.
+        network: NetworkId,
+        /// The draft, as prepared.
+        draft: Box<UnsignedOp>,
+        /// The passkey's or recovery key's approval of the draft's id.
+        approval: Box<Approval>,
+    },
+    /// Create the recovery key and return its words.
+    RecoveryKey {
+        /// The network.
+        network: NetworkId,
+    },
+    /// Run an action whose admin ops are made for a person.
+    AsActor {
+        /// The person.
+        actor: AccountId,
+        /// The action.
+        action: Box<Self>,
     },
 }
 

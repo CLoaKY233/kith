@@ -4,8 +4,8 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 use kith_ipc::{
-    BlockedInfo, DnsRecord, ImportedInfo, IpcError, LinkReport, PathKind, PeerInfo, RecordInfo,
-    Response, Status,
+    AccountRole, AccountsInfo, BlockedInfo, DnsRecord, ImportedInfo, IpcError, LinkReport,
+    PathKind, PeerInfo, RecordInfo, Response, Status,
 };
 use kith_types::NodeId;
 
@@ -196,6 +196,66 @@ fn link_table(out: &mut impl Write, reports: &[LinkReport]) -> io::Result<()> {
         write_row(out, "", row, &widths)?;
     }
     Ok(())
+}
+
+/// `kith people`: one row per person, then the consoles and the recovery key.
+pub(crate) fn people(
+    out: &mut impl Write,
+    info: &AccountsInfo,
+    peers: &[PeerInfo],
+) -> io::Result<()> {
+    const HEADER: [&str; 4] = ["NAME", "ROLE", "PASSKEYS", "DEVICES"];
+    let device = |node: &NodeId| {
+        peers
+            .iter()
+            .find(|peer| peer.node == *node)
+            .map_or_else(|| node.short().to_string(), |peer| peer.name.clone())
+    };
+    if info.accounts.is_empty() {
+        writeln!(out, "no people yet; the Console adds the first owner")?;
+    } else {
+        let rows: Vec<[String; 4]> = info
+            .accounts
+            .iter()
+            .map(|person| {
+                let role = match person.role {
+                    AccountRole::Owner => "owner",
+                    AccountRole::Admin => "admin",
+                    AccountRole::Member => "member",
+                };
+                let devices: Vec<String> = person.devices.iter().map(device).collect();
+                [
+                    person.name.clone(),
+                    role.to_owned(),
+                    person.credentials.len().to_string(),
+                    if devices.is_empty() {
+                        "-".to_owned()
+                    } else {
+                        devices.join(", ")
+                    },
+                ]
+            })
+            .collect();
+        let mut widths = HEADER.map(str::len);
+        for row in &rows {
+            for (width, cell) in widths.iter_mut().zip(row) {
+                *width = (*width).max(cell.chars().count());
+            }
+        }
+        write_row(out, "", &HEADER, &widths)?;
+        for row in &rows {
+            write_row(out, "", row, &widths)?;
+        }
+    }
+    if !info.consoles.is_empty() {
+        let consoles: Vec<String> = info.consoles.iter().map(device).collect();
+        writeln!(out, "\nconsoles: {}", printable(&consoles.join(", ")))?;
+    }
+    writeln!(
+        out,
+        "recovery key: {}",
+        if info.recovery_set { "set" } else { "not set" }
+    )
 }
 
 fn record_parts(record: &DnsRecord) -> (&'static str, String) {

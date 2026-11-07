@@ -762,6 +762,70 @@ last_ms: number,
 rule: string, };
 
 /**
+ * A person's role in a network, from [`Request::Accounts`].
+ */
+export type AccountRole = "owner" | "admin" | "member";
+
+/**
+ * One passkey of an [`AccountInfo`], enough to check a login assertion.
+ */
+export type CredentialInfo = { 
+/**
+ * The credential id.
+ */
+credential_id: Array<number>, 
+/**
+ * The P-256 public key, uncompressed SEC1.
+ */
+public_key: Array<number>, 
+/**
+ * The relying party id.
+ */
+rp_id: string, };
+
+/**
+ * One person in [`AccountsInfo`].
+ */
+export type AccountInfo = { 
+/**
+ * The account.
+ */
+id: string, 
+/**
+ * Their name.
+ */
+name: string, 
+/**
+ * Their role.
+ */
+role: AccountRole, 
+/**
+ * Their passkeys.
+ */
+credentials: Array<CredentialInfo>, 
+/**
+ * The member devices assigned to them.
+ */
+devices: Array<string>, };
+
+/**
+ * A network's people, from [`Request::Accounts`].
+ */
+export type AccountsInfo = { 
+/**
+ * Everyone, by name.
+ */
+accounts: Array<AccountInfo>, 
+/**
+ * The devices authorized to act for people.
+ */
+consoles: Array<string>, 
+/**
+ * Whether the network has a recovery key.
+ */
+recovery_set: boolean, };
+
+/**
  * Versions of this server and of the daemon it talks to.
  */
 export type Versions = { 

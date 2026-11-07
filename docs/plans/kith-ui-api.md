@@ -152,7 +152,7 @@ In public mode the guards above change:
 
 A passkey session lasts 12 hours after its last request (it slides, written back at most once a minute), and ends at sign-out or when the person is removed. Sessions live in the Console's database as the SHA-256 of their secret.
 
-With a person's session, a change other than the ones they handle themselves (sign-out, device codes, people, authority prompts) needs an owner or admin; a member gets 403 `permission_denied`. Every admin request the Console sends the daemon carries the person as its `actor` once `kith-ipc` has the field (`accounts::with_actor` is the one place to set it).
+With a person's session, a change other than the ones they handle themselves (sign-out, device codes, people, authority prompts) needs an owner or admin; a member gets 403 `permission_denied`. Every request a signed-in person makes that changes the network reaches the daemon as `AsActor {actor, request}`, so the change names them and is valid only while they are an owner or admin; reads, requests about this device alone and the local link's session go unwrapped (`accounts::with_actor`).
 
 `GET /api/status` and the boot snapshot's `status` gain `mode: "local" | "public"` and `me: {id, name, role} | null` (`null` for the local link's session).
 
@@ -184,7 +184,7 @@ The setup link is `https://<domain>/setup/<token>`: `kith-ui --public` prints a 
 |---|---|---|---|
 | GET | `/api/me` | | `MeView`; `person` is `null` for the local link's session |
 | POST | `/api/logout` | `{}` | 204, the cookie cleared, the session ended |
-| POST | `/api/setup/recovery` | `{}` | `RecoveryWords {words}`, owners only, once; 409 after |
+| POST | `/api/setup/recovery` | `{}` | `RecoveryWords {words}`: the recovery code setup made (with `RecoveryKey`, just before the owner's `AddAccount`, as the ledger requires), shown once to that owner at the end of setup and kept only in memory until then; 409 after, or after a restart |
 | GET | `/api/people` | | `[PersonView {id, name, role, state, devices, passkeys, invited_by, expires_at_ms, me}]`: everyone in the ledger (`state: "active"`), then, for owners and admins, invited people (`invited`, or `registered` once they made a passkey; their `id` starts with `p-`) |
 | POST | `/api/people` | `PersonIn {name, role}` | `PersonInvite {person, link, expires_at_ms, qr_svg}`; `qr_svg` may be `null`. Admins invite members; owners anyone |
 | POST | `/api/people/<id>/role` | `RoleIn {role}` | `AuthorityChallenge`; the same as `set_role` below |
@@ -203,7 +203,7 @@ The setup link is `https://<domain>/setup/<token>`: `kith-ui --public` prints a 
 - `{kind: "remove_person", person}` (or `remove_account`): admins remove members, owners anyone. Ends the person's sessions.
 - `{kind: "authorize_console", device}`, `device` `null` for this one; `{kind: "revoke_console", device}`: owners only.
 
-The challenge of an authority prompt is the op hash the daemon gave for the change (`PrepareAuthority`); `allowCredentials` lists the signer's passkeys for this site. Finishing checks the answer against the signer's stored key, origin and relying party, then hands op and assertion to the daemon (`SubmitAuthority`), which checks again.
+The challenge of an authority prompt is the op hash the daemon gave for the change (`PrepareAuthority`); `allowCredentials` lists the signer's passkeys for this site. Finishing checks the answer against the signer's stored key, origin and relying party, then hands op and assertion to the daemon (`SubmitAuthority`), which checks again. A refused submit publishes nothing; when another change to people landed since `begin`, begin again.
 
 A device that joins with a code's invite is assigned to the code's person (`AssignDevice`) when its `device_joined` entry arrives and exactly one code of that network handed out an invite in the last 10 minutes without a device yet. A phone made through `/phones` by a signed-in person is assigned to them.
 
