@@ -435,15 +435,16 @@ fn to_ipc(request: Request) -> Result<kith_ipc::Request, ApiError> {
             role: to_role(role),
             credential: to_passkey(credential),
         },
+        // An everyday admin change: made on behalf of the signed-in person, like a rename.
         Request::AssignDevice {
             network,
             device,
             account,
-        } => kith_ipc::Request::AssignDevice {
+        } => with_actor(kith_ipc::Request::AssignDevice {
             network,
             device,
             account: account_id_of(&account)?,
-        },
+        }),
         Request::PrepareAuthority { network, change } => kith_ipc::Request::PrepareAuthority {
             network,
             change: to_change(change)?,
