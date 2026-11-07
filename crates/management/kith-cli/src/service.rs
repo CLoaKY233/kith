@@ -24,29 +24,45 @@ pub(crate) fn up(socket: &Path, out: &mut impl Write) -> Result<(), CliError> {
     if !is_root() {
         return rerun_as_root(&root_args("up", Some(socket)));
     }
+    let stale = is_stale(running_version(socket).as_deref());
     if cfg!(target_os = "macos") {
-        install_service(
+        let rewritten = install_service(
             Path::new(LAUNCHD_PLIST),
             LAUNCHD_TEMPLATE,
             "/usr/local/bin/kith",
         )?;
         run("launchctl", &["enable", LAUNCHD_LABEL])?;
-        if !succeeds("launchctl", &["print", LAUNCHD_LABEL]) {
+        let loaded = succeeds("launchctl", &["print", LAUNCHD_LABEL]);
+        if loaded && rewritten {
+            run("launchctl", &["bootout", LAUNCHD_LABEL])?;
+        }
+        if !loaded || rewritten {
             run("launchctl", &["bootstrap", "system", LAUNCHD_PLIST])?;
+        } else if stale {
+            run("launchctl", &["kickstart", "-k", LAUNCHD_LABEL])?;
         }
     } else if cfg!(target_os = "linux") {
-        if install_service(
+        let rewritten = install_service(
             Path::new(SYSTEMD_UNIT_PATH),
             SYSTEMD_TEMPLATE,
             "/usr/bin/kith",
-        )? {
+        )?;
+        if rewritten {
             run("systemctl", &["daemon-reload"])?;
         }
         run("systemctl", &["enable", "--now", SYSTEMD_UNIT])?;
+        if stale || rewritten {
+            run("systemctl", &["restart", SYSTEMD_UNIT])?;
+        }
     } else {
         return Err(unsupported());
     }
     wait_for(socket)?;
+    if is_stale(running_version(socket).as_deref()) {
+        return Err(CliError(
+            "the daemon still runs another version of kith; run `kith down` and `kith up`".into(),
+        ));
+    }
     writeln!(out, "kith is on")?;
     Ok(())
 }
@@ -66,6 +82,36 @@ fn wait_for(socket: &Path) -> Result<(), CliError> {
         std::thread::sleep(Duration::from_millis(200));
     }
     Ok(())
+}
+
+/// Whether the daemon answering with `running` must restart onto this binary: it reports
+/// a different version, or could not complete the handshake at all. `None` means it is
+/// not running.
+pub(crate) fn is_stale(running: Option<&str>) -> bool {
+    running.is_some_and(|version| version != env!("CARGO_PKG_VERSION"))
+}
+
+/// The version of the daemon on `socket`: `None` when nothing answers, an empty string
+/// when it answers but the handshake fails (another protocol version).
+fn running_version(socket: &Path) -> Option<String> {
+    if !answers(socket) {
+        return None;
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return None;
+    };
+    let version = runtime.block_on(async {
+        match tokio::time::timeout(Duration::from_secs(3), kith_ipc::IpcClient::connect(socket))
+            .await
+        {
+            Ok(Ok(client)) => client.daemon_version().to_owned(),
+            Ok(Err(_)) | Err(_) => String::new(),
+        }
+    });
+    Some(version)
 }
 
 /// Whether a daemon accepts connections on `socket`. A socket file alone proves nothing:
@@ -141,15 +187,13 @@ fn rerun_as_root(args: &[OsString]) -> Result<(), CliError> {
 }
 
 /// Writes the service definition at `path` from `template`, pointing it at this binary
-/// instead of `placeholder`, unless one is there already. Returns whether it wrote one.
+/// instead of `placeholder`, unless the same one is there already. A definition from an
+/// older release is replaced. Returns whether it wrote one.
 pub(crate) fn install_service(
     path: &Path,
     template: &str,
     placeholder: &str,
 ) -> Result<bool, CliError> {
-    if path.exists() {
-        return Ok(false);
-    }
     let me = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| CliError(format!("cannot find the kith binary: {e}")))?;
@@ -162,7 +206,11 @@ pub(crate) fn install_service(
                 me.display()
             ))
         })?;
-    std::fs::write(path, template.replace(placeholder, me))
+    let wanted = template.replace(placeholder, me);
+    if std::fs::read_to_string(path).is_ok_and(|have| have == wanted) {
+        return Ok(false);
+    }
+    std::fs::write(path, wanted)
         .map_err(|e| CliError(format!("cannot write {}: {e}", path.display())))?;
     Ok(true)
 }

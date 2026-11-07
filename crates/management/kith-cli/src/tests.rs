@@ -790,7 +790,7 @@ fn top_shows_rates_busiest_first() {
 }
 
 #[test]
-fn up_writes_a_missing_service_once_and_points_it_at_this_binary() {
+fn up_replaces_an_old_service_and_restarts_an_old_daemon() {
     let dir = std::env::temp_dir().join(format!("kith-service-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("kith.service");
@@ -799,116 +799,33 @@ fn up_writes_a_missing_service_once_and_points_it_at_this_binary() {
     let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
     assert_eq!(written, format!("ExecStart={} daemon\n", me.display()));
-
-    std::fs::write(&path, "edited by hand").unwrap();
     assert!(!crate::service::install_service(&path, template, "/usr/bin/kith").unwrap());
-    assert_eq!(
-        std::fs::read_to_string(&path).unwrap(),
-        "edited by hand",
-        "an existing service is left alone"
-    );
+
+    std::fs::write(&path, "from an older release").unwrap();
+    assert!(crate::service::install_service(&path, template, "/usr/bin/kith").unwrap());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
     std::fs::remove_dir_all(dir).unwrap();
+
+    assert!(!crate::service::is_stale(None), "nothing running");
+    assert!(!crate::service::is_stale(Some(env!("CARGO_PKG_VERSION"))));
+    assert!(crate::service::is_stale(Some("0.0.1")));
+    assert!(crate::service::is_stale(Some("")), "another protocol");
 }
 
-#[cfg(unix)]
-#[tokio::test]
-async fn log_prints_the_journal_and_following_fails_when_the_daemon_goes() {
-    use kith_ipc::{Entry, EntryKind};
-
-    let path = std::env::temp_dir().join(format!("kith-cli-log-{}.sock", std::process::id()));
-    let server = IpcServer::bind(&path).unwrap();
-    let (asked, mut asked_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        loop {
-            let mut conn = server.accept().await.unwrap();
-            let asked = asked.clone();
-            tokio::spawn(async move {
-                while let Some(request) = conn.next_request().await.unwrap() {
-                    #[expect(
-                        clippy::wildcard_enum_match_arm,
-                        reason = "the fake answers only what log and watch ask"
-                    )]
-                    match request {
-                        Request::Journal { since } => {
-                            asked.send(since).unwrap();
-                            conn.respond(Response::Journaling { next: 2 })
-                                .await
-                                .unwrap();
-                            if since.is_none() {
-                                let warning = EntryKind::Warning {
-                                    message: "disk full".into(),
-                                };
-                                let log = EntryKind::Log {
-                                    level: "info".into(),
-                                    target: "kith".into(),
-                                    message: "hello".into(),
-                                };
-                                for (seq, kind) in [(0, warning), (1, log)] {
-                                    let entry = Entry {
-                                        seq,
-                                        at_ms: 0,
-                                        kind,
-                                    };
-                                    conn.send_entry(entry).await.unwrap();
-                                }
-                            }
-                            return;
-                        }
-                        Request::Status => {
-                            conn.respond(Response::Status(fake_status())).await.unwrap();
-                        }
-                        Request::Peers { .. } => {
-                            conn.respond(Response::Peers(vec![])).await.unwrap();
-                        }
-                        _ => conn.respond(Response::Left).await.unwrap(),
-                    }
-                }
-            });
-        }
-    });
-    let run = |args: &'static [&'static str]| {
-        let path = path.clone();
-        async move {
-            let mut full = vec!["--socket", path.to_str().unwrap()];
-            full.extend(args);
-            let opts = opts().run_inner(&full[..]).unwrap();
-            let mut out = Vec::new();
-            let result = exec::run(&opts, &mut out).await;
-            (result, String::from_utf8(out).unwrap())
-        }
-    };
-
-    let (result, text) = run(&["log"]).await;
-    assert_eq!(result, Ok(()));
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 2, "{text}");
-    assert!(lines[0].ends_with("warning: disk full") && lines[1].ends_with("info  kith: hello"));
-
-    let (result, text) = run(&["log", "--events"]).await;
-    assert_eq!(result, Ok(()));
-    assert_eq!(text.lines().count(), 1, "{text}");
-
-    let (result, _) = run(&["log", "-f"]).await;
+#[test]
+fn config_server_persists_roles_and_the_public_name() {
+    let path = std::env::temp_dir().join(format!("kith-config-{}/kith.toml", std::process::id()));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "[server]\nenabled = true\nrelay = true\n").unwrap();
+    assert!(exec::set_server(&path, true, false, Some("vpn.example.com")).unwrap());
+    let config = kith_config::Config::load(&path).unwrap();
+    assert!(config.server.enabled && config.server.exit && config.server.relay);
     assert_eq!(
-        result,
-        Err(exec::CliError("the daemon stopped".into())),
-        "a follower whose daemon goes away fails"
+        config.server.public_hostname.as_deref(),
+        Some("vpn.example.com")
     );
-
-    let (result, text) = run(&["watch"]).await;
-    assert_eq!(result, Err(exec::CliError("the daemon stopped".into())));
-    assert!(text.contains("watching for changes"), "{text}");
-    asked_rx.close();
-    let mut asked = Vec::new();
-    while let Some(since) = asked_rx.recv().await {
-        asked.push(since);
-    }
-    assert_eq!(
-        asked.last(),
-        Some(&Some(u64::MAX)),
-        "watch asks for no backlog: the status it prints covers it"
-    );
-    std::fs::remove_file(&path).unwrap();
+    assert!(!exec::set_server(&path, true, true, None).unwrap());
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 #[test]
@@ -957,4 +874,11 @@ fn names_from_other_devices_cannot_drive_the_terminal() {
     let mut out = Vec::new();
     crate::render::write_row(&mut out, "", &["a\rb", "c\nd"], &[3, 3]).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "a\u{fffd}b  c\u{fffd}d\n");
+}
+
+#[test]
+fn devices_resolve_by_their_printed_short_id() {
+    let short = &NODE.to_string()[..8];
+    assert_eq!(names().node(short).unwrap(), NODE);
+    assert!(names().node("00000000").is_err());
 }

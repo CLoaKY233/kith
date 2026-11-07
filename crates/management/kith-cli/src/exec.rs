@@ -110,6 +110,24 @@ impl Names {
         if let Some((id, _, _)) = self.peers.iter().find(|(_, label, _)| label == text) {
             return Ok(*id);
         }
+        if text.len() >= 8 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let mut ids: Vec<NodeId> = self
+                .peers
+                .iter()
+                .map(|(id, _, _)| *id)
+                .filter(|id| id.to_string().starts_with(text))
+                .collect();
+            ids.dedup();
+            match ids.as_slice() {
+                [id] => return Ok(*id),
+                [] => {}
+                _ => {
+                    return Err(CliError(format!(
+                        "several devices start with `{text}`; give more of the id"
+                    )));
+                }
+            }
+        }
         let named: Vec<&str> = self
             .peers
             .iter()
@@ -393,26 +411,9 @@ pub(crate) async fn connect(path: &Path) -> Result<IpcClient, CliError> {
 
 /// Runs every command except `daemon`, writing human or JSON output to `out`.
 pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliError> {
+    warn_if_remote_exit(&opts.cmd);
     match &opts.cmd {
-        Cmd::Config(ConfigCmd::Check { path }) => {
-            let path = path.clone().unwrap_or_else(Config::default_path);
-            match Config::load(&path) {
-                Err(ConfigError::Read { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    writeln!(out, "{}: no such file; defaults apply", path.display())?;
-                }
-                result => {
-                    result?;
-                    writeln!(out, "{}: ok", path.display())?;
-                }
-            }
-            return Ok(());
-        }
-        Cmd::Config(ConfigCmd::Show { path }) => {
-            out.write_all(load_config(path.as_deref())?.to_toml_string()?.as_bytes())?;
-            return Ok(());
-        }
+        Cmd::Config(cmd) => return config_cmd(cmd, out),
         Cmd::Daemon { .. } | Cmd::Up | Cmd::Down | Cmd::Ui { .. } => {
             return Err(CliError("not handled here".to_owned()));
         }
@@ -557,6 +558,10 @@ async fn names_for(cmd: &Cmd, client: &mut IpcClient) -> Result<Names, CliError>
             .into_iter()
             .map(|p| (p.node, p.name, p.display_name))
             .collect();
+        if let Some(me) = status.node {
+            let host = hostname();
+            names.peers.push((me, host.clone(), host));
+        }
     }
     Ok(names)
 }
@@ -636,4 +641,101 @@ pub(crate) fn hostname() -> String {
         .map(|s| s.trim().split('.').next().unwrap_or_default().to_owned())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "device".to_owned())
+}
+
+/// Turns server mode on in the config file at `path`, adding the exit and relay roles and
+/// the public hostname. Roles already on stay on. Returns whether the file changed.
+pub(crate) fn set_server(
+    path: &Path,
+    exit: bool,
+    relay: bool,
+    public_hostname: Option<&str>,
+) -> Result<bool, CliError> {
+    let mut config = Config::load_or_default(path)?;
+    let before = config.clone();
+    config.server.enabled = true;
+    config.server.exit |= exit;
+    config.server.relay |= relay;
+    if let Some(name) = public_hostname {
+        config.server.public_hostname = Some(name.to_owned());
+    }
+    if config == before && path.exists() {
+        return Ok(false);
+    }
+    let text = config.to_toml_string()?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| CliError(format!("cannot create {}: {e}", dir.display())))?;
+    }
+    let tmp = path.with_extension("toml.new");
+    std::fs::write(&tmp, text)
+        .map_err(|e| CliError(format!("cannot write {}: {e}", tmp.display())))?;
+    Config::load(&tmp)?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| CliError(format!("cannot write {}: {e}", path.display())))?;
+    Ok(true)
+}
+
+/// Warns before `kith exit use` in an SSH session, which the new routes can cut.
+fn warn_if_remote_exit(cmd: &Cmd) {
+    if matches!(*cmd, Cmd::Exit(ExitCmd::Use { .. }))
+        && std::env::var_os("SSH_CONNECTION").is_some()
+    {
+        // A warning on a closed stderr is not worth failing the command over.
+        let _ignored = writeln!(
+            std::io::stderr().lock(),
+            "kith: warning: this session is over SSH; sending this device's traffic through an exit can cut the connection. Reach it over kith, or use `kith exit off` from a console if it drops."
+        );
+    }
+}
+
+fn config_server(
+    exit: bool,
+    relay: bool,
+    public_hostname: Option<&str>,
+    path: Option<&Path>,
+    out: &mut impl Write,
+) -> Result<(), CliError> {
+    let path = path.map_or_else(Config::default_path, Path::to_path_buf);
+    let changed = set_server(&path, exit, relay, public_hostname)?;
+    let what = if changed { "updated" } else { "unchanged" };
+    writeln!(out, "{}: {what}", path.display())?;
+    Ok(())
+}
+
+/// `kith config …`, which works on files and needs no daemon.
+fn config_cmd(cmd: &ConfigCmd, out: &mut impl Write) -> Result<(), CliError> {
+    match cmd {
+        ConfigCmd::Check { path } => {
+            let path = path.clone().unwrap_or_else(Config::default_path);
+            match Config::load(&path) {
+                Err(ConfigError::Read { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    writeln!(out, "{}: no such file; defaults apply", path.display())?;
+                }
+                result => {
+                    result?;
+                    writeln!(out, "{}: ok", path.display())?;
+                }
+            }
+            Ok(())
+        }
+        ConfigCmd::Show { path } => {
+            out.write_all(load_config(path.as_deref())?.to_toml_string()?.as_bytes())?;
+            Ok(())
+        }
+        ConfigCmd::Server {
+            exit,
+            relay,
+            public_hostname,
+            path,
+        } => config_server(
+            *exit,
+            *relay,
+            public_hostname.as_deref(),
+            path.as_deref(),
+            out,
+        ),
+    }
 }
