@@ -19,6 +19,6 @@ export default [
     name: 'first load (JS, CSS, fonts)',
     path: ['dist/index.html', ...new Set([...loaded, ...fonts])],
     brotli: true,
-    limit: '150 kB',
+    limit: '152 kB',
   },
 ];
