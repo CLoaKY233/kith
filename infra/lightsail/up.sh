@@ -12,6 +12,8 @@
 #   KITH_UI_BINARY=path     also install this kith-ui
 #   RESTORE=path.tar.gz     restore a saved state (identity, networks) from down.sh --backup
 #   CF_API_TOKEN, CF_ZONE_ID, DNS_NAME   point an A record at the server (Cloudflare)
+#   CONSOLE=domain          also run the kith Console at this domain (opens 80 and 443;
+#                           point the domain here, or set DNS_NAME to the same name)
 set -eu
 
 REGION="${REGION:-ap-south-1}"
@@ -22,6 +24,8 @@ KEY="${KEY:-kith-vpn}"
 PEM="$HOME/.ssh/$KEY.pem"
 SSH_FROM="${SSH_FROM:-$(curl -4 -fsS --max-time 10 https://checkip.amazonaws.com | tr -d '\n')/32}"
 LS="aws lightsail --region $REGION"
+CONSOLE="${CONSOLE:-}"
+HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 
 say() { printf '%s\n' "$*"; }
 
@@ -47,10 +51,16 @@ $LS attach-static-ip --static-ip-name "$NAME-ip" --instance-name "$NAME" >/dev/n
 IP="$($LS get-static-ip --static-ip-name "$NAME-ip" --query staticIp.ipAddress --output text)"
 say "static IP $IP"
 
+WEB_PORTS=""
+if [ -n "$CONSOLE" ]; then
+    WEB_PORTS=",
+  {\"fromPort\":80,\"toPort\":80,\"protocol\":\"tcp\",\"cidrs\":[\"0.0.0.0/0\"],\"ipv6Cidrs\":[\"::/0\"]},
+  {\"fromPort\":443,\"toPort\":443,\"protocol\":\"tcp\",\"cidrs\":[\"0.0.0.0/0\"],\"ipv6Cidrs\":[\"::/0\"]}"
+fi
 $LS put-instance-public-ports --instance-name "$NAME" --port-infos "[
   {\"fromPort\":22,\"toPort\":22,\"protocol\":\"tcp\",\"cidrs\":[\"$SSH_FROM\"]},
   {\"fromPort\":41641,\"toPort\":41641,\"protocol\":\"udp\",\"cidrs\":[\"0.0.0.0/0\"],\"ipv6Cidrs\":[\"::/0\"]},
-  {\"fromPort\":41641,\"toPort\":41642,\"protocol\":\"tcp\",\"cidrs\":[\"0.0.0.0/0\"],\"ipv6Cidrs\":[\"::/0\"]}
+  {\"fromPort\":41641,\"toPort\":41642,\"protocol\":\"tcp\",\"cidrs\":[\"0.0.0.0/0\"],\"ipv6Cidrs\":[\"::/0\"]}$WEB_PORTS
 ]" >/dev/null
 
 SSH="ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -i $PEM ubuntu@$IP"
@@ -60,24 +70,28 @@ until $SSH true 2>/dev/null; do sleep 5; done
 # Small servers run better without these.
 $SSH 'sudo systemctl disable --now ModemManager multipathd udisks2 >/dev/null 2>&1 || true'
 
-if [ -n "${KITH_BINARY:-}" ]; then
-    scp -q -i "$PEM" "$KITH_BINARY" "ubuntu@$IP:/tmp/kith"
-    $SSH 'sudo install -m 0755 /tmp/kith /usr/local/bin/kith && rm /tmp/kith'
-else
-    $SSH 'curl -fsSL https://raw.githubusercontent.com/CLoaKY233/kith/main/install.sh | KITH_NO_START=1 sh'
-fi
-if [ -n "${KITH_UI_BINARY:-}" ]; then
-    scp -q -i "$PEM" "$KITH_UI_BINARY" "ubuntu@$IP:/tmp/kith-ui"
-    $SSH 'sudo install -m 0755 /tmp/kith-ui /usr/local/bin/kith-ui && rm /tmp/kith-ui'
-fi
-
 if [ -n "${RESTORE:-}" ]; then
     say "restoring state from $RESTORE"
     scp -q -i "$PEM" "$RESTORE" "ubuntu@$IP:/tmp/kith-state.tar.gz"
     $SSH 'sudo mkdir -p /var/lib /etc && sudo tar -xzf /tmp/kith-state.tar.gz -C /var/lib kith && rm /tmp/kith-state.tar.gz'
 fi
 
-$SSH 'sudo kith up && sudo kith server --exit --relay'
+# install.sh from this checkout, with any local binaries beside it. It makes the exit
+# and relay roles (and with CONSOLE, the public name) permanent in /etc/kith/kith.toml.
+$SSH 'rm -rf /tmp/kith-install && mkdir -p /tmp/kith-install/packaging/systemd'
+scp -q -i "$PEM" "$HERE/install.sh" "ubuntu@$IP:/tmp/kith-install/install.sh"
+scp -q -i "$PEM" "$HERE/packaging/systemd/kith-console.service" "ubuntu@$IP:/tmp/kith-install/packaging/systemd/"
+from=""
+if [ -n "${KITH_BINARY:-}" ]; then
+    scp -q -i "$PEM" "$KITH_BINARY" "ubuntu@$IP:/tmp/kith-install/kith"
+    [ -z "${KITH_UI_BINARY:-}" ] || scp -q -i "$PEM" "$KITH_UI_BINARY" "ubuntu@$IP:/tmp/kith-install/kith-ui"
+    from="KITH_FROM=/tmp/kith-install"
+fi
+if [ -n "$CONSOLE" ]; then
+    $SSH "sudo $from KITH_UI=1 sh /tmp/kith-install/install.sh --console '$CONSOLE'"
+else
+    $SSH "sudo $from KITH_UI=0 sh /tmp/kith-install/install.sh && sudo kith config server --exit --relay && sudo systemctl restart kith"
+fi
 
 if [ -n "${CF_API_TOKEN:-}" ] && [ -n "${CF_ZONE_ID:-}" ] && [ -n "${DNS_NAME:-}" ]; then
     api="https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records"
