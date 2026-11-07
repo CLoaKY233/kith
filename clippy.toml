@@ -28,6 +28,7 @@ doc-valid-idents = [
   "TCP",
   "TLS",
   "UDP",
+  "WebAuthn",
   "WebSocket",
   "WireGuard",
   "X25519",

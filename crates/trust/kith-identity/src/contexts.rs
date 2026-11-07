@@ -14,9 +14,21 @@ pub(crate) const INVITE_CHECKSUM: Context = Context::new("kith 2026-10 invite ch
 pub(crate) const REQUEST_CODE_CHECKSUM: Context =
     Context::new("kith 2026-10 request code checksum v1");
 
+/// Derives a network's recovery key from the secret in its recovery code.
+pub(crate) const RECOVERY_KEY: Context = Context::new("kith 2026-11 recovery key v1");
+
+/// Truncated checksum appended to a recovery code, to catch a wrong word.
+pub(crate) const RECOVERY_CHECKSUM: Context = Context::new("kith 2026-11 recovery checksum v1");
+
 /// Every context above, for uniqueness tests and audits.
 #[cfg(test)]
-pub(crate) const ALL: &[Context] = &[SECRET_KEY_CHECKSUM, INVITE_CHECKSUM, REQUEST_CODE_CHECKSUM];
+pub(crate) const ALL: &[Context] = &[
+    SECRET_KEY_CHECKSUM,
+    INVITE_CHECKSUM,
+    REQUEST_CODE_CHECKSUM,
+    RECOVERY_KEY,
+    RECOVERY_CHECKSUM,
+];
 
 #[cfg(test)]
 mod tests {
@@ -26,7 +38,7 @@ mod tests {
     fn contexts_are_unique_and_follow_the_convention() {
         for (index, context) in ALL.iter().enumerate() {
             let text = context.as_str();
-            assert!(text.starts_with("kith 2026-10 "), "{text}");
+            assert!(text.starts_with("kith 2026-"), "{text}");
             assert!(text.ends_with(" v1"), "{text}");
             for other in ALL.iter().skip(index + 1) {
                 assert_ne!(text, other.as_str());

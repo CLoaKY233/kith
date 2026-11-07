@@ -27,13 +27,40 @@
 //! wins; every losing branch is invalid, so concurrent `RemoveAdmin`s never both apply. The admin set and
 //! threshold at X are the state after the latest chain link in X's causal past.
 //!
+//! **Stage A2, the account chain.** Account ops (`AddAccount`, `RemoveAccount`, `SetRole`,
+//! `AuthorizeConsole`, `RevokeConsole`, `SetRecoveryKey`, and `Approved` wrapping one of
+//! them) form a second linear chain from genesis, chosen exactly like stage A's. The state
+//! at each link is the set of people (accounts with a role and passkeys), the authorized
+//! consoles, and the recovery key. A candidate is accepted when:
+//!
+//! - it is `Approved` by a passkey of an account in that state, whose WebAuthn assertion
+//!   signs the op's challenge (the [`OpId`](kith_types::OpId) it would have with the plain
+//!   change as its body), or by the recovery key over the same challenge; and the
+//!   approver's role allows the change: owners anything; admins adding non-owners,
+//!   removing non-owners and revoking consoles; the recovery key adding people and
+//!   authorizing consoles. The last owner can be neither removed nor demoted; or
+//! - the state has no account yet, the op is a plain `AddAccount` with role owner or a plain
+//!   `SetRecoveryKey` (while unset), and stage A's state at the op approves it as it would
+//!   an authority op. After the first account, this device path is closed.
+//!
+//! Stage A2 depends only on stage A. Networks without account ops are unaffected by it.
+//!
 //! **Stage B, everything else**, in `(lamport, OpId)` order:
 //!
 //! - *Rule 1:* the author holds the needed role in X's causal past: admin for admin ops,
-//!   member device for the sponsor of a `Join`.
+//!   member device for the sponsor of a `Join`. An `Acted` admin op, made for a person, may
+//!   instead come from an authorized console, and its actor must hold an owner or admin
+//!   role in X's causal past.
 //! - *Rule 2, remove-wins:* X is invalid if a valid removal of its author's role
-//!   (`RemoveAdmin` for admin ops, `RemoveDevice` of the sponsor for joins) is concurrent
-//!   with X. Removals in X's past fall under rule 1, so a re-granted role can act again.
+//!   (`RemoveAdmin` for admin ops, `RemoveDevice` of the sponsor for joins, and for an
+//!   `Acted` op a chain link that revokes the console or takes the actor's role) is
+//!   concurrent with X. Removals in X's past fall under rule 1, so a re-granted role can act
+//!   again.
+//!
+//! **People's devices.** `AssignDevice` (an admin op) names a device's owner, last writer
+//! wins after the device's admission; the account must exist at that point. A
+//! `RemoveAccount` link removes, like a `RemoveDevice` there, every device last assigned to
+//! the account in its causal past.
 //!
 //! **Membership.** A device is a member if some valid add of it (`AddDevice`, `Join`, or
 //! being the genesis author) has every valid `RemoveDevice` of it strictly in its causal
@@ -58,14 +85,16 @@
 //!
 //! The view is recomputed from scratch after every change (once per
 //! [`Ledger::insert_batch`]): `O(n log n)` to sort plus one `O(n + e)` walk per
-//! authority-chain step, per valid removal or revocation (two each), and per `Join`.
-//! Memory stays `O(n)` bits per walk.
+//! authority- or account-chain step, per valid removal or revocation (two each), and per
+//! `Join`. Each approval's signature is checked once per recompute. Memory stays `O(n)`
+//! bits per walk.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
+mod account;
 mod error;
 mod join;
 mod ledger;
@@ -75,14 +104,18 @@ mod validity;
 mod view;
 
 #[cfg(test)]
+mod account_tests;
+#[cfg(test)]
 mod tests;
 
+pub use account::{AccountChange, AdminChange, Approval, Assertion, Credential, Role, account_id};
 pub use error::LedgerError;
 pub use join::{AdmissionRequest, JoinProof};
 pub use ledger::{BatchOutcome, InsertOutcome, Ledger};
 pub use limits::{
-    MAX_ADMINS, MAX_NAME_LEN, MAX_ORPHANS, MAX_PARENTS, MAX_RECORD_KEY_LEN, MAX_RECORD_VALUE_LEN,
-    MAX_SIGNATURES, MAX_SIGNED_OP_LEN, MAX_TAG_LEN, MAX_TAGS,
+    MAX_ADMINS, MAX_AUTHENTICATOR_DATA_LEN, MAX_CLIENT_DATA_LEN, MAX_CREDENTIAL_ID_LEN,
+    MAX_NAME_LEN, MAX_ORPHANS, MAX_PARENTS, MAX_PASSKEY_SIG_LEN, MAX_RECORD_KEY_LEN,
+    MAX_RECORD_VALUE_LEN, MAX_RP_ID_LEN, MAX_SIGNATURES, MAX_SIGNED_OP_LEN, MAX_TAG_LEN, MAX_TAGS,
 };
 pub use op::{NetworkParams, OpBody, SignedOp, UnsignedOp, client_id};
-pub use view::{Device, Invite, NetworkView, Via};
+pub use view::{Account, Device, Invite, NetworkView, Via};

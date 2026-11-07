@@ -52,6 +52,11 @@ impl Sim {
     }
 
     /// The recording as it stands now.
+    /// The simulated daemon's status.
+    pub(crate) fn status_now(&self) -> Result<Status, ApiError> {
+        status(&self.read())
+    }
+
     pub(crate) fn read(&self) -> MutexGuard<'_, Fixture> {
         crate::api::lock(&self.world)
     }

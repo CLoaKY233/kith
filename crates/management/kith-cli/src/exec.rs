@@ -192,6 +192,9 @@ pub(crate) fn to_request(cmd: &Cmd, names: &Names) -> Result<Request, CliError> 
         Cmd::Peers { network, .. } => Request::Peers {
             network: names.network_or_only(network.as_deref())?,
         },
+        Cmd::People { network } => Request::Accounts {
+            network: names.network_or_only(network.as_deref())?,
+        },
         Cmd::Map { network } => Request::Topology {
             network: names.network_or_only(network.as_deref())?,
         },
@@ -421,6 +424,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
         | Cmd::Peers { .. }
+        | Cmd::People { .. }
         | Cmd::Map { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
@@ -442,8 +446,9 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         Cmd::Doctor => return doctor(opts, out).await,
     }
 
+    let cmd = fetch_invite(&opts.cmd).await?;
     let mut client = connect(&socket_path(opts)?).await?;
-    match &opts.cmd {
+    match &cmd {
         Cmd::Status { json } => return status(&mut client, *json, out).await,
         Cmd::Create { .. }
         | Cmd::Invite(_)
@@ -452,6 +457,7 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Leave { .. }
         | Cmd::Remove { .. }
         | Cmd::Peers { .. }
+        | Cmd::People { .. }
         | Cmd::Map { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)
@@ -472,10 +478,38 @@ pub(crate) async fn run(opts: &Opts, out: &mut impl Write) -> Result<(), CliErro
         | Cmd::Daemon { .. } => {}
     }
 
-    let names = names_for(&opts.cmd, &mut client).await?;
-    let request = to_request(&opts.cmd, &names)?;
+    let names = names_for(&cmd, &mut client).await?;
+    let request = to_request(&cmd, &names)?;
+    if let Request::Accounts { network } = request {
+        return people(&mut client, network, out).await;
+    }
     let response = client.request(request).await?;
-    render::response(out, &opts.cmd, response)
+    render::response(out, &cmd, response)
+}
+
+/// For `kith join https://…`, the command with the invite link fetched from that address.
+async fn fetch_invite(cmd: &Cmd) -> Result<Cmd, CliError> {
+    let mut cmd = cmd.clone();
+    if let Cmd::Join { link, .. } = &mut cmd
+        && crate::fetch::is_web_link(link)
+    {
+        *link = crate::fetch::invite_link(link).await?;
+    }
+    Ok(cmd)
+}
+
+/// `kith people`: the people, with their devices named as the peers list names them.
+async fn people(
+    client: &mut IpcClient,
+    network: NetworkId,
+    out: &mut impl Write,
+) -> Result<(), CliError> {
+    let Response::Accounts(info) = client.request(Request::Accounts { network }).await? else {
+        return Err(IpcError::Unexpected.into());
+    };
+    let peers = fetch_peers(client, network).await?;
+    render::people(out, &info, &peers)?;
+    Ok(())
 }
 
 /// The names `cmd` needs resolved: networks always, and peers for exit and relay commands.

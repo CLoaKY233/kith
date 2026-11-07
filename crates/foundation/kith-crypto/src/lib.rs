@@ -1,4 +1,5 @@
-//! The narrow cryptography facade: Ed25519, X25519, ChaCha20-Poly1305 and BLAKE3.
+//! The narrow cryptography facade: Ed25519, X25519, ChaCha20-Poly1305, BLAKE3, and P-256
+//! for verifying WebAuthn passkeys.
 //!
 //! Plane: foundation. Sans-IO core: no I/O, no clock, no runtime. See `docs/architecture.md`.
 //!
@@ -22,6 +23,7 @@ mod context;
 mod hash;
 mod random;
 mod sign;
+pub mod webauthn;
 pub mod wireguard;
 
 pub use aead::{AeadError, AeadKey, Nonce, TAG_LEN, Tag};

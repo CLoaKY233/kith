@@ -58,7 +58,7 @@ pub(crate) enum Cmd {
     /// Print a join link for a network, or list and revoke open invites
     #[bpaf(command)]
     Invite(#[bpaf(external(invite_cmd))] InviteCmd),
-    /// Join a network with an invite link
+    /// Join a network with an invite link, or a Console's https://…/j/CODE address
     #[bpaf(command)]
     Join {
         /// This device's name (default: hostname)
@@ -100,6 +100,13 @@ pub(crate) enum Cmd {
     Peers {
         /// Print JSON
         json: bool,
+        /// The network (default: the only one)
+        #[bpaf(positional("NETWORK"))]
+        network: Option<String>,
+    },
+    /// List a network's people, their roles and devices
+    #[bpaf(command)]
+    People {
         /// The network (default: the only one)
         #[bpaf(positional("NETWORK"))]
         network: Option<String>,

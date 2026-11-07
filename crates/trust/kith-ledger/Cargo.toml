@@ -17,6 +17,7 @@ serde = { workspace = true, features = ["alloc", "derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+p256 = { workspace = true, features = ["alloc", "ecdsa"] }
 proptest.workspace = true
 
 [lints]

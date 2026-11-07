@@ -1,9 +1,12 @@
-//! Who may use the page: the one-time link token, the session cookie, the `Host` and
+//! Who may use the page: the one-time link token, passkey sessions, the `Host` and
 //! `Origin` checks, and the security headers on every answer.
 //!
-//! `kith ui` opens `/#t=<token>`. The fragment never reaches the server or its logs; the
-//! page posts it to `/api/session`, which burns it and answers with a cookie holding a
-//! separate secret. A token is good once, for 2 minutes.
+//! Locally, `kith ui` opens `/#t=<token>`. The fragment never reaches the server or its
+//! logs; the page posts it to `/api/session`, which burns it and answers with a cookie
+//! holding a separate secret. A token is good once, for 2 minutes.
+//!
+//! A person who signs in with a passkey gets a session in the Console's database instead,
+//! good for 12 hours after its last use. In public mode that is the only way in.
 
 use core::fmt;
 use core::fmt::Write as _;
@@ -21,12 +24,17 @@ use subtle::ConstantTimeEq as _;
 use tokio::time::Instant;
 
 use crate::Shared;
+use crate::accounts::acting_as;
 use crate::api::ApiError;
-use crate::wire::{ApiErrorCode, SessionIn};
+use crate::console::{Mode, Principal, person_session, require, signed_in};
+use crate::wire::{ApiErrorCode, PersonRole, SessionIn};
 
 /// The session cookie's name, before the port. Browsers share cookies across the ports
 /// of a host, so each server names its own and two never sign each other out.
 const COOKIE_PREFIX: &str = "kith_ui_";
+/// The public Console's cookie: `__Host-` makes browsers insist on `Secure`, `Path=/` and
+/// no `Domain`, so no other host under the domain can set or read it.
+const PUBLIC_COOKIE: &str = "__Host-kith";
 /// How long a link token stays good.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(120);
 /// What every answer allows the page to load. `base-uri` and `form-action` do not fall
@@ -35,6 +43,21 @@ const TOKEN_LIFETIME: Duration = Duration::from_secs(120);
 const CSP: &str = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
 script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; \
 form-action 'self'; frame-ancestors 'none'";
+/// HTTPS only, for a year, on the public Console.
+const HSTS: &str = "max-age=31536000";
+/// API paths a request reaches without a session: they start one.
+const OPEN: [&str; 3] = ["/api/setup/", "/api/login/", "/api/register/"];
+/// Changes a signed-in member may ask for; their handlers check roles themselves. Every
+/// other change needs an owner or an admin.
+const SELF_SERVICE: [&str; 7] = [
+    "/api/logout",
+    "/api/device-codes",
+    "/api/authority/",
+    "/api/people",
+    "/api/setup/",
+    "/api/login/",
+    "/api/register/",
+];
 
 /// A 32-byte random secret: the link token or a session secret.
 #[derive(Clone)]
@@ -72,13 +95,19 @@ impl fmt::Debug for Token {
     }
 }
 
+/// The request's caller, which the guard puts in every request's extensions.
+#[derive(Debug, Clone)]
+pub(crate) struct Caller(pub(crate) Option<Principal>);
+
 /// The link token, until it is used or lapses, and the sessions it started.
 #[derive(Debug)]
 pub(crate) struct Sessions {
     link: Mutex<Link>,
     secrets: Mutex<Vec<Token>>,
-    /// The cookie's name on this server's port.
+    /// The cookie's name on this server.
     cookie: String,
+    /// Whether the cookie is `Secure`: on the public Console.
+    secure: bool,
 }
 
 #[derive(Debug)]
@@ -97,6 +126,17 @@ impl Sessions {
             }),
             secrets: Mutex::new(Vec::new()),
             cookie: format!("{COOKIE_PREFIX}{port}"),
+            secure: false,
+        }
+    }
+
+    /// Sessions for the public Console: passkeys only, no link.
+    pub(crate) fn public() -> Self {
+        Self {
+            link: Mutex::new(Link::Used),
+            secrets: Mutex::new(Vec::new()),
+            cookie: PUBLIC_COOKIE.to_owned(),
+            secure: true,
         }
     }
 
@@ -123,9 +163,8 @@ impl Sessions {
         Ok(secret)
     }
 
-    /// Whether the request carries a live session cookie.
-    pub(crate) fn admits(&self, headers: &HeaderMap) -> bool {
-        let secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+    /// This server's session cookie values in the request.
+    fn values<'a>(&'a self, headers: &'a HeaderMap) -> impl Iterator<Item = &'a str> + 'a {
         headers
             .get_all(header::COOKIE)
             .iter()
@@ -133,17 +172,58 @@ impl Sessions {
             .flat_map(|value| value.split(';'))
             .filter_map(|pair| pair.trim().split_once('='))
             .filter(|(name, _)| *name == self.cookie)
-            .any(|(_, candidate)| secrets.iter().any(|secret| secret.matches(candidate)))
+            .map(|(_, value)| value)
     }
 
-    /// The `Set-Cookie` value for a session secret: never readable by scripts, never sent
-    /// with a request another site starts.
-    fn set_cookie(&self, secret: &Token) -> String {
+    /// Whether the request carries a session the local link started.
+    pub(crate) fn admits(&self, headers: &HeaderMap) -> bool {
+        let secrets = self.secrets.lock().unwrap_or_else(PoisonError::into_inner);
+        self.values(headers)
+            .any(|candidate| secrets.iter().any(|secret| secret.matches(candidate)))
+    }
+
+    /// Who the request is from: the local link's session, a person's, or nobody.
+    pub(crate) fn principal(&self, shared: &Shared, headers: &HeaderMap) -> Option<Principal> {
+        if self.admits(headers) {
+            return Some(Principal::Local);
+        }
+        self.values(headers)
+            .filter(|value| value.len() == 64)
+            .find_map(|secret| person_session(shared, secret))
+    }
+
+    /// The `Set-Cookie` value for a session secret: never readable by scripts. Locally
+    /// never sent with a request another site starts; publicly also sent when a link
+    /// opens the page, and only over HTTPS.
+    pub(crate) fn set_cookie_value(&self, secret: &str) -> String {
+        if self.secure {
+            format!(
+                "{}={secret}; HttpOnly; Secure; SameSite=Lax; Path=/",
+                self.cookie
+            )
+        } else {
+            format!(
+                "{}={secret}; HttpOnly; SameSite=Strict; Path=/",
+                self.cookie
+            )
+        }
+    }
+
+    /// The `Set-Cookie` value that removes the cookie.
+    pub(crate) fn clear_cookie(&self) -> String {
+        let secure = if self.secure { " Secure;" } else { "" };
         format!(
-            "{}={}; HttpOnly; SameSite=Strict; Path=/",
-            self.cookie,
-            secret.hex()
+            "{}=; HttpOnly;{secure} SameSite=Strict; Path=/; Max-Age=0",
+            self.cookie
         )
+    }
+
+    /// The session cookie's secrets in the request, to sign out.
+    pub(crate) fn secrets_in<'a>(
+        &'a self,
+        headers: &'a HeaderMap,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        self.values(headers)
     }
 }
 
@@ -152,6 +232,9 @@ pub(crate) async fn start(
     State(shared): State<Arc<Shared>>,
     Json(input): Json<SessionIn>,
 ) -> Result<Response, ApiError> {
+    if shared.mode != Mode::Local {
+        return Err(ApiError::not_found("sign in with your passkey"));
+    }
     let sessions = &shared.sessions;
     let secret = sessions
         .start(&input.token, Instant::now())
@@ -162,16 +245,51 @@ pub(crate) async fn start(
                 "the link token is not valid",
             )
         })?;
-    let cookie = HeaderValue::from_str(&sessions.set_cookie(&secret)).map_err(|_| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            ApiErrorCode::Internal,
-            "the session cookie could not be written",
-        )
-    })?;
+    let cookie =
+        HeaderValue::from_str(&sessions.set_cookie_value(&secret.hex())).map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ApiErrorCode::Internal,
+                "the session cookie could not be written",
+            )
+        })?;
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(response)
+}
+
+/// What the guard checks a request against.
+#[derive(Debug, Clone, Copy)]
+struct Rules<'a> {
+    mode: &'a Mode,
+    port: u16,
+    dev_origins: &'a [String],
+}
+
+impl Rules<'_> {
+    /// Whether `host`, a `Host` header, names this server.
+    fn host(&self, host: &str) -> bool {
+        match self.mode {
+            Mode::Local => is_local(host, self.port, false),
+            Mode::Public { domain } => {
+                let host = host.strip_suffix(":443").unwrap_or(host);
+                host.eq_ignore_ascii_case(domain)
+            }
+        }
+    }
+
+    /// Whether `origin`, an `Origin` header, is this server's page.
+    fn origin(&self, origin: &str) -> bool {
+        match self.mode {
+            Mode::Local => {
+                is_local(origin, self.port, true)
+                    || self.dev_origins.iter().any(|dev| dev == origin)
+            }
+            Mode::Public { domain } => origin
+                .strip_prefix("https://")
+                .is_some_and(|rest| rest.eq_ignore_ascii_case(domain)),
+        }
+    }
 }
 
 /// Whether `value` names this server, as `http://127.0.0.1:<port>` style text without the
@@ -200,16 +318,10 @@ fn same_origin_fetch(headers: &HeaderMap) -> bool {
         .is_none_or(|site| site == "same-origin")
 }
 
-/// Why `request` may not go further, if it may not.
-fn refusal(shared: &Shared, request: &Request) -> Option<ApiError> {
-    refuse(
-        shared.port,
-        &shared.dev_origins,
-        &shared.sessions,
-        request.method(),
-        request.uri().path(),
-        request.headers(),
-    )
+/// Whether `path` is an API path that needs no session.
+fn open(mode: &Mode, path: &str) -> bool {
+    (path == "/api/session" && *mode == Mode::Local)
+        || OPEN.iter().any(|prefix| path.starts_with(prefix))
 }
 
 /// Why a request may not go further, if it may not.
@@ -219,9 +331,8 @@ fn refusal(shared: &Shared, request: &Request) -> Option<ApiError> {
 /// therefore has to show it came from this server's own page, reads included: they reach
 /// the daemon too.
 fn refuse(
-    port: u16,
-    dev_origins: &[String],
-    sessions: &Sessions,
+    rules: &Rules<'_>,
+    signed_in: bool,
     method: &Method,
     path: &str,
     headers: &HeaderMap,
@@ -229,7 +340,7 @@ fn refuse(
     let host_ok = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|host| is_local(host, port, false));
+        .is_some_and(|host| rules.host(host));
     if !host_ok {
         return Some(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -240,9 +351,7 @@ fn refuse(
     let api = path.starts_with("/api/");
     let writes = !matches!(*method, Method::GET | Method::HEAD);
     let from_page = match headers.get(header::ORIGIN) {
-        Some(origin) => origin.to_str().is_ok_and(|origin| {
-            is_local(origin, port, true) || dev_origins.iter().any(|dev| dev == origin)
-        }),
+        Some(origin) => origin.to_str().is_ok_and(|origin| rules.origin(origin)),
         None => !writes && same_origin_fetch(headers),
     };
     if (writes || api) && !from_page {
@@ -252,35 +361,84 @@ fn refuse(
             "requests must come from the kith page",
         ));
     }
-    if api && path != "/api/session" && !sessions.admits(headers) {
+    // The public signed-out page asks `/api/status` which mode it is in.
+    let public_status = path == "/api/status" && !writes && *rules.mode != Mode::Local;
+    if api && !open(rules.mode, path) && !public_status && !signed_in {
+        let hint = match rules.mode {
+            Mode::Local => "no session; run kith ui",
+            Mode::Public { .. } => "sign in with your passkey",
+        };
         return Some(ApiError::new(
             StatusCode::UNAUTHORIZED,
             ApiErrorCode::Unauthorized,
-            "no session; run kith ui",
+            hint,
         ));
     }
     None
 }
 
-/// Refuses requests that do not come from this machine's page, then those without a
-/// session, and adds the security headers to every answer, refusals included. Runs before
-/// every route.
+/// Whether a signed-in person needs to be an owner or admin for this request.
+fn needs_admin(principal: Option<&Principal>, method: &Method, path: &str) -> bool {
+    matches!(principal, Some(Principal::Person { .. }))
+        && !matches!(*method, Method::GET | Method::HEAD)
+        && path.starts_with("/api/")
+        && !SELF_SERVICE.iter().any(|prefix| path.starts_with(prefix))
+}
+
+/// Refuses requests that do not come from this server's page, then those without a
+/// session, then members asking for an admin's change; runs everything else on behalf of
+/// the signed-in person, and adds the security headers to every answer, refusals
+/// included. Runs before every route.
 pub(crate) async fn guard(
     State(shared): State<Arc<Shared>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let api = request.uri().path().starts_with("/api/");
-    let mut response = match refusal(&shared, &request) {
-        Some(refused) => refused.into_response(),
-        None => next.run(request).await,
+    let path = request.uri().path().to_owned();
+    let api = path.starts_with("/api/");
+    let principal = shared.sessions.principal(&shared, request.headers());
+    let rules = Rules {
+        mode: &shared.mode,
+        port: shared.port,
+        dev_origins: &shared.dev_origins,
     };
-    secure(response.headers_mut(), api);
+    let refused = refuse(
+        &rules,
+        principal.is_some(),
+        request.method(),
+        &path,
+        request.headers(),
+    );
+    let refused = match refused {
+        Some(refused) => Some(refused),
+        None if needs_admin(principal.as_ref(), request.method(), &path) => {
+            match signed_in(&shared, principal.as_ref()).await {
+                Ok((_, person)) => require(&person, PersonRole::Admin).err(),
+                Err(error) => Some(error),
+            }
+        }
+        None => None,
+    };
+    let mut response = if let Some(refused) = refused {
+        refused.into_response()
+    } else {
+        let actor = principal
+            .as_ref()
+            .and_then(Principal::account)
+            .map(str::to_owned);
+        request.extensions_mut().insert(Caller(principal));
+        acting_as(actor, next.run(request)).await
+    };
+    secure(
+        response.headers_mut(),
+        api,
+        matches!(shared.mode, Mode::Public { .. }),
+    );
     response
 }
 
 /// The headers every answer carries. API answers are never cached unless they say so.
-fn secure(headers: &mut HeaderMap, api: bool) {
+fn secure(headers: &mut HeaderMap, api: bool, public: bool) {
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(CSP),
@@ -302,6 +460,12 @@ fn secure(headers: &mut HeaderMap, api: bool) {
         "cross-origin-resource-policy",
         HeaderValue::from_static("same-origin"),
     );
+    if public {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS),
+        );
+    }
     if api && !headers.contains_key(header::CACHE_CONTROL) {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
@@ -342,7 +506,7 @@ mod tests {
             sessions.start(&hex, now).err(),
             Some(ApiErrorCode::SessionUsed)
         );
-        let set = sessions.set_cookie(&secret);
+        let set = sessions.set_cookie_value(&secret.hex());
         assert!(set.starts_with("kith_ui_41680=") && set.contains("; HttpOnly; SameSite=Strict"));
         let ours = format!("kith_ui_41680={}", secret.hex());
         assert!(sessions.admits(&cookies(&ours)?));
@@ -372,6 +536,16 @@ mod tests {
     }
 
     #[test]
+    fn the_public_cookie_is_secure_and_host_only() {
+        let set = Sessions::public().set_cookie_value("ab");
+        assert_eq!(
+            set,
+            "__Host-kith=ab; HttpOnly; Secure; SameSite=Lax; Path=/"
+        );
+        assert!(Sessions::public().clear_cookie().contains("Secure; "));
+    }
+
+    #[test]
     fn origin_less_requests_count_only_from_this_site_or_outside_a_browser() {
         let site = |value: &'static str| {
             let mut headers = HeaderMap::new();
@@ -387,15 +561,14 @@ mod tests {
 
     #[test]
     fn only_this_page_reaches_the_api() -> io::Result<()> {
-        let token = Token::random()?;
-        let hex = token.hex();
-        let sessions = Sessions::new(token, 41680);
-        let secret = sessions
-            .start(&hex, Instant::now())
-            .map_err(|_| io::Error::other("refused"))?;
         let dev = ["http://localhost:5173".to_owned()];
+        let rules = Rules {
+            mode: &Mode::Local,
+            port: 41680,
+            dev_origins: &dev,
+        };
         let status = |method: Method, path: &str, extra: &[(&str, &str)]| -> io::Result<u16> {
-            let mut headers = cookies(&format!("kith_ui_41680={}", secret.hex()))?;
+            let mut headers = HeaderMap::new();
             headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:41680"));
             for (name, value) in extra {
                 headers.insert(
@@ -403,7 +576,7 @@ mod tests {
                     HeaderValue::from_str(value).map_err(io::Error::other)?,
                 );
             }
-            Ok(refuse(41680, &dev, &sessions, &method, path, &headers)
+            Ok(refuse(&rules, true, &method, path, &headers)
                 .map_or(200, |refused| refused.into_response().status().as_u16()))
         };
         let page = [("sec-fetch-site", "same-origin")];
@@ -446,13 +619,34 @@ mod tests {
             header::ORIGIN,
             HeaderValue::from_static("http://localhost:41680"),
         );
-        let without_cookie = |path: &str| {
-            refuse(41680, &dev, &sessions, &Method::POST, path, &bare)
+        let without_session = |path: &str| {
+            refuse(&rules, false, &Method::POST, path, &bare)
                 .map(|refused| refused.into_response().status().as_u16())
         };
-        assert_eq!(without_cookie("/api/session"), None);
-        assert_eq!(without_cookie("/api/exit"), Some(401));
+        assert_eq!(without_session("/api/session"), None);
+        assert_eq!(without_session("/api/login/begin"), None);
+        assert_eq!(without_session("/api/exit"), Some(401));
         Ok(())
+    }
+
+    #[test]
+    fn the_public_console_answers_only_to_its_domain() {
+        let mode = Mode::Public {
+            domain: "vpn.example.com".to_owned(),
+        };
+        let rules = Rules {
+            mode: &mode,
+            port: 443,
+            dev_origins: &[],
+        };
+        assert!(rules.host("vpn.example.com"));
+        assert!(rules.host("VPN.example.com:443"));
+        assert!(!rules.host("vpn.example.com:8443"));
+        assert!(!rules.host("127.0.0.1:443"));
+        assert!(rules.origin("https://vpn.example.com"));
+        assert!(!rules.origin("http://vpn.example.com"));
+        assert!(!rules.origin("https://evil.example.com"));
+        assert!(!open(&mode, "/api/session"), "no link sign-in in public");
     }
 
     #[test]

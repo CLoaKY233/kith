@@ -43,6 +43,10 @@ pub fn declarations() -> String {
     push::<kith_ipc::LinkReport>(&mut out, &config);
     push::<kith_ipc::PendingJoin>(&mut out, &config);
     push::<kith_ipc::BlockedInfo>(&mut out, &config);
+    push::<kith_ipc::AccountRole>(&mut out, &config);
+    push::<kith_ipc::CredentialInfo>(&mut out, &config);
+    push::<kith_ipc::AccountInfo>(&mut out, &config);
+    push::<kith_ipc::AccountsInfo>(&mut out, &config);
     push::<wire::Versions>(&mut out, &config);
     push::<wire::Role>(&mut out, &config);
     push::<wire::Membership>(&mut out, &config);
@@ -105,7 +109,42 @@ pub fn declarations() -> String {
     push::<wire::NameProblem>(&mut out, &config);
     push::<wire::NameCheck>(&mut out, &config);
     push::<wire::Fixture>(&mut out, &config);
+    console(&mut out, &config);
     out
+}
+
+/// The Console's types: people, passkeys, authority prompts, codes and history.
+fn console(out: &mut String, config: &Config) {
+    push::<wire::PersonRole>(out, config);
+    push::<wire::PersonState>(out, config);
+    push::<wire::PersonView>(out, config);
+    push::<wire::ConsoleMode>(out, config);
+    push::<wire::Me>(out, config);
+    push::<wire::NetworkRef>(out, config);
+    push::<wire::MeView>(out, config);
+    push::<wire::CeremonyOptions>(out, config);
+    push::<wire::CredentialIn>(out, config);
+    push::<wire::SetupInfo>(out, config);
+    push::<wire::SetupBeginIn>(out, config);
+    push::<wire::TokenCredentialIn>(out, config);
+    push::<wire::AuthorityKind>(out, config);
+    push::<wire::AuthorityChallenge>(out, config);
+    push::<wire::SetupFinished>(out, config);
+    push::<wire::RecoveryWords>(out, config);
+    push::<wire::RegisterInfo>(out, config);
+    push::<wire::TokenIn>(out, config);
+    push::<wire::PersonIn>(out, config);
+    push::<wire::PersonInvite>(out, config);
+    push::<wire::RoleIn>(out, config);
+    push::<wire::AuthorityChangeIn>(out, config);
+    push::<wire::AuthorityBeginIn>(out, config);
+    push::<wire::DeviceCodeIn>(out, config);
+    push::<wire::DeviceCodeView>(out, config);
+    push::<wire::JoinLink>(out, config);
+    push::<wire::StoredEntry>(out, config);
+    push::<wire::JournalPage>(out, config);
+    push::<wire::TrafficMinute>(out, config);
+    push::<wire::TrafficHistory>(out, config);
 }
 
 #[cfg(test)]

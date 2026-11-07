@@ -19,12 +19,13 @@ use alloc::vec::Vec;
 use core::net::{Ipv4Addr, Ipv6Addr};
 
 use kith_crypto::{Context, Hash, Signature, SigningKey, VerifyingKey};
-use kith_types::{Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, OpId, Timestamp};
+use kith_types::{AccountId, Ipv4Prefix, Ipv6Prefix, NetworkId, NodeId, OpId, Timestamp};
 use kith_wire::envelope::{self, MessageType};
 use kith_wire::registry;
 use serde::{Deserialize, Serialize};
 
 use crate::LedgerError;
+use crate::account::{AccountChange, AdminChange, Approval, Credential, Role};
 use crate::join::JoinProof;
 use crate::limits::{
     MAX_ADMINS, MAX_NAME_LEN, MAX_OP_LEN, MAX_PARENTS, MAX_RECORD_KEY_LEN, MAX_RECORD_VALUE_LEN,
@@ -56,7 +57,9 @@ pub struct NetworkParams {
 }
 
 /// What an op does. Authority ops need a threshold of admin signatures, admin ops one
-/// admin author, and joins a member sponsor plus a valid invite. Variant order is wire format.
+/// admin author (or an authorized console acting for a person), joins a member sponsor plus
+/// a valid invite, and account ops a person's passkey or the recovery key. Variant order is
+/// wire format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpBody {
     /// Founds the network. The author becomes the first member device.
@@ -150,6 +153,77 @@ pub enum OpBody {
         /// Its new name, at most [`MAX_NAME_LEN`] bytes.
         name: String,
     },
+    /// Account op: adds a person, whose [`AccountId`] is [`Credential::account_id`]. Valid
+    /// plain only as a network's first account, with role owner, approved like an
+    /// authority op by its admin devices; otherwise it must be [`Approved`](Self::Approved)
+    /// by an owner, an admin (for roles below owner) or the recovery key.
+    AddAccount {
+        /// The person's name, at most [`MAX_NAME_LEN`] bytes.
+        name: String,
+        /// Their role.
+        role: Role,
+        /// Their first passkey.
+        credential: Credential,
+    },
+    /// Account op, valid only [`Approved`](Self::Approved) by an owner, or by an admin for
+    /// a non-owner: removes a person and every device assigned to them. The last owner
+    /// cannot be removed.
+    RemoveAccount {
+        /// The account.
+        account: AccountId,
+    },
+    /// Account op, valid only [`Approved`](Self::Approved) by an owner: changes a role.
+    /// The last owner cannot be demoted.
+    SetRole {
+        /// The account.
+        account: AccountId,
+        /// Its new role.
+        role: Role,
+    },
+    /// Admin op: records whose device `device` is. The latest assignment after the
+    /// device's admission wins.
+    AssignDevice {
+        /// The device.
+        device: NodeId,
+        /// The person it belongs to; must exist when the op is made.
+        account: AccountId,
+    },
+    /// Account op, valid only [`Approved`](Self::Approved) by an owner or the recovery key:
+    /// lets `device` sign admin ops that are [`Acted`](Self::Acted) for a person.
+    AuthorizeConsole {
+        /// The console's device.
+        device: NodeId,
+    },
+    /// Account op, valid only [`Approved`](Self::Approved) by an owner or an admin: takes
+    /// the console's power away.
+    RevokeConsole {
+        /// The console's device.
+        device: NodeId,
+    },
+    /// Account op: sets the recovery key, whose approval counts as an owner's for adding
+    /// people and authorizing consoles. Valid only while the network has neither accounts
+    /// nor a recovery key, approved like an authority op by its admin devices.
+    SetRecoveryKey {
+        /// The recovery key's public half.
+        key: VerifyingKey,
+    },
+    /// Account op: a change to people or consoles with the approval it needs. The
+    /// approval signs the challenge: the [`OpId`] of this op with
+    /// [`AccountChange::to_body`] as its body (see [`UnsignedOp::challenge`]).
+    Approved {
+        /// Who approved, over the challenge.
+        approval: Approval,
+        /// The change.
+        change: AccountChange,
+    },
+    /// Admin op made for a person: valid when the author is an admin device or an
+    /// authorized console, and `actor` holds an owner or admin role, at that point.
+    Acted {
+        /// The person who asked for the change.
+        actor: AccountId,
+        /// The change.
+        change: AdminChange,
+    },
 }
 
 /// The hash context that turns a WireGuard key into a member id.
@@ -168,6 +242,7 @@ pub(crate) enum Kind {
     Authority,
     Admin,
     Join,
+    Account,
 }
 
 impl OpBody {
@@ -183,8 +258,17 @@ impl OpBody {
             | Self::RevokeInvite { .. }
             | Self::SetRecord { .. }
             | Self::AddClient { .. }
-            | Self::RenameDevice { .. } => Kind::Admin,
+            | Self::RenameDevice { .. }
+            | Self::AssignDevice { .. }
+            | Self::Acted { .. } => Kind::Admin,
             Self::Join(_) => Kind::Join,
+            Self::AddAccount { .. }
+            | Self::RemoveAccount { .. }
+            | Self::SetRole { .. }
+            | Self::AuthorizeConsole { .. }
+            | Self::RevokeConsole { .. }
+            | Self::SetRecoveryKey { .. }
+            | Self::Approved { .. } => Kind::Account,
         }
     }
 
@@ -219,6 +303,15 @@ impl OpBody {
             Self::RemoveAdmin { admin: _ }
             | Self::RemoveDevice { device: _ }
             | Self::RevokeInvite { invite_key: _ } => Ok(()),
+            Self::AddAccount { .. }
+            | Self::RemoveAccount { .. }
+            | Self::SetRole { .. }
+            | Self::AssignDevice { .. }
+            | Self::AuthorizeConsole { .. }
+            | Self::RevokeConsole { .. }
+            | Self::SetRecoveryKey { .. }
+            | Self::Approved { .. }
+            | Self::Acted { .. } => self.check_account(author, network),
             Self::SetThreshold { threshold } => {
                 if *threshold == 0 {
                     return Err(LedgerError::BadThreshold(*threshold));
@@ -274,6 +367,78 @@ impl OpBody {
             Self::RenameDevice { device: _, name } => check_name(name),
         }
     }
+
+    /// [`check`](Self::check) for the ops about people. A wrapped change gets its own
+    /// check; it cannot itself be a wrapper.
+    fn check_account(&self, author: NodeId, network: Option<NetworkId>) -> Result<(), LedgerError> {
+        match self {
+            Self::AddAccount {
+                name,
+                role: _,
+                credential,
+            } => {
+                check_name(name)?;
+                credential.check()
+            }
+            Self::AuthorizeConsole { device } => check_key(*device),
+            Self::Approved { approval, change } => {
+                approval.check()?;
+                change.to_body().check(author, network)
+            }
+            Self::Acted { actor: _, change } => change.to_body().check(author, network),
+            Self::RemoveAccount { account: _ }
+            | Self::SetRole {
+                account: _,
+                role: _,
+            }
+            | Self::AssignDevice {
+                device: _,
+                account: _,
+            }
+            | Self::RevokeConsole { device: _ }
+            | Self::SetRecoveryKey { key: _ }
+            | Self::Genesis { .. }
+            | Self::AddAdmin { .. }
+            | Self::RemoveAdmin { .. }
+            | Self::SetThreshold { .. }
+            | Self::AddDevice { .. }
+            | Self::RemoveDevice { .. }
+            | Self::CreateInvite { .. }
+            | Self::RevokeInvite { .. }
+            | Self::SetRecord { .. }
+            | Self::Join(_)
+            | Self::AddClient { .. }
+            | Self::RenameDevice { .. } => Ok(()),
+        }
+    }
+
+    /// The plain change inside a wrapper op ([`Approved`](Self::Approved) or
+    /// [`Acted`](Self::Acted)); `None` for every other op.
+    fn wrapped(&self) -> Option<Self> {
+        match self {
+            Self::Approved { change, .. } => Some(change.to_body()),
+            Self::Acted { change, .. } => Some(change.to_body()),
+            Self::Genesis { .. }
+            | Self::AddAdmin { .. }
+            | Self::RemoveAdmin { .. }
+            | Self::SetThreshold { .. }
+            | Self::AddDevice { .. }
+            | Self::RemoveDevice { .. }
+            | Self::CreateInvite { .. }
+            | Self::RevokeInvite { .. }
+            | Self::SetRecord { .. }
+            | Self::Join(_)
+            | Self::AddClient { .. }
+            | Self::RenameDevice { .. }
+            | Self::AddAccount { .. }
+            | Self::RemoveAccount { .. }
+            | Self::SetRole { .. }
+            | Self::AssignDevice { .. }
+            | Self::AuthorizeConsole { .. }
+            | Self::RevokeConsole { .. }
+            | Self::SetRecoveryKey { .. } => None,
+        }
+    }
 }
 
 /// An op before it is signed. [`Ledger::draft`](crate::Ledger::draft) fills in the network,
@@ -315,6 +480,49 @@ impl UnsignedOp {
             unsigned_bytes: bytes,
             op: self.clone(),
             signatures: alloc::vec![(self.author, signature)],
+            derived: Derived::of(self)?,
+        })
+    }
+
+    /// Decodes an op from [`encode`](Self::encode)'s bytes, running every structural check.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, LedgerError> {
+        Self::decode(bytes)
+    }
+
+    /// The [`OpId`] the op has once signed.
+    pub fn id(&self) -> Result<OpId, LedgerError> {
+        self.encode().map(|bytes| op_id(&bytes))
+    }
+
+    /// For an [`OpBody::Approved`] op, what its approval must sign: the [`OpId`] of the
+    /// same op with the plain change as its body. `None` for every other op.
+    pub fn challenge(&self) -> Result<Option<OpId>, LedgerError> {
+        let OpBody::Approved { change, .. } = &self.body else {
+            return Ok(None);
+        };
+        let plain = Self {
+            body: change.to_body(),
+            ..self.clone()
+        };
+        plain.id().map(Some)
+    }
+
+    /// Wraps a plain account op (see [`AccountChange`]) in an approval of its
+    /// [`id`](Self::id), which becomes the wrapped op's [`challenge`](Self::challenge).
+    pub fn approve(self, approval: Approval) -> Result<Self, LedgerError> {
+        let change = AccountChange::from_body(self.body).ok_or(LedgerError::NotWrappable)?;
+        Ok(Self {
+            body: OpBody::Approved { approval, change },
+            ..self
+        })
+    }
+
+    /// Wraps a plain admin op (see [`AdminChange`]) as made for `actor`.
+    pub fn act_for(self, actor: AccountId) -> Result<Self, LedgerError> {
+        let change = AdminChange::from_body(self.body).ok_or(LedgerError::NotWrappable)?;
+        Ok(Self {
+            body: OpBody::Acted { actor, change },
+            ..self
         })
     }
 
@@ -368,6 +576,25 @@ pub struct SignedOp {
     unsigned_bytes: Vec<u8>,
     op: UnsignedOp,
     signatures: Vec<(NodeId, Signature)>,
+    derived: Derived,
+}
+
+/// What a [`SignedOp`] computes once from its content, so validity can borrow it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Derived {
+    /// The plain change inside a wrapper op.
+    wrapped: Option<OpBody>,
+    /// What an approval signed.
+    challenge: Option<OpId>,
+}
+
+impl Derived {
+    fn of(op: &UnsignedOp) -> Result<Self, LedgerError> {
+        Ok(Self {
+            wrapped: op.body.wrapped(),
+            challenge: op.challenge()?,
+        })
+    }
 }
 
 /// The encoded body of a [`SignedOp`]. Field order is the wire format.
@@ -410,6 +637,7 @@ impl SignedOp {
         }
         Ok(Self {
             id: op_id(&wire.unsigned_bytes),
+            derived: Derived::of(&op)?,
             unsigned_bytes: wire.unsigned_bytes,
             op,
             signatures,
@@ -499,6 +727,18 @@ impl SignedOp {
     /// The signers, ascending.
     pub fn signers(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.signatures.iter().map(|(signer, _)| *signer)
+    }
+
+    /// What the op changes: the plain change inside an [`OpBody::Approved`] or
+    /// [`OpBody::Acted`], and the body itself otherwise.
+    pub fn effect(&self) -> &OpBody {
+        self.derived.wrapped.as_ref().unwrap_or(&self.op.body)
+    }
+
+    /// For an [`OpBody::Approved`] op, what its approval signed; see
+    /// [`UnsignedOp::challenge`].
+    pub const fn challenge(&self) -> Option<OpId> {
+        self.derived.challenge
     }
 }
 

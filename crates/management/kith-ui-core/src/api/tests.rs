@@ -419,9 +419,13 @@ impl Page {
                 token,
                 assets: None,
                 dev_origins: Vec::new(),
+                mode: crate::Mode::Local,
+                store: Arc::new(crate::SqliteStore::memory()?),
             },
             gate,
-        )?;
+            None,
+        )?
+        .0;
         let mut page = Self {
             app,
             cookie: String::new(),

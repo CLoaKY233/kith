@@ -10,6 +10,7 @@ mod daemon;
 mod doctor;
 mod duration;
 mod exec;
+mod fetch;
 mod render;
 mod service;
 #[cfg(test)]
@@ -49,6 +50,7 @@ fn main() -> ExitCode {
         | Cmd::Remove { .. }
         | Cmd::Admission(_)
         | Cmd::Peers { .. }
+        | Cmd::People { .. }
         | Cmd::Map { .. }
         | Cmd::Dns(_)
         | Cmd::Exit(_)

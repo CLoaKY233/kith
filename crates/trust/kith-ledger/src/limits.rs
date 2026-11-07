@@ -35,3 +35,18 @@ pub const MAX_RECORD_VALUE_LEN: usize = 4 * 1024;
 
 /// Most ops held while waiting for their parents to arrive.
 pub const MAX_ORPHANS: usize = 1024;
+
+/// Longest passkey credential id, in bytes, as WebAuthn allows.
+pub const MAX_CREDENTIAL_ID_LEN: usize = 1023;
+
+/// Longest WebAuthn relying party id: a domain name.
+pub const MAX_RP_ID_LEN: usize = 253;
+
+/// Largest authenticator data in an assertion, in bytes.
+pub const MAX_AUTHENTICATOR_DATA_LEN: usize = 1024;
+
+/// Largest client data JSON in an assertion, in bytes.
+pub const MAX_CLIENT_DATA_LEN: usize = 2048;
+
+/// Largest DER-encoded ES256 signature, in bytes.
+pub const MAX_PASSKEY_SIG_LEN: usize = 72;

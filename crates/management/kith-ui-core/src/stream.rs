@@ -21,7 +21,8 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
 use futures_core::Stream;
-use kith_ipc::{Entry, EntryKind, TrafficSeries};
+use kith_ipc::{Entry, EntryKind, TrafficSample, TrafficSeries};
+use kith_types::{NetworkId, NodeId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -141,6 +142,17 @@ pub(crate) struct Live {
     run: Mutex<Run>,
     messages: broadcast::Sender<Message>,
     settled: watch::Sender<bool>,
+    /// Where entries and new traffic samples go to be kept, if anywhere.
+    sink: Option<mpsc::Sender<Persist>>,
+}
+
+/// What [`Live`] hands the Console's database: everything it sees, once.
+#[derive(Debug, Clone)]
+pub(crate) enum Persist {
+    /// A journal entry of the run `boot`.
+    Entry { boot: Arc<str>, entry: Entry },
+    /// Traffic samples newer than any handed over before.
+    Samples(Vec<(NetworkId, NodeId, TrafficSample)>),
 }
 
 /// A new stream's first frames and the live messages that follow them.
@@ -161,7 +173,14 @@ fn fresh_boot() -> String {
 
 impl Live {
     /// Nothing known yet; `boot` names the first run.
+    #[cfg(test)]
     pub(crate) fn new(boot: &str) -> Self {
+        Self::with_sink(boot, None)
+    }
+
+    /// [`Live::new`], handing every entry and sample to `sink` as well. A full sink drops
+    /// what does not fit rather than hold up the page.
+    pub(crate) fn with_sink(boot: &str, sink: Option<mpsc::Sender<Persist>>) -> Self {
         let (messages, _) = broadcast::channel(LIVE_BUFFER);
         let (settled, _) = watch::channel(false);
         Self {
@@ -178,6 +197,14 @@ impl Live {
             }),
             messages,
             settled,
+            sink,
+        }
+    }
+
+    /// Hands `item` to the sink, if there is one and it has room.
+    fn persist(&self, item: Persist) {
+        if let Some(sink) = &self.sink {
+            let _dropped_when_full = sink.try_send(item);
         }
     }
 
@@ -253,6 +280,12 @@ impl Live {
                 self.send(Message::Signal(reset));
             }
         }
+        for entry in &run.ring {
+            self.persist(Persist::Entry {
+                boot: Arc::clone(&run.boot),
+                entry: entry.clone(),
+            });
+        }
         run.synced = true;
         drop(run);
         self.settle();
@@ -288,6 +321,10 @@ impl Live {
                 frame,
             });
         }
+        self.persist(Persist::Entry {
+            boot: Arc::clone(&run.boot),
+            entry: entry.clone(),
+        });
         if run.ring.len() == KEEP {
             run.ring.pop_front();
         }
@@ -340,7 +377,15 @@ impl Live {
 
     /// Changes the traffic history.
     pub(crate) fn record(&self, change: impl FnOnce(&mut History)) {
-        change(&mut self.lock().traffic);
+        let mut run = self.lock();
+        let before = self.sink.is_some().then(|| run.traffic.newest());
+        change(&mut run.traffic);
+        if let Some(before) = before {
+            let fresh = run.traffic.since(&before);
+            if !fresh.is_empty() {
+                self.persist(Persist::Samples(fresh));
+            }
+        }
     }
 
     /// The boot id and the last seq applied, read before the rest of a snapshot so that
