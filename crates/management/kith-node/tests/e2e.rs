@@ -2365,6 +2365,57 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a_locked_exit_keeps_an_all_traffic_import_off() -> TestResult {
+        let s = start_server(true, false, Some("localhost")).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let alpha = peer_info(&s, network, "alpha").await?.node;
+        let (_, everything) = checked_configs(export(&s, network, "Phone", &["phone"]).await?)?;
+        let imported = a
+            .request(Request::ImportWireGuard {
+                name: "phone".into(),
+                conf_text: everything.replace("Endpoint = localhost:", "Endpoint = 127.0.0.1:"),
+            })
+            .await;
+        let Response::Imported { network: id } = imported else {
+            return Err(format!("the config did not import: {imported:?}").into());
+        };
+        let own_connection = DeviceSettingsInfo {
+            exit: None,
+            exit_locked: true,
+            paused: false,
+        };
+        set_settings(&s, network, alpha, own_connection).await?;
+        let mut off = false;
+        for _ in 0..100 {
+            if imports(&a).await?.iter().all(|import| !import.active) {
+                off = true;
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if !off {
+            return Err("locking the exit left the all-traffic import in use".into());
+        }
+        let refused = a
+            .request(Request::UseImport {
+                network: id,
+                active: true,
+            })
+            .await;
+        let Response::Error { message, .. } = refused else {
+            return Err(
+                format!("a locked device switched on an all-traffic import: {refused:?}").into(),
+            );
+        };
+        if !message.contains("locked") || imports(&a).await?.iter().any(|i| i.active) {
+            return Err(format!("unclear refusal or import in use: {message}").into());
+        }
+        shutdown([a, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn a_device_paused_by_an_admin_pauses() -> TestResult {
         let s = start().await?;
         let a = start().await?;
