@@ -1182,10 +1182,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a_taken_port_fails_with_an_error_that_names_it() -> TestResult {
+    async fn a_wireguard_port_held_by_another_vpn_is_traded_for_a_free_one() -> TestResult {
         let port = free_port()?;
-        let _holder = std::net::UdpSocket::bind(SocketAddr::new(LOCALHOST, port))?;
-        let started = start_node(
+        let _tailscale = std::net::UdpSocket::bind(SocketAddr::new(LOCALHOST, port))?;
+        let node = start_node(
             |mut config| {
                 config.network.listen_port = port;
                 config
@@ -1193,18 +1193,14 @@ mod tests {
             |options| options,
             true,
         )
-        .await;
-        let Err(error) = started else {
-            return Err("started on a port another program holds".into());
+        .await?;
+        let Response::Status(status) = node.request(Request::Status).await else {
+            return Err("no status".into());
         };
-        let message = error.to_string();
-        if !message.contains(&format!("port {port}")) || !message.contains("listen_port") {
-            return Err(format!("unhelpful error: {message}").into());
+        if status.listen_port == port || status.listen_port == 0 {
+            return Err(format!("still on the taken port: {}", status.listen_port).into());
         }
-        if !addr_in_use(&*error) {
-            return Err(format!("a port clash is not recognised as one: {error:?}").into());
-        }
-        Ok(())
+        shutdown([node]).await
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -51,7 +51,7 @@ impl NetworkRuntime {
         let params = NetworkParams {
             ipv4: Ipv4Prefix::new(Ipv4Addr::new(100, 64, 0, 0), 10)
                 .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
-            ipv6: Ipv6Prefix::new(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0), 48)
+            ipv6: Ipv6Prefix::new(random_ula()?, 48)
                 .map_err(|e| NodeError::InvalidArgument(e.to_string()))?,
         };
         let ledger = Ledger::create(
@@ -265,6 +265,31 @@ impl NetworkRuntime {
     }
 }
 
+/// A random unique-local /48 (RFC 4193) for a new network; never Tailscale's
+/// `fd7a:115c:a1e0::/48`, which older networks keep since the range is fixed at genesis.
+fn random_ula() -> Result<Ipv6Addr, NodeError> {
+    let mut bytes = [0_u8; 5];
+    loop {
+        kith_crypto::fill_random(&mut bytes)
+            .map_err(|error| NodeError::Io(std::io::Error::other(error)))?;
+        let [first, rest @ ..] = bytes;
+        let [g0, g1, g2, g3] = rest;
+        let address = Ipv6Addr::new(
+            0xfd00 | u16::from(first),
+            u16::from_be_bytes([g0, g1]),
+            u16::from_be_bytes([g2, g3]),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+        if address.segments().get(..3) != Some(&[0xfd7a, 0x115c, 0xa1e0][..]) {
+            return Ok(address);
+        }
+    }
+}
+
 /// The invite each member was admitted with, as the invite id `kith invite list` shows.
 #[expect(
     clippy::wildcard_enum_match_arm,
@@ -428,5 +453,19 @@ impl NetworkSet {
     /// The ledger registry, shared with the control channel's handler.
     pub(crate) fn registry(&self) -> LedgerRegistry {
         Arc::clone(&self.registry)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn new_networks_get_their_own_ipv6_range_never_tailscales() {
+        let first = super::random_ula().unwrap();
+        let second = super::random_ula().unwrap();
+        assert_ne!(first, second);
+        for address in [first, second] {
+            assert_eq!(address.segments()[0] & 0xff00, 0xfd00);
+            assert_ne!(address.segments()[..3], [0xfd7a, 0x115c, 0xa1e0]);
+        }
     }
 }

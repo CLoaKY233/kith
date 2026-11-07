@@ -2764,18 +2764,24 @@ async fn bind_sockets(
 ) -> Result<(UdpLink, ChannelLayer), NodeError> {
     const ATTEMPTS: usize = 16;
     let mut attempt = 0;
+    let mut listen = listen;
     loop {
         attempt += 1;
         let retry = listen.port() == 0 && attempt < ATTEMPTS;
         let link = match UdpLink::bind(listen) {
             Ok(link) => link,
             Err(kith_transport_udp::UdpError::Bind { source, .. })
-                if source.kind() == std::io::ErrorKind::AddrInUse =>
+                if source.kind() == std::io::ErrorKind::AddrInUse && listen.port() != 0 =>
             {
-                return Err(NodeError::PortInUse {
-                    port: listen.port(),
-                    protocol: "UDP, WireGuard",
-                });
+                // Another VPN, usually Tailscale on 41641, holds the port: take a free
+                // one; peers learn it through the control channel and relays.
+                tracing::warn!(
+                    port = listen.port(),
+                    "the WireGuard port is taken, often by Tailscale; using a free port instead; \
+                     set network.listen_port to choose one"
+                );
+                listen.set_port(0);
+                continue;
             }
             Err(error) => return Err(error.into()),
         };
