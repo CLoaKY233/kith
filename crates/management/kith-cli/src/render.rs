@@ -778,6 +778,7 @@ pub(crate) fn status_json(
 }
 
 /// The answer to any single-exchange command.
+#[expect(clippy::too_many_lines, reason = "one arm per daemon reply")]
 pub(crate) fn response(
     out: &mut impl Write,
     cmd: &Cmd,
