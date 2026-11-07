@@ -38,6 +38,7 @@ kith-transport-ws.workspace = true
 kith-tun.workspace = true
 kith-types.workspace = true
 rustls-pki-types.workspace = true
+serde_json = { workspace = true, features = ["std"] }
 toml.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = [

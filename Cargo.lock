@@ -1725,6 +1725,7 @@ dependencies = [
  "kith-types",
  "p256",
  "rustls-pki-types",
+ "serde_json",
  "thiserror",
  "tokio",
  "toml",

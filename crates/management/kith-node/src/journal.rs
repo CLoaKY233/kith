@@ -2,6 +2,8 @@
 //! `kith watch` and the UI, and the traffic history behind `kith top`.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use kith_ipc::{Entry, EntryKind, PathKind, PeerInfo, TrafficSample, TrafficSeries};
@@ -34,7 +36,12 @@ struct Inner {
 struct State {
     next: u64,
     entries: VecDeque<Entry>,
+    /// Where entries are kept across restarts, and how many lines the file holds.
+    file: Option<(PathBuf, usize)>,
 }
+
+/// Entries reloaded after a restart; the file is cut back to this many when it doubles.
+const PERSIST: usize = 512;
 
 impl Default for Journal {
     fn default() -> Self {
@@ -55,6 +62,30 @@ impl Journal {
         }
     }
 
+    /// Reloads the entries kept in `path` by an earlier run and keeps every later entry
+    /// there too, bounded to the last few hundred. A missing or damaged file starts empty.
+    pub fn persist(&self, path: &Path) {
+        let mut state = self.lock();
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let loaded: Vec<Entry> = text
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let start = loaded.len().saturating_sub(PERSIST);
+        let mut kept: VecDeque<Entry> = loaded.into_iter().skip(start).collect();
+        let mut next = kept.back().map_or(0, |entry| entry.seq.saturating_add(1));
+        for mut entry in state.entries.drain(..) {
+            entry.seq = next;
+            next = next.saturating_add(1);
+            kept.push_back(entry);
+        }
+        state.next = next;
+        state.entries = kept;
+        let lines = state.entries.len();
+        state.file = Some((path.to_owned(), lines));
+        rewrite(path, state.entries.iter());
+    }
+
     /// Records `kind` as happening now.
     pub fn push(&self, mut kind: EntryKind) {
         clip_text(&mut kind);
@@ -69,6 +100,7 @@ impl Journal {
             state.entries.pop_front();
         }
         state.entries.push_back(entry.clone());
+        save(&mut state, &entry);
         // Sent under the lock, so a subscriber never sees an entry twice or out of order.
         let _receivers = self.inner.live.send(entry);
     }
@@ -102,6 +134,45 @@ impl Journal {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Appends `entry` to the journal file, if any, cutting it back once it doubles.
+fn save(state: &mut State, entry: &Entry) {
+    let Some((path, lines)) = state.file.as_mut() else {
+        return;
+    };
+    *lines = lines.saturating_add(1);
+    if *lines > PERSIST.saturating_mul(2) {
+        *lines = PERSIST;
+        let start = state.entries.len().saturating_sub(PERSIST);
+        rewrite(path, state.entries.iter().skip(start));
+        return;
+    }
+    let Ok(line) = serde_json::to_string(entry) else {
+        return;
+    };
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path);
+    if let Ok(mut file) = file {
+        let _ignored = writeln!(file, "{line}");
+    }
+}
+
+/// Replaces the journal file with `entries`, one JSON object per line.
+fn rewrite<'a>(path: &Path, entries: impl Iterator<Item = &'a Entry>) {
+    let mut text = String::new();
+    for entry in entries {
+        if let Ok(line) = serde_json::to_string(entry) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+    }
+    let temp = path.with_extension("tmp");
+    if std::fs::write(&temp, text).is_ok() {
+        let _ignored = std::fs::rename(&temp, path);
     }
 }
 
@@ -369,6 +440,37 @@ mod tests {
     const NET: NetworkId = NetworkId::from_bytes([1; 32]);
     const A: NodeId = NodeId::from_bytes([2; 32]);
     const B: NodeId = NodeId::from_bytes([3; 32]);
+
+    #[test]
+    fn journal_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("kith-journal-{}", std::process::id()));
+        drop(std::fs::create_dir_all(&dir));
+        let path = dir.join("journal.jsonl");
+        drop(std::fs::remove_file(&path));
+        let first = Journal::new();
+        first.persist(&path);
+        first.push(EntryKind::DeviceRemoved {
+            network: NET,
+            node: A,
+            name: "a".into(),
+        });
+        first.push(EntryKind::DeviceRemoved {
+            network: NET,
+            node: B,
+            name: "b".into(),
+        });
+
+        let second = Journal::new();
+        second.persist(&path);
+        second.push(EntryKind::DeviceRemoved {
+            network: NET,
+            node: A,
+            name: "c".into(),
+        });
+        let seqs: Vec<u64> = second.entries().iter().map(|entry| entry.seq).collect();
+        assert_eq!(seqs, [0, 1, 2]);
+        drop(std::fs::remove_dir_all(&dir));
+    }
 
     fn view(name: &str, online: bool, path: Option<PathKind>, endpoint: &str) -> PeerView {
         PeerView {

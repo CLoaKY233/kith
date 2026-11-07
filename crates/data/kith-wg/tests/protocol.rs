@@ -308,6 +308,30 @@ mod tests {
         assert_eq!(&out[..packet.len()], packet.as_slice());
     }
 
+    /// Keepalives arriving from the other side must not hold back our own persistent ones.
+    #[test]
+    fn persistent_keepalive_counts_from_our_last_send() {
+        let (a_secret, b_secret) = ([0x57; 32], [0x68; 32]);
+        let mut a = Peer::new(
+            Arc::new(StaticIdentity::from_secret_bytes(a_secret)),
+            &PeerConfig::new(public_of(b_secret)).with_persistent_keepalive(25),
+            random(7),
+        )
+        .unwrap();
+        let mut b = peer(b_secret, a_secret, 8);
+        let packet = ipv4(b"tick");
+        let (_, initiation) = send(&mut a, at(0), &packet);
+        let (_, response) = deliver(&mut b, at(0), &initiation);
+        let (_, confirmation) = deliver(&mut a, at(0), &response);
+        deliver(&mut b, at(0), &confirmation);
+
+        let keepalive = drain(&mut b, at(10_000));
+        assert_eq!(keepalive.len(), 1);
+        deliver(&mut a, at(10_000), &keepalive[0]);
+        assert_eq!(drain(&mut a, at(24_999)), Vec::<Vec<u8>>::new());
+        assert_eq!(drain(&mut a, at(25_000)).len(), 1);
+    }
+
     /// One timeline through keepalive, rekey and expiry, with the events and counters it yields.
     #[test]
     fn timers_drive_keepalive_rekey_and_expiry() {
