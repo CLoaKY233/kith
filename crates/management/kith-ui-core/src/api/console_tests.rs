@@ -776,3 +776,37 @@ async fn only_the_person_who_made_a_phone_sees_its_config() -> TestResult {
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_device_that_joins_with_a_persons_code_is_theirs() -> TestResult {
+    let console = Console::public()?;
+    let (_, ada) = console.set_up().await?;
+    let made = console
+        .send(Call::post("/api/device-codes", json!({})).with(&ada))
+        .await?;
+    let code = made.body["code"].as_str().ok_or("no code")?;
+    let joined = console.send(Call::get(&format!("/j/{code}"))).await?;
+    let link = joined.body["invite_link"].as_str().ok_or("no link")?;
+    let token = kith_identity::InviteToken::parse(link)?;
+    let invite = crate::sim::hex(&token.invite_public_key().to_bytes());
+
+    let node = kith_types::NodeId::from_bytes([7; 32]);
+    console.shared.live.push(kith_ipc::EntryKind::DeviceJoined {
+        network: token.network(),
+        node,
+        name: "mac".into(),
+        address: "100.64.0.40".into(),
+        invite: Some(invite),
+    });
+    let mut devices = Value::Null;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+        let me = console.send(Call::get("/api/me").with(&ada)).await?;
+        devices = me.body["person"]["devices"].clone();
+        if devices.as_array().is_some_and(|list| !list.is_empty()) {
+            break;
+        }
+    }
+    assert_eq!(devices, json!([node.to_string()]));
+    Ok(())
+}

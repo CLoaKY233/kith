@@ -27,7 +27,8 @@ use crate::api::{ApiError, lock};
 use crate::ipc::Source;
 use crate::session::Token;
 use crate::store::{
-    ChallengeRow, JournalRow, PendingPerson, SessionRow, Storage, TrafficRow, secret_id,
+    ChallengeRow, DeviceCodeRow, JournalRow, PendingPerson, SessionRow, Storage, TrafficRow,
+    secret_id,
 };
 use crate::stream::Persist;
 use crate::webauthn::{self, Party};
@@ -298,6 +299,7 @@ pub(crate) async fn signed_in(
         .and_then(Principal::account)
         .ok_or_else(|| refused(StatusCode::UNAUTHORIZED, "sign in with your passkey"))?;
     let (network, _, _) = network(shared).await?;
+    claim_joined(shared, network).await;
     let person = shared
         .accounts
         .accounts(network)
@@ -612,9 +614,21 @@ async fn assign_joined(
             .find(|code| code.invite.as_deref() == Some(invite.as_str())),
         None => <[_; 1]>::try_from(codes).ok().map(|[code]| code),
     };
-    let Some(code) = code else {
-        return;
-    };
+    if let Some(code) = code {
+        assign_code(store, accounts, network, node, &code, by_invite).await;
+    }
+}
+
+/// Gives `node` to the person of `code`, as the person who made the code, and marks the
+/// code as having its device once that worked.
+async fn assign_code(
+    store: &dyn Storage,
+    accounts: &dyn AccountsBackend,
+    network: NetworkId,
+    node: NodeId,
+    code: &DeviceCodeRow,
+    by_invite: bool,
+) {
     let assign = accounts.assign_device(network, node, code.account.clone());
     let mut assigned = acting_as(Some(code.created_by.clone()), assign)
         .await
@@ -627,6 +641,34 @@ async fn assign_joined(
     }
     if assigned {
         let _kept = store.set_device_code_node(&code.code, &node.to_string());
+    }
+}
+
+/// Assigns the devices that joined with a device code's invite but were never given to
+/// its person: the join event can be missed (the Console restarted, its queue was full,
+/// or the daemon was busy), so each signed-in read checks the daemon's peers once more.
+/// Only invites the Console handed out for a code are kept, so a CLI invite never matches.
+async fn claim_joined(shared: &Shared, network: NetworkId) {
+    let Source::Daemon(daemon) = &shared.source else {
+        return;
+    };
+    let store = &*shared.store;
+    let Ok(codes) = store.unassigned_codes(&network.to_string(), 0) else {
+        return;
+    };
+    if codes.is_empty() {
+        return;
+    }
+    let Ok(Response::Peers(peers)) = daemon.ask(Request::Peers { network }).await else {
+        return;
+    };
+    for code in codes {
+        let joined = peers
+            .iter()
+            .find(|peer| peer.invite.is_some() && peer.invite == code.invite);
+        if let Some(peer) = joined {
+            assign_code(store, &*shared.accounts, network, peer.node, &code, true).await;
+        }
     }
 }
 
@@ -835,8 +877,8 @@ mod tests {
         );
     }
 
-    fn code(code: &str, account: &str, invite: &str) -> crate::store::DeviceCodeRow {
-        crate::store::DeviceCodeRow {
+    fn code(code: &str, account: &str, invite: &str) -> DeviceCodeRow {
+        DeviceCodeRow {
             code: code.to_owned(),
             network: NET.to_string(),
             account: account.to_owned(),
@@ -854,7 +896,7 @@ mod tests {
         fn with_invite(self, invite: &str) -> Self;
     }
 
-    impl WithInvite for crate::store::DeviceCodeRow {
+    impl WithInvite for DeviceCodeRow {
         fn with_invite(mut self, invite: &str) -> Self {
             self.invite = Some(invite.to_owned());
             self
