@@ -235,6 +235,15 @@ pub(crate) fn translate(request: Request) -> Result<Action, NodeError> {
             node,
             allowed,
         },
+        Request::SetDeviceSettings {
+            network,
+            node,
+            settings,
+        } => Action::SetDeviceSettings {
+            network,
+            node,
+            settings,
+        },
         Request::ServerMode { exit, relay } => Action::ServerMode { exit, relay },
         Request::ImportWireGuard { name, conf_text } => Action::ImportWireGuard {
             name: non_empty("import name", name)?,

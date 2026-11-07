@@ -11,7 +11,7 @@ mod tests {
     use kith_crypto::webauthn::sha256;
     use kith_identity::{BootstrapAddr, InviteToken};
     use kith_ipc::{
-        AccountRole, AuthorityChange, EntryKind, PasskeyAssertion, PasskeyCredential, PeerInfo,
+        AccountRole, AuthorityChange, DeviceSettingsInfo, EntryKind, PasskeyAssertion, PasskeyCredential, PeerInfo,
         Request, Response,
     };
     use kith_node::{Node, NodeHandle, NodeOptions, TunMode};
@@ -2183,5 +2183,99 @@ mod tests {
             return Err("the exit role was lost on restart".into());
         }
         shutdown([node]).await
+    }
+
+    async fn set_settings(
+        admin: &NodeHandle,
+        network: NetworkId,
+        node: NodeId,
+        settings: DeviceSettingsInfo,
+    ) -> TestResult {
+        let mut last = None;
+        for _ in 0..100 {
+            let response = admin
+                .request(Request::SetDeviceSettings {
+                    network,
+                    node,
+                    settings,
+                })
+                .await;
+            if response == Response::DeviceSettingsSet {
+                return Ok(());
+            }
+            last = Some(response);
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err(format!("settings not set: {last:?}").into())
+    }
+
+    async fn wait_for_exit(node: &NodeHandle, exit: Option<&str>) -> TestResult {
+        for _ in 0..100 {
+            if let Response::Status(status) = node.request(Request::Status).await
+                && status.exit_node.as_deref() == exit
+            {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err(format!("the exit never became {exit:?}").into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_admin_sets_and_locks_the_exit_of_a_device() -> TestResult {
+        let s = start_server(true, false, None).await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer_info(&a, network, "server").await?.node;
+        let alpha = peer_info(&s, network, "alpha").await?.node;
+        let locked = DeviceSettingsInfo {
+            exit: Some(server),
+            exit_locked: true,
+            paused: false,
+        };
+        set_settings(&s, network, alpha, locked).await?;
+        wait_for_exit(&a, Some("server/server")).await?;
+        let refused = a
+            .request(Request::UseExit {
+                network,
+                node: None,
+            })
+            .await;
+        let Response::Error { message, .. } = refused else {
+            return Err(format!("a locked exit was changed locally: {refused:?}").into());
+        };
+        if !message.contains("locked") {
+            return Err(format!("unclear refusal: {message}").into());
+        }
+        set_settings(&s, network, alpha, DeviceSettingsInfo::default()).await?;
+        wait_for_exit(&a, None).await?;
+        shutdown([a, s]).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_device_paused_by_an_admin_pauses() -> TestResult {
+        let s = start().await?;
+        let a = start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let alpha = peer_info(&s, network, "alpha").await?.node;
+        let paused = DeviceSettingsInfo {
+            paused: true,
+            ..DeviceSettingsInfo::default()
+        };
+        set_settings(&s, network, alpha, paused).await?;
+        for _ in 0..100 {
+            if a.request(Request::PauseState).await
+                == (Response::PauseState {
+                    paused: true,
+                    resume_in_secs: None,
+                })
+            {
+                return shutdown([a, s]).await;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        Err("the device never paused".into())
     }
 }

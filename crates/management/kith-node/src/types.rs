@@ -225,6 +225,15 @@ pub(crate) enum Action {
         /// Grant when true.
         allowed: bool,
     },
+    /// Write `device/<node>`: an admin, or the owner of the device.
+    SetDeviceSettings {
+        /// The network.
+        network: NetworkId,
+        /// The device.
+        node: NodeId,
+        /// What it should do.
+        settings: kith_ipc::DeviceSettingsInfo,
+    },
     /// Turn server mode features on or off.
     ServerMode {
         /// Act as an exit node.
