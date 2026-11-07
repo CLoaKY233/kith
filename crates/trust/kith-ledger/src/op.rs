@@ -224,6 +224,9 @@ pub enum OpBody {
         /// The change.
         change: AdminChange,
     },
+    /// A device leaves: removes its own author from the network, as a `RemoveDevice` of
+    /// itself would. Any device may sign it, for itself only.
+    Leave,
 }
 
 /// The hash context that turns a WireGuard key into a member id.
@@ -243,6 +246,7 @@ pub(crate) enum Kind {
     Admin,
     Join,
     Account,
+    Leave,
 }
 
 impl OpBody {
@@ -262,6 +266,7 @@ impl OpBody {
             | Self::AssignDevice { .. }
             | Self::Acted { .. } => Kind::Admin,
             Self::Join(_) => Kind::Join,
+            Self::Leave => Kind::Leave,
             Self::AddAccount { .. }
             | Self::RemoveAccount { .. }
             | Self::SetRole { .. }
@@ -302,7 +307,8 @@ impl OpBody {
             Self::AddAdmin { admin } => check_key(*admin),
             Self::RemoveAdmin { admin: _ }
             | Self::RemoveDevice { device: _ }
-            | Self::RevokeInvite { invite_key: _ } => Ok(()),
+            | Self::RevokeInvite { invite_key: _ }
+            | Self::Leave => Ok(()),
             Self::AddAccount { .. }
             | Self::RemoveAccount { .. }
             | Self::SetRole { .. }
@@ -408,7 +414,8 @@ impl OpBody {
             | Self::SetRecord { .. }
             | Self::Join(_)
             | Self::AddClient { .. }
-            | Self::RenameDevice { .. } => Ok(()),
+            | Self::RenameDevice { .. }
+            | Self::Leave => Ok(()),
         }
     }
 
@@ -436,7 +443,8 @@ impl OpBody {
             | Self::AssignDevice { .. }
             | Self::AuthorizeConsole { .. }
             | Self::RevokeConsole { .. }
-            | Self::SetRecoveryKey { .. } => None,
+            | Self::SetRecoveryKey { .. }
+            | Self::Leave => None,
         }
     }
 }

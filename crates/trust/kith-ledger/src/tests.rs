@@ -1234,3 +1234,24 @@ fn admins_rename_devices_last_writer_wins_and_readd_resets() {
         LedgerError::NameTooLong(MAX_NAME_LEN + 1)
     );
 }
+
+#[test]
+fn a_device_that_leaves_signs_its_own_removal_and_no_one_elses() {
+    let mut ledger = network(&[], 1);
+    let add = |device: u8| OpBody::AddDevice {
+        device: id(device),
+        name: String::from("d"),
+        tags: vec![],
+    };
+    let first = op(&ledger, &key(1), add(5));
+    put(&mut ledger, first);
+    let second = op(&ledger, &key(1), add(6));
+    put(&mut ledger, second);
+    let leave = op(&ledger, &key(5), OpBody::Leave);
+    put(&mut ledger, leave);
+    assert!(!ledger.view().is_member(&id(5)), "the leaver is gone");
+    assert!(ledger.view().is_member(&id(6)), "everyone else stays");
+    let back = op(&ledger, &key(1), add(5));
+    put(&mut ledger, back);
+    assert!(ledger.view().is_member(&id(5)), "an admin can add it again");
+}

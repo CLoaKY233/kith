@@ -180,7 +180,8 @@ impl Authority {
             | OpBody::RevokeConsole { .. }
             | OpBody::SetRecoveryKey { .. }
             | OpBody::Approved { .. }
-            | OpBody::Acted { .. } => return None,
+            | OpBody::Acted { .. }
+            | OpBody::Leave => return None,
         }
         Some(next)
     }
@@ -479,7 +480,8 @@ impl People {
             | OpBody::RenameDevice { .. }
             | OpBody::AssignDevice { .. }
             | OpBody::Approved { .. }
-            | OpBody::Acted { .. } => return None,
+            | OpBody::Acted { .. }
+            | OpBody::Leave => return None,
         }
         Some(next)
     }
@@ -680,6 +682,14 @@ impl<'a> StageB<'a> {
     fn admin_ops(&mut self, graph: &Graph<'a>, chain: &Chain, people: &PeopleChain) {
         for (index, op) in graph.indexed() {
             let author = op.op().author;
+            if matches!(op.op().body, OpBody::Leave) {
+                // A device's own signature is all a removal of itself needs.
+                self.device_removals
+                    .entry(author)
+                    .or_default()
+                    .push(Removal::new(graph, index));
+                continue;
+            }
             let valid = if let OpBody::Acted { actor, .. } = &op.op().body {
                 (chain.admin_may_act(index, author) || people.console_may_act(index, &author))
                     && people.may_act(index, actor)
@@ -746,7 +756,8 @@ impl<'a> StageB<'a> {
                 | OpBody::RevokeConsole { .. }
                 | OpBody::SetRecoveryKey { .. }
                 | OpBody::Approved { .. }
-                | OpBody::Acted { .. } => {}
+                | OpBody::Acted { .. }
+                | OpBody::Leave => {}
             }
         }
     }
@@ -891,7 +902,8 @@ impl<'a> StageB<'a> {
                 | OpBody::RevokeConsole { .. }
                 | OpBody::SetRecoveryKey { .. }
                 | OpBody::Approved { .. }
-                | OpBody::Acted { .. } => continue,
+                | OpBody::Acted { .. }
+                | OpBody::Leave => continue,
             };
             // Last writer wins among renames ordered after the admitting add.
             let name = self

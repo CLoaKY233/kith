@@ -136,6 +136,7 @@ export function reduce(state: ReducerState, entry: Entry, fx: Effects): void {
       if (!(entry.node in net)) {
         net[entry.node] = {
           node: entry.node,
+          invite: entry.invite,
           name: entry.name,
           address: entry.address,
           path: null,

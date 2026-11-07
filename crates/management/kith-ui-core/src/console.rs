@@ -528,7 +528,7 @@ async fn keep(
         match item {
             Persist::Entry { boot, entry } => {
                 if let EntryKind::DeviceJoined { network, node, .. } = &entry.kind {
-                    joined.push((*network, *node));
+                    joined.push((*network, *node, joined_invite(&entry)));
                 }
                 if let Some(row) = journal_row(&boot, &entry) {
                     rows.push(row);
@@ -544,8 +544,8 @@ async fn keep(
     if !minutes.is_empty() && store.add_traffic(&minutes).is_ok() {
         let _kept = store.set_setting(TRAFFIC_KEY, &rollup.through_ms.to_string());
     }
-    for (network, node) in joined {
-        assign_joined(store, accounts, clock, network, node).await;
+    for (network, node, invite) in joined {
+        assign_joined(store, accounts, clock, network, node, invite).await;
     }
 }
 
@@ -565,31 +565,61 @@ fn journal_row(boot: &str, entry: &Entry) -> Option<JournalRow> {
     })
 }
 
-/// A device joined: when exactly one code of its network handed out an invite in the
-/// last ten minutes and has no device yet, the device is that code's person's.
+/// The invite a joined device used, as hex, when the daemon's `device_joined` names it.
 ///
-/// The daemon's `device_joined` does not name the invite used, so two codes used at once
-/// in one network assign neither device; their people see them unassigned.
+/// Read from the entry's JSON so this works whether or not this build's `kith-ipc` has
+/// the field yet: `invite` on `DeviceJoined`, as hex or as 32 bytes.
+fn joined_invite(entry: &Entry) -> Option<String> {
+    let flat = json::entry(entry).ok()?;
+    match flat.get("invite")? {
+        serde_json::Value::String(text) => Some(text.to_ascii_lowercase()),
+        serde_json::Value::Array(bytes) => {
+            let bytes: Option<Vec<u8>> = bytes
+                .iter()
+                .map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+                .collect();
+            Some(crate::sim::hex(&bytes?))
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Object(_) => None,
+    }
+}
+
+/// A device joined: it is the person's whose device code handed out the invite it used.
+///
+/// With the invite named, exactly that code's person gets it. A daemon that does not name
+/// it yet falls back to the one code of the network that handed out an invite in the last
+/// ten minutes and has no device, and assigns nothing when there are several. A code is
+/// marked as having its device only once the assignment worked.
 async fn assign_joined(
     store: &dyn Storage,
     accounts: &dyn AccountsBackend,
     clock: &Clock,
     network: NetworkId,
     node: NodeId,
+    invite: Option<String>,
 ) {
     let since = clock.now_ms().saturating_sub(CODE_MS);
     let Ok(codes) = store.unassigned_codes(&network.to_string(), since) else {
         return;
     };
-    let [code] = codes.as_slice() else {
+    let code = match invite {
+        Some(invite) => codes
+            .into_iter()
+            .find(|code| code.invite.as_deref() == Some(invite.as_str())),
+        None => <[_; 1]>::try_from(codes).ok().map(|[code]| code),
+    };
+    let Some(code) = code else {
         return;
     };
-    if store
-        .set_device_code_node(&code.code, &node.to_string())
+    let assign = accounts.assign_device(network, node, code.account.clone());
+    if acting_as(Some(code.created_by.clone()), assign)
+        .await
         .is_ok()
     {
-        let assign = accounts.assign_device(network, node, code.account.clone());
-        let _assigned = acting_as(Some(code.created_by.clone()), assign).await;
+        let _kept = store.set_device_code_node(&code.code, &node.to_string());
     }
 }
 
@@ -796,6 +826,88 @@ mod tests {
             2,
             "a peer's samples older than another's newest still count"
         );
+    }
+
+    fn code(code: &str, account: &str, invite: &str) -> crate::store::DeviceCodeRow {
+        crate::store::DeviceCodeRow {
+            code: code.to_owned(),
+            network: NET.to_string(),
+            account: account.to_owned(),
+            created_by: account.to_owned(),
+            created_ms: 0,
+            expires_ms: u64::MAX,
+            used_ms: None,
+            invite: None,
+            node: None,
+        }
+        .with_invite(invite)
+    }
+
+    trait WithInvite {
+        fn with_invite(self, invite: &str) -> Self;
+    }
+
+    impl WithInvite for crate::store::DeviceCodeRow {
+        fn with_invite(mut self, invite: &str) -> Self {
+            self.invite = Some(invite.to_owned());
+            self
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[expect(clippy::panic_in_result_fn, reason = "assertions fail the test")]
+    async fn a_joined_device_goes_to_the_person_whose_code_made_its_invite()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::accounts::MemoryAccounts;
+        let store = crate::store::SqliteStore::memory()?;
+        let accounts = MemoryAccounts::default();
+        let clock = Clock::default();
+        let credential = |seed: u8| crate::store::StoredCredential {
+            credential_id: vec![seed],
+            public_key: vec![seed; 65],
+            rp_id: "vpn.example.com".to_owned(),
+        };
+        let ana = accounts
+            .add_account(NET, "Ana".to_owned(), PersonRole::Owner, credential(1))
+            .await
+            .map_err(|error| error.message().to_owned())?;
+        let now = clock.now_ms();
+        for (name, invite) in [("AAAAAA", "aa"), ("BBBBBB", "bb")] {
+            let row = code(name, &ana.id, invite);
+            assert!(store.put_device_code(&row).is_ok());
+            assert!(matches!(
+                store.redeem_device_code(name, now, invite),
+                Ok(crate::store::Redeem::Ok(_))
+            ));
+        }
+        // Two codes out at once: the invite names which one the device used.
+        assign_joined(&store, &accounts, &clock, NET, PEER, Some("bb".to_owned())).await;
+        let left = store
+            .unassigned_codes(&NET.to_string(), 0)
+            .unwrap_or_default();
+        assert_eq!(
+            left.iter().map(|row| row.code.as_str()).collect::<Vec<_>>(),
+            ["AAAAAA"]
+        );
+        let people = accounts.accounts(NET).await.unwrap_or_default();
+        assert_eq!(
+            people.first().map(|one| one.devices.clone()),
+            Some(vec![PEER])
+        );
+        // Without the invite and with more than one code open, nobody is guessed.
+        let other = NodeId::from_bytes([9; 32]);
+        let row = code("CCCCCC", &ana.id, "cc");
+        assert!(store.put_device_code(&row).is_ok());
+        assert!(store.redeem_device_code("CCCCCC", now, "cc").is_ok());
+        assign_joined(&store, &accounts, &clock, NET, other, None).await;
+        assert_eq!(
+            store
+                .unassigned_codes(&NET.to_string(), 0)
+                .unwrap_or_default()
+                .len(),
+            2
+        );
+        Ok(())
     }
 
     #[test]

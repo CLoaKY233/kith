@@ -502,14 +502,69 @@ fn resume_point(headers: &HeaderMap, query: &Resume) -> Option<Cursor> {
 /// `GET /api/events`.
 pub(crate) async fn events(
     State(shared): State<Arc<Shared>>,
+    axum::extract::Extension(crate::session::Caller(principal)): axum::extract::Extension<
+        crate::session::Caller,
+    >,
     headers: HeaderMap,
     Query(query): Query<Resume>,
 ) -> Sse<KeepAliveStream<Events>> {
     let resume = resume_point(&headers, &query);
     shared.live.settled().await;
     let (sender, receiver) = mpsc::channel(BUFFER);
-    tokio::spawn(relay(Arc::clone(&shared.live), resume, sender, STALL));
+    let feed = tokio::spawn(relay(Arc::clone(&shared.live), resume, sender, STALL));
+    if let Some(crate::console::Principal::Person { session, .. }) = principal.clone() {
+        tokio::spawn(watch_person(shared, principal, session, feed));
+    }
     Sse::new(Events(receiver)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
+}
+
+/// How often an open stream checks its person is still signed in and in the network.
+const RECHECK: Duration = Duration::from_secs(1);
+
+/// Ends a signed-in person's stream within [`RECHECK`] of their signing out, their
+/// session lapsing, or their leaving the ledger; while it stays open the session slides.
+async fn watch_person(
+    shared: Arc<Shared>,
+    principal: Option<crate::console::Principal>,
+    session: String,
+    feed: tokio::task::JoinHandle<()>,
+) {
+    loop {
+        tokio::time::sleep(RECHECK).await;
+        if feed.is_finished() {
+            return;
+        }
+        let now = shared.clock.now_ms();
+        let live = shared
+            .store
+            .session(&session)
+            .ok()
+            .flatten()
+            .is_some_and(|row| row.expires_ms > now);
+        let member = live
+            && crate::console::signed_in(&shared, principal.as_ref())
+                .await
+                .is_ok();
+        if !member {
+            feed.abort();
+            return;
+        }
+        if now.saturating_sub(
+            shared
+                .store
+                .session(&session)
+                .ok()
+                .flatten()
+                .map_or(now, |row| row.last_seen_ms),
+        ) >= 60_000
+        {
+            let _kept = shared.store.touch_session(
+                &session,
+                now,
+                now.saturating_add(crate::console::SESSION_MS),
+            );
+        }
+    }
 }
 
 /// Queues one frame for the page; false when the page went away or left its queue full

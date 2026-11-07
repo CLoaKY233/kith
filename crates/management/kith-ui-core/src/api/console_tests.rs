@@ -512,6 +512,86 @@ async fn an_admin_invite_works_only_once_its_inviter_confirms_it() -> TestResult
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn setup_stops_without_recovery_words_and_keeps_its_link() -> TestResult {
+    let console = Console::public()?;
+    let (network, _, _) = crate::console::network(&console.shared)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    // Someone already took the words: making them again fails.
+    let _taken = console.shared.accounts.recovery_key(network).await;
+    let token = console.setup_token()?;
+    let owner = Authenticator::new(1, DOMAIN, ORIGIN).ok_or("no key")?;
+    let begun = console
+        .send(Call::post(
+            "/api/setup/begin",
+            json!({"token": token, "name": "Ada"}),
+        ))
+        .await?;
+    let credential = owner.register(&begun.body["public_key"]);
+    let finished = console
+        .send(Call::post(
+            "/api/setup/finish",
+            json!({"token": token, "credential": credential}),
+        ))
+        .await?;
+    assert_eq!(finished.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        finished.body["message"]
+            .as_str()
+            .is_some_and(|text| text.contains("recovery words")),
+        "{}",
+        finished.body
+    );
+    let link = console
+        .send(Call::get(&format!("/api/setup/{token}")))
+        .await?;
+    assert_eq!(link.status, StatusCode::OK, "the link still works");
+    assert!(
+        console
+            .shared
+            .accounts
+            .accounts(network)
+            .await
+            .map_err(|e| e.message().to_owned())?
+            .is_empty(),
+        "no owner without words"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_device_code_is_used_up_only_once_its_invite_exists() -> TestResult {
+    let console = Console::public()?;
+    let (_, ada) = console.set_up().await?;
+    let made = console
+        .send(Call::post("/api/device-codes", json!({})).with(&ada))
+        .await?;
+    let code = made.body["code"].as_str().ok_or("no code")?.to_owned();
+    let store = &console.shared.store;
+    let now = console.shared.clock.now_ms();
+    assert!(matches!(
+        store.peek_device_code(&code, now)?,
+        crate::store::Redeem::Ok(_)
+    ));
+    assert!(
+        matches!(
+            store.peek_device_code(&code, now)?,
+            crate::store::Redeem::Ok(_)
+        ),
+        "looking at a code does not burn it"
+    );
+    let crate::store::Redeem::Ok(row) = store.redeem_device_code(&code, now, "ab")? else {
+        return Err("the code was not good".into());
+    };
+    assert_eq!(row.invite.as_deref(), Some("ab"));
+    assert!(matches!(
+        store.redeem_device_code(&code, now, "cd")?,
+        crate::store::Redeem::Used
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_device_code_hands_out_one_invite_within_ten_minutes() -> TestResult {
     let console = Console::public()?;
     let (_, ada) = console.set_up().await?;
@@ -634,5 +714,65 @@ async fn history_keeps_the_journal_the_console_saw() -> TestResult {
         tokio::time::sleep(core::time::Duration::from_millis(20)).await;
     }
     assert!(entries > 0, "the recorded journal was kept");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_signed_out_persons_event_stream_ends_at_once() -> TestResult {
+    let console = Console::public()?;
+    let (_, cookie) = console.set_up().await?;
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/api/events")
+        .header(header::HOST, DOMAIN)
+        .header(header::COOKIE, &cookie)
+        .header("sec-fetch-site", "same-origin")
+        .body(Body::empty())?;
+    let response = console.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let out = console
+        .send(Call::post("/api/logout", json!({})).with(&cookie))
+        .await?;
+    assert_eq!(out.status, StatusCode::NO_CONTENT);
+    let drained = tokio::time::timeout(
+        core::time::Duration::from_secs(5),
+        response.into_body().collect(),
+    )
+    .await;
+    assert!(drained.is_ok(), "the stream kept going after sign-out");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_person_who_made_a_phone_sees_its_config() -> TestResult {
+    let console = Console::public()?;
+    let (_, cookie) = console.set_up().await?;
+    let (network, _, _) = crate::console::network(&console.shared)
+        .await
+        .map_err(|error| error.message().to_owned())?;
+    let me = console.send(Call::get("/api/me").with(&cookie)).await?;
+    let ada = me.body["person"]["id"].as_str().ok_or("no id")?.to_owned();
+    let held = |made_by: &str| crate::api::HeldPhone {
+        mesh: "[Interface]".to_owned(),
+        everything: None,
+        made_ms: 0,
+        made_by: Some(made_by.to_owned()),
+    };
+    let mine = kith_types::NodeId::from_bytes([2; 32]).to_string();
+    let theirs = kith_types::NodeId::from_bytes([3; 32]).to_string();
+    {
+        let mut phones = crate::api::lock(&console.shared.api.phones);
+        phones.insert((network.to_string(), mine.clone()), held(&ada));
+        phones.insert((network.to_string(), theirs.clone()), held("someone else"));
+    }
+    let path = |node: &str| format!("/api/networks/{network}/phones/{node}/config");
+    let shown = console
+        .send(Call::post(&path(&mine), json!({"everything": false})).with(&cookie))
+        .await?;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    let refused = console
+        .send(Call::post(&path(&theirs), json!({"everything": false})).with(&cookie))
+        .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
     Ok(())
 }

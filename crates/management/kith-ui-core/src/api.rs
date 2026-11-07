@@ -67,6 +67,11 @@ impl ApiError {
         }
     }
 
+    /// What went wrong, as the page shows it.
+    pub(crate) fn message(&self) -> &str {
+        &self.body.message
+    }
+
     pub(crate) fn bad(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,
@@ -206,6 +211,8 @@ pub(crate) struct HeldPhone {
     pub(crate) everything: Option<String>,
     /// When it was made, so the oldest goes first once too many are held.
     pub(crate) made_ms: u64,
+    /// The signed-in person who made it; only they see its config, with no OS prompt.
+    pub(crate) made_by: Option<String>,
 }
 
 /// What the API keeps between requests.

@@ -52,6 +52,7 @@ export function selfPeer(status: StatusView | null, membership: Membership | nul
   if (!status?.node || !membership) return null;
   return {
     node: status.node,
+    invite: null,
     name: membership.name,
     address: membership.address,
     path: null,

@@ -760,7 +760,9 @@ export const copy = {
 
   /** §12.5 Error mapping. */
   error: {
-    permissionDenied: 'Only admins can do this. This device is a member.',
+    /** Either the person's role or the server's own permission to change kith; say both fixes. */
+    permissionDenied:
+      "kith refused this change. If you're a member, ask an owner or admin to do it. If you're an admin, the server isn't allowed to change kith: on the server, add the Console's user to the kith group and restart the Console.",
     notFound: (device: string): string => `${device} is no longer in this network.`,
     /** A name that was never in the network this session. */
     noDevice: (device: string, network: string): string =>

@@ -50,20 +50,30 @@ pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<Stri
         Some(node) => local(&mut client, summary, node).await?.0.name,
         None => String::new(),
     };
+    // The device serving this page is not among its own peers, yet on a server it is
+    // usually the exit everyone, phones included, should use: list it too.
     let views: Vec<ExitView> = exits
         .iter()
-        .filter_map(|node| peers.iter().find(|peer| peer.node == *node))
-        .map(|peer| ExitView {
+        .filter_map(|node| {
+            if Some(*node) == status.node && !me.is_empty() {
+                return Some((*node, me.clone()));
+            }
+            peers
+                .iter()
+                .find(|peer| peer.node == *node)
+                .map(|peer| (peer.node, peer.name.clone()))
+        })
+        .map(|(node, name)| ExitView {
             network: net.clone(),
-            node: peer.node.to_string(),
-            name: peer.name.clone(),
-            allowed: true,
-            access: Vec::new(),
-            in_use_by: if in_use.as_deref() == Some(peer.name.as_str()) && !me.is_empty() {
+            node: node.to_string(),
+            in_use_by: if in_use.as_deref() == Some(name.as_str()) && !me.is_empty() {
                 vec![me.clone()]
             } else {
                 Vec::new()
             },
+            name,
+            allowed: true,
+            access: Vec::new(),
         })
         .collect();
     Ok(Json(json!(views)))
