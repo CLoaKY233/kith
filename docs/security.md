@@ -52,6 +52,31 @@ The web page shows a member only a band (idle, light, busy) for links between tw
 - **What it can do.** `kith-ui` runs as the user who started it and talks to the daemon as that user, so it can change only what that user could change with `kith`. Showing a phone's private key and leaving a network also need the OS to confirm the person at the computer (Touch ID or the login password on macOS, polkit on Linux), within 2 minutes. That guards an unattended browser tab, not the user's own account.
 - **What it holds.** Invite links and phone configs made through the page stay in `kith-ui`'s memory until it stops, and the page can list them again.
 
+## The Console
+
+`install.sh --console <domain>` runs `kith-ui` as a public Console: HTTPS at that domain (Let's Encrypt), as the system user `kith-console` in the `kith` operator group, talking to the server's own kith daemon. People sign in with passkeys. Each person has a role in the network's ledger: owner, admin or member. Sessions last 12 hours. The Console keeps its sessions and history in SQLite under `/var/lib/kith-console`.
+
+- **Setup.** The first link, printed by the installer, works once and for 30 minutes. Whoever opens it first becomes the owner, so open it yourself, right away. The recovery words are generated on the server during setup, so the server knew them at that moment.
+- **What people can do.** Owners and admins approve devices, make invites, change policy, DNS and exits, and manage people (only owners manage owners). Their changes are signed with their passkey and checked by every device against their role in the ledger. Members use the network; for now an owner or admin adds devices for them.
+
+### What a compromised Console can do
+
+Root on the Console server, or anyone who controls the `kith-ui` process or the `kith` operator group there, can:
+
+- **Act as an admin of the network, without any passkey.** The server's own device created the network (or was made its admin), and an admin device signs admin operations on its own. That includes adding devices, changing the policy, granting exits and adding admin keys. Revoking the Console from the page does not take this away yet.
+- **Name any person as the author of a change.** The daemon trusts the person the Console says asked for it.
+- **Swap the change behind a passkey prompt.** A passkey signs a hash the page cannot show in full, so a malicious Console can ask an owner to sign something other than what the screen says, for example adding an attacker as owner.
+- **See everything the network shares**: devices, addresses, names, link reports, and the history it stores, and serve a changed page to people who sign in.
+- **Use the server as an exit or relay observer**, as with any exit: it sees internet traffic of devices that use it as their exit, and who talks to whom through its relay.
+
+It cannot:
+
+- Read traffic between two other devices: that stays WireGuard end to end, and relayed traffic is ciphertext.
+- Take over devices: it cannot read their keys or run commands on them; it can only change what the network allows.
+- Act when it is down: the mesh keeps working without the Console, and devices can still be managed from an admin device with `kith`.
+
+So treat the Console server like the network's admin key: keep it patched, limit who has root on it, and if it may be compromised, rebuild the network from a device you trust.
+
 ## What an attacker can do
 
 **On the network path** (your ISP, café Wi-Fi): see that you use kith, the server addresses you talk to, and how much traffic flows. They cannot read or change the traffic. DNS lookups go through the tunnel only while an exit is on; otherwise they go to your normal resolver for names outside the mesh.
@@ -60,7 +85,7 @@ The web page shows a member only a band (idle, light, busy) for links between tw
 
 **An exit node** sees your internet traffic as it leaves the tunnel, exactly as a commercial VPN provider would. Only use exits you trust.
 
-**Someone with an invite link** can join the network once per allowed use, until it expires. Treat the link like a password. A joined device can reach whatever the policy lets it reach, which by default is every other device. Neither `kith` nor the web page can revoke an invite yet, so make invites short and single-use (`--expires 1h --uses 1`); see the gap on backdating below.
+**Someone with an invite link** can join the network once per allowed use, until it expires. Treat the link like a password. A joined device can reach whatever the policy lets it reach, which by default is every other device. Revoke one with `kith invite revoke` or on the web page; still, make invites short and single-use (`--expires 1h --uses 1`), and see the gap on backdating below.
 
 **A stolen member device** has that device's key: it can reach what the device could, and sync the ledger, so it learns the member list, addresses, DNS names and the link reports above. Remove it from any admin device with `kith remove`; every member stops talking to it as soon as the removal reaches them.
 
@@ -71,13 +96,13 @@ The web page shows a member only a band (idle, light, busy) for links between tw
 ## Known gaps
 
 - **Invite backdating.** The sponsor of a join sets its timestamp, so a malicious member could accept an expired invite. Threshold-signed checkpoints will fix this; until then, keep invites short-lived.
-- **No invite revocation.** An invite stays good until it expires or its uses run out.
 - **No key rotation yet.** A device keeps its key for life. Replace a device whose key may have leaked: remove it and join it again.
-- **No recovery if admins are lost.** If every admin key is gone, nobody can change the network.
+- **Recovery if admins are lost.** A network made by the Console has recovery words, but there is no page yet to use them. A network made with `kith create` has none: if every admin key is gone, nobody can change it.
+- **The Console is a permanent admin.** See [What a compromised Console can do](#what-a-compromised-console-can-do).
 - **Phones trust their gateway.** A phone on plain WireGuard reaches the network through one kith device, and that device enforces the policy on the phone's behalf.
-- **One admin per network.** See above; adding admins from the CLI is planned.
+- **One admin per network from the CLI.** See above; the Console adds owners and admins as people, but the CLI cannot add admins yet.
 - **The web link can be seen while it opens.** The OS opens the link by starting a program with it as an argument, so another user on a shared computer who lists processes at that moment could see the token and use it first. The window lasts until the browser loads the page, and the page then says the link was already used. On a shared computer, use `kith ui --no-open` and paste the link yourself.
-- **Web sessions do not expire.** A session ends only when `kith-ui` stops. Stop it (Ctrl-C) when you are done.
+- **Local web sessions do not expire.** With `kith ui`, a session ends only when `kith-ui` stops. Stop it (Ctrl-C) when you are done. Console sessions last 12 hours.
 - **No audit.** The ledger rules have unit tests, and the protocols run in a deterministic multi-node simulator, but nobody outside the project has reviewed the code, and there are no fuzz targets yet.
 
 ## Reporting a vulnerability
