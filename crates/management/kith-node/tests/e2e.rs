@@ -2248,7 +2248,7 @@ mod tests {
             paused: false,
         };
         set_settings(&s, network, alpha, locked).await?;
-        wait_for_exit(&a, Some("server/server")).await?;
+        wait_for_exit(&a, Some("home/server")).await?;
         let refused = a
             .request(Request::UseExit {
                 network,

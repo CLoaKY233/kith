@@ -1214,6 +1214,10 @@ impl State {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one hot path: decrypt, reassemble, filter and deliver, without extra borrows"
+    )]
     fn receive(&mut self, now: Now, via: Via, datagram: &[u8]) {
         let mut address = [0; 18];
         let source = match &via {
