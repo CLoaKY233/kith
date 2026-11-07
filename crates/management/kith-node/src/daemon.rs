@@ -58,6 +58,9 @@ const ENDPOINT_SAVE_INTERVAL: core::time::Duration = core::time::Duration::from_
 const MESH_KEEPALIVE_SECS: u16 = 10;
 /// How long a mesh peer may stay silent and still count as online: two missed keepalives.
 const MESH_SILENCE: core::time::Duration = core::time::Duration::from_secs(25);
+/// How recently a peer must have sent internet traffic through this device to count as
+/// using it as its exit.
+const EXIT_USE_WINDOW: core::time::Duration = core::time::Duration::from_secs(60);
 
 /// How long a plain WireGuard member, which sends a keepalive every 25s, may stay silent
 /// and still count as online.
@@ -2013,7 +2016,7 @@ impl Daemon {
                 let seen_ago = heard_ago.or_else(|| self.last_seen.get(node).map(|s| secs_ago(*s)));
                 PeerInfo {
                     settings: map.device_settings().get(node).map(settings_info),
-                    via_this_exit: false,
+                    via_this_exit: stat.is_some_and(|stat| stat.used_as_exit(at, EXIT_USE_WINDOW)),
                     node: *node,
                     name: peer.label.clone(),
                     address: peer.addresses.v4.to_string(),

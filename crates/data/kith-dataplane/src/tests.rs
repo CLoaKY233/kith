@@ -201,6 +201,20 @@ async fn exit_traffic_and_its_replies_cross_the_exit_peer() {
     let request = udp_between(a.addresses.v4, internet, b"out");
     a.tun.inject(request.clone()).unwrap();
     assert_eq!(next_packet(&mut b).await, request);
+    let now = tokio::time::Instant::now().into_std();
+    let window = Duration::from_secs(60);
+    assert_eq!(
+        b.handle.exit_users(NETWORK, now, window).await.unwrap(),
+        BTreeSet::from([a.id])
+    );
+    assert!(a.handle.exit_users(NETWORK, now, window).await.unwrap().is_empty());
+    assert!(
+        b.handle
+            .exit_users(NETWORK, now + window + Duration::from_secs(1), window)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let reply = udp_between(internet, a.addresses.v4, b"back");
     b.tun.inject(reply.clone()).unwrap();

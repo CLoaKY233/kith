@@ -66,10 +66,21 @@ pub(crate) async fn list(State(shared): State<Arc<Shared>>, Path(net): Path<Stri
         .map(|(node, name)| ExitView {
             network: net.clone(),
             node: node.to_string(),
-            in_use_by: if in_use.as_deref() == Some(name.as_str()) && !me.is_empty() {
-                vec![me.clone()]
-            } else {
-                Vec::new()
+            in_use_by: {
+                let mut users = if in_use.as_deref() == Some(name.as_str()) && !me.is_empty() {
+                    vec![me.clone()]
+                } else {
+                    Vec::new()
+                };
+                if Some(node) == status.node {
+                    users.extend(
+                        peers
+                            .iter()
+                            .filter(|peer| peer.via_this_exit)
+                            .map(|peer| peer.name.clone()),
+                    );
+                }
+                users
             },
             name,
             allowed: true,
