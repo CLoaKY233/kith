@@ -461,6 +461,65 @@ fn a_console_makes_a_member_only_a_single_use_untagged_invite() {
 }
 
 #[test]
+fn a_person_sets_only_their_own_devices_settings_through_a_console() {
+    let ann = Passkey::new(1);
+    let max = Passkey::new(3);
+    let oz = Passkey::new(4);
+    let mut ledger = owned_by(&ann);
+    for change in [
+        max.add("max", Role::Member),
+        oz.add("oz", Role::Member),
+        OpBody::AuthorizeConsole { device: id(9) },
+    ] {
+        let op = approved(&ledger, &key(1), change, |c| ann.approve(c));
+        put(&mut ledger, op);
+    }
+    for (seed, owner) in [(5, &max), (6, &oz)] {
+        let add = signed(
+            &ledger,
+            &key(1),
+            OpBody::AddDevice {
+                device: id(seed),
+                name: format!("phone{seed}"),
+                tags: Vec::new(),
+            },
+        );
+        put(&mut ledger, add);
+        let assign = acted(
+            &ledger,
+            &key(9),
+            ann.account(),
+            OpBody::AssignDevice {
+                device: id(seed),
+                account: owner.account(),
+            },
+        );
+        put(&mut ledger, assign);
+    }
+    let settings = |seed: u8| OpBody::SetRecord {
+        key: format!("device/{}", id(seed)),
+        value: Some(alloc::vec![seed]),
+    };
+
+    let others = acted(&ledger, &key(9), max.account(), settings(6));
+    let not_console = acted(&ledger, &key(8), max.account(), settings(5));
+    let by_device = signed(&ledger, &key(5), settings(5));
+    for op in [others, not_console, by_device] {
+        put(&mut ledger, op);
+    }
+    assert!(ledger.view().records().is_empty());
+
+    let own = acted(&ledger, &key(9), max.account(), settings(5));
+    put(&mut ledger, own);
+    let records = ledger.view().records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records.get(&format!("device/{}", id(5))),
+        Some(&alloc::vec![5])
+    );
+}
+
+#[test]
 fn the_recovery_key_adds_people_and_consoles_like_an_owner() {
     let mut ledger = network();
     let recovery = key(40);

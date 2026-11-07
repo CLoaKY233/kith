@@ -5,6 +5,7 @@
 //! increases along every edge; genesis is index 0.
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -722,6 +723,22 @@ struct StageB<'a> {
 }
 
 impl<'a> StageB<'a> {
+    /// Whether `device` was last assigned to `account` in `index`'s causal past.
+    fn owned_by(
+        &self,
+        graph: &Graph<'a>,
+        index: usize,
+        device: &NodeId,
+        account: &AccountId,
+    ) -> bool {
+        let past = graph.ancestors(index);
+        self.assignments
+            .iter()
+            .rev()
+            .find(|(at, assigned, _)| assigned == device && past.contains(*at))
+            .is_some_and(|(_, _, owner)| owner == account)
+    }
+
     fn removals_of(&self, device: &NodeId) -> &[Removal] {
         self.device_removals.get(device).map_or(&[], Vec::as_slice)
     }
@@ -748,6 +765,11 @@ impl<'a> StageB<'a> {
                     || (own_device_invite(change)
                         && people.console_may_act(index, &author)
                         && people.is_person(index, actor))
+                    || own_device_settings(change).is_some_and(|device| {
+                        people.console_may_act(index, &author)
+                            && people.is_person(index, actor)
+                            && self.owned_by(graph, index, &device, actor)
+                    })
             } else {
                 op.op().body.kind() == Kind::Admin
                     && chain.admin_may_act(index, author)
@@ -1080,4 +1102,14 @@ fn own_device_invite(change: &AdminChange) -> bool {
         change,
         AdminChange::CreateInvite { max_uses: 1, tags, .. } if tags.is_empty()
     )
+}
+
+/// The device whose settings record `change` sets, if it is one: a person may change the
+/// settings of a device they own through a console.
+fn own_device_settings(change: &AdminChange) -> Option<NodeId> {
+    let AdminChange::SetRecord { key, .. } = change else {
+        return None;
+    };
+    let device: NodeId = key.strip_prefix("device/")?.parse().ok()?;
+    (*key == format!("device/{device}")).then_some(device)
 }
