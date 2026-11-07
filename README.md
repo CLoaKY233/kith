@@ -57,7 +57,7 @@ kith up
 
 `kith ui` opens your networks in the browser: devices, their connections, traffic and recent events, live. Admins can also let waiting devices in, make invites, add phones, set DNS names and exits, and allow blocked connections. Showing a phone's private key or leaving a network asks the OS to confirm it is you.
 
-It runs on your own device, listens on 127.0.0.1 only, and talks to the local kith service; nothing is hosted elsewhere. The link it opens works once, and the session lasts until you stop `kith-ui`. [docs/security.md](docs/security.md#the-web-page) has the details.
+Run with `kith ui`, it runs on your own device, listens on 127.0.0.1 only, and talks to the local kith service; nothing is hosted elsewhere. (The Console below is the same program serving a domain.) The link it opens works once, and the session lasts until you stop `kith-ui`. [docs/security.md](docs/security.md#the-web-page) has the details.
 
 It is a separate binary, `kith-ui`, for macOS and for Linux on x86_64 and aarch64. The installer asks whether to add it when run in a terminal; with `curl | sh`, set `KITH_UI=1`:
 
@@ -67,13 +67,27 @@ curl -fsSL https://raw.githubusercontent.com/CLoaKY233/kith/main/install.sh | KI
 
 From source: `cargo build --release -p kith-ui`, and put `kith-ui` next to `kith`.
 
+### The Console
+
+On a Linux server with a domain, the installer can also run the kith Console: the same web UI, served over HTTPS at that domain, with people instead of devices signing in.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CLoaKY233/kith/main/install.sh | sh -s -- --console vpn.example.com
+```
+
+It installs kith and `kith-ui`, creates a network if the server is in none, makes the server an exit and relay with the domain as its public name (kept in `/etc/kith/kith.toml`), opens kith's port and 80/443 where ufw or firewalld runs, and prints a one-time setup link. Point the domain at the server and open 80 and 443 in any cloud firewall first; the certificate comes from Let's Encrypt.
+
+The person who opens the setup link becomes the network's owner, signs in with a passkey and is shown recovery words to write down. Owners and admins can then invite people (accounts with the role owner, admin or member), and add devices with one-time device codes. Owners and admins sign changes with their passkey.
+
+The Console server holds real power over the network; read [what a compromised Console can do](docs/security.md#the-console) before you run one.
+
 ## How it differs
 
 Tailscale, Headscale and NetBird have a coordination server that every device talks to: Tailscale's, or one you host. innernet also needs a server. Nebula has no control plane, but you run a certificate authority and "lighthouse" hosts.
 
 kith has none of these. Each network is a ledger of signed operations (who is a member, the policy, DNS names, exits) that every device keeps a copy of and syncs with the others. Devices find each other with STUN and hole punching, and fall back to relays that members run. Other differences:
 
-- **Several networks at once**, each with its own addresses, policy and DNS, kept apart.
+- **Several networks**, each with its own policy and DNS. Every network currently uses the same address range, so one device should join only one network at a time; giving each network its own range is planned.
 - **Phones as members.** The stock WireGuard app joins through an admin's kith device, with its own address, name and policy.
 - **DNS records** (A, AAAA, CNAME, TXT) under `<network>.kith.internal`, alongside a name for each device.
 - **Stealth transports** (obfuscated WireGuard, QUIC, WebSocket) for networks that block plain WireGuard.
@@ -85,7 +99,8 @@ Alpha. It works day to day across a Mac, a Linux server and phones, but expect r
 
 - iOS and Android use the plain WireGuard app through a kith device; there is no kith app yet, so kith does not show up in the system's VPN settings.
 - `kith up` and `kith down` work on macOS and Linux. On other systems, run `kith daemon` under your service manager.
-- A network has one admin; adding more from the CLI is not done yet.
+- From the CLI, a network has one admin. The Console adds people with owner and admin roles, but the Console server itself stays an admin device (see [docs/security.md](docs/security.md#the-console)).
+- A device should be in one network at a time: all networks share one address range for now.
 - No outside security audit. [docs/security.md](docs/security.md) covers the threat model and known gaps.
 
 Known issues:

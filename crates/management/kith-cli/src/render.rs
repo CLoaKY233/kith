@@ -891,7 +891,7 @@ fn invite_table(out: &mut impl Write, invites: &[kith_ipc::InviteInfo]) -> Resul
         let uses = invite
             .uses_left
             .map_or_else(|| "unlimited".to_owned(), |left| left.to_string());
-        let mins = invite.expires_at_ms.saturating_sub(now) / 60_000;
+        let mins = invite.expires_at_ms.saturating_sub(now).div_ceil(60_000);
         writeln!(
             out,
             "{:<64}  {uses:>9}  {}h{:02}m",

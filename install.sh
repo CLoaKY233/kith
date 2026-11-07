@@ -8,6 +8,7 @@
 # KITH_DOWNLOADS=url   fetch releases from a mirror instead of GitHub
 # KITH_BIN_DIR=dir     install somewhere other than /usr/local/bin
 # KITH_UI=1            also install the web UI (kith ui) without asking
+# KITH_FROM=dir        install the kith and kith-ui binaries in dir instead of downloading
 #
 # On a Linux server, also run the kith Console, reachable at a domain over HTTPS:
 #
@@ -115,7 +116,11 @@ fi
 command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
     fail "needs sha256sum or shasum to verify the download"
 target="$(target)"
-version="${KITH_VERSION:-$(latest_version)}"
+if [ -n "${KITH_FROM:-}" ]; then
+    version="${KITH_VERSION:-main}"
+else
+    version="${KITH_VERSION:-$(latest_version)}"
+fi
 version="${version#v}"
 case "$version" in
     "" | *[!0-9A-Za-z.+-]*) fail "not a release version: $version" ;;
@@ -123,11 +128,27 @@ esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-fetch "$downloads/v$version/SHA256SUMS" "$tmp/SHA256SUMS" ||
+[ -n "${KITH_FROM:-}" ] || fetch "$downloads/v$version/SHA256SUMS" "$tmp/SHA256SUMS" ||
     fail "could not download the checksums"
+
+# Copies $1 into $bin_dir.
+put_bin() {
+    if mkdir -p "$bin_dir" 2>/dev/null && [ -w "$bin_dir" ]; then
+        install -m 0755 "$2" "$bin_dir/$1"
+    else
+        as_root mkdir -p "$bin_dir"
+        as_root install -m 0755 "$2" "$bin_dir/$1"
+    fi
+    say "installed $bin_dir/$1"
+}
 
 # Downloads, verifies and installs the release binary $1 into $bin_dir.
 install_bin() {
+    if [ -n "${KITH_FROM:-}" ]; then
+        [ -f "$KITH_FROM/$1" ] || fail "no $1 in $KITH_FROM"
+        put_bin "$1" "$KITH_FROM/$1"
+        return
+    fi
     name="$1-$version-$target"
     say "downloading $1 $version for $target"
     fetch "$downloads/v$version/$name.tar.gz" "$tmp/$name.tar.gz" ||
@@ -138,19 +159,15 @@ install_bin() {
         fail "checksum mismatch for $name.tar.gz; not installing"
     tar -xzf "$tmp/$name.tar.gz" -C "$tmp" "$name/$1" ||
         fail "$name.tar.gz has no $name/$1"
-    if mkdir -p "$bin_dir" 2>/dev/null && [ -w "$bin_dir" ]; then
-        install -m 0755 "$tmp/$name/$1" "$bin_dir/$1"
-    else
-        as_root mkdir -p "$bin_dir"
-        as_root install -m 0755 "$tmp/$name/$1" "$bin_dir/$1"
-    fi
-    say "installed $bin_dir/$1"
+    put_bin "$1" "$tmp/$name/$1"
 }
 
 install_bin kith
 
 ui="${KITH_UI:-}"
 [ -z "$console" ] || ui=1
+# An installed kith-ui must match kith's version, so it is upgraded too.
+[ ! -x "$bin_dir/kith-ui" ] || ui=1
 case "$target" in
     armv7-*)
         [ -z "$console" ] || fail "no kith-ui build for $target, so no Console"
@@ -194,7 +211,42 @@ if [ -n "${KITH_NO_START:-}" ]; then
     exit 0
 fi
 
+if [ -n "$console" ]; then
+    # Before kith starts, so the roles and the name hold from the first run and after reboots.
+    as_root "$bin_dir/kith" config server --exit --relay --public-hostname "$console"
+    if systemctl is-active --quiet kith 2>/dev/null; then
+        as_root systemctl restart kith
+    fi
+fi
+# kith up restarts a daemon still running an older binary.
 as_root "$bin_dir/kith" up
+if [ "$(uname -s)" = Linux ] && command -v systemctl >/dev/null 2>&1 &&
+    systemctl is-active --quiet kith-console 2>/dev/null; then
+    as_root systemctl restart kith-console
+fi
+
+# Opens kith's port, and the Console's 80 and 443, where ufw or firewalld is on.
+open_ports() {
+    port="$(as_root "$bin_dir/kith" status --json 2>/dev/null | sed -n 's/.*"listen_port":\([0-9]*\).*/\1/p')"
+    port="${port:-41641}"
+    if command -v ufw >/dev/null 2>&1 && as_root ufw status 2>/dev/null | grep -q 'Status: active'; then
+        as_root ufw allow "$port/udp" >/dev/null
+        as_root ufw allow "$port/tcp" >/dev/null
+        if [ -n "$console" ]; then
+            as_root ufw allow 80/tcp >/dev/null
+            as_root ufw allow 443/tcp >/dev/null
+        fi
+        say "opened port $port${console:+, 80 and 443} in ufw"
+    elif command -v firewall-cmd >/dev/null 2>&1 && as_root firewall-cmd --state >/dev/null 2>&1; then
+        as_root firewall-cmd --permanent --add-port="$port/udp" --add-port="$port/tcp" >/dev/null
+        if [ -n "$console" ]; then
+            as_root firewall-cmd --permanent --add-service=http --add-service=https >/dev/null
+        fi
+        as_root firewall-cmd --reload >/dev/null
+        say "opened port $port${console:+, 80 and 443} in firewalld"
+    fi
+}
+[ "$(uname -s)" != Linux ] || open_ports
 
 # Runs kith-ui as the Console at $console: a network if there is none, the service, and
 # the one-time setup link it writes.
@@ -231,6 +283,14 @@ setup_console() {
     if ! id kith-console >/dev/null 2>&1; then
         as_root useradd --system --no-create-home --home-dir /var/lib/kith-console \
             --shell /usr/sbin/nologin -G kith kith-console
+    elif ! id -nG kith-console | tr ' ' '\n' | grep -qx kith; then
+        as_root usermod -aG kith kith-console
+    fi
+    if command -v getent >/dev/null 2>&1; then
+        here_ip="$(curl -4 -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '\n')" || here_ip=""
+        if [ -n "$here_ip" ] && ! getent ahostsv4 "$console" | grep -q "^$here_ip "; then
+            say "note: $console does not resolve to this server ($here_ip) yet; HTTPS starts once it does"
+        fi
     fi
     as_root mkdir -p /etc/kith
     as_root install -m 0644 "$tmp/console.env" /etc/kith/console.env
@@ -256,7 +316,7 @@ setup_console() {
     say ""
     say "Open this link within 30 minutes to set up the kith Console. It works once:"
     say "  $(as_root cat "$link_file")"
-    say "Ports 80 and 443 must be open, and $console must point at this server."
+    say "Ports 80 and 443 must be reachable (open them in any cloud firewall), and $console must point at this server."
     say "A new link: sudo systemctl restart kith-console, then sudo cat $link_file"
 }
 

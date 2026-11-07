@@ -275,7 +275,6 @@ pub(crate) enum ExitCmd {
     },
 }
 
-/// `kith relay …`.
 /// Making, listing and revoking invites.
 #[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
 pub(crate) enum InviteCmd {
@@ -433,6 +432,19 @@ pub(crate) enum ConfigCmd {
     /// Print the effective configuration
     #[bpaf(command)]
     Show {
+        #[bpaf(positional("PATH"))]
+        path: Option<PathBuf>,
+    },
+    /// Make this device a server in the config file, so the roles survive a restart
+    #[bpaf(command)]
+    Server {
+        /// Offer this device as an exit
+        exit: bool,
+        /// Relay for devices that cannot connect directly
+        relay: bool,
+        /// The name devices use to reach this server, such as vpn.example.com
+        #[bpaf(argument("NAME"))]
+        public_hostname: Option<String>,
         #[bpaf(positional("PATH"))]
         path: Option<PathBuf>,
     },
