@@ -2194,7 +2194,7 @@ impl Daemon {
     async fn tick_peers_if_due(&mut self) {
         let now = Instant::now();
         let Some(due) = self.peer_tick_deadline() else {
-            self.activity.note_no_peers();
+            self.activity.note_no_peers(&self.journal);
             return;
         };
         if due > now {
