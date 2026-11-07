@@ -61,6 +61,10 @@ pub(crate) enum AuthorityChange {
     RevokeConsole {
         device: NodeId,
     },
+    AddCredential {
+        account: String,
+        credential: StoredCredential,
+    },
 }
 
 /// `PrepareAuthority`'s answer: the op to sign and its hash, the `WebAuthn` challenge.
@@ -107,6 +111,12 @@ pub(crate) enum Request {
     /// The recovery words, only while none were shown.
     RecoveryKey {
         network: NetworkId,
+    },
+    /// A prepared change approved by the recovery words instead of a passkey.
+    RecoverAuthority {
+        network: NetworkId,
+        op_bytes: Vec<u8>,
+        words: String,
     },
 }
 
@@ -215,6 +225,23 @@ pub(crate) trait AccountsBackend: Send + Sync + fmt::Debug {
                 network,
                 op_bytes,
                 assertion,
+            };
+            done(&self.ask(request).await?)
+        })
+    }
+
+    /// Publishes a prepared change approved by the recovery words.
+    fn recover_authority(
+        &self,
+        network: NetworkId,
+        op_bytes: Vec<u8>,
+        words: String,
+    ) -> Answer<'_, ()> {
+        Box::pin(async move {
+            let request = Request::RecoverAuthority {
+                network,
+                op_bytes,
+                words,
             };
             done(&self.ask(request).await?)
         })
@@ -384,6 +411,13 @@ fn to_change(change: AuthorityChange) -> Result<kith_ipc::AuthorityChange, ApiEr
         AuthorityChange::RevokeConsole { device } => {
             kith_ipc::AuthorityChange::RevokeConsole { device }
         }
+        AuthorityChange::AddCredential {
+            account,
+            credential,
+        } => kith_ipc::AuthorityChange::AddCredential {
+            account: account_id_of(&account)?,
+            credential: to_passkey(credential),
+        },
     })
 }
 
@@ -430,6 +464,15 @@ fn to_ipc(request: Request) -> Result<kith_ipc::Request, ApiError> {
             },
         },
         Request::RecoveryKey { network } => kith_ipc::Request::RecoveryKey { network },
+        Request::RecoverAuthority {
+            network,
+            op_bytes,
+            words,
+        } => kith_ipc::Request::RecoverAuthority {
+            network,
+            op_bytes,
+            words,
+        },
     })
 }
 
@@ -603,6 +646,9 @@ impl MemoryAccounts {
                 &assertion,
             ),
             Request::RecoveryKey { network } => recover(ledgers.entry(network).or_default()),
+            Request::RecoverAuthority { .. } => {
+                Err(ApiError::bad("recovery words need the network's daemon"))
+            }
         }
     }
 }
@@ -756,6 +802,27 @@ fn apply(
                 return Err(denied("only an owner revokes a console"));
             }
             ledger.consoles.retain(|one| *one != device);
+        }
+        AuthorityChange::AddCredential {
+            account,
+            credential,
+        } => {
+            if signer.role != PersonRole::Owner && signer.id != account {
+                return Err(denied("only the person or an owner adds a passkey"));
+            }
+            let person = ledger
+                .accounts
+                .iter_mut()
+                .find(|one| one.id == account)
+                .ok_or_else(|| ApiError::not_found("no such person"))?;
+            if person
+                .credentials
+                .iter()
+                .any(|known| known.credential_id == credential.credential_id)
+            {
+                return Err(ApiError::bad("that passkey is already theirs"));
+            }
+            person.credentials.push(credential);
         }
     }
     Ok(())

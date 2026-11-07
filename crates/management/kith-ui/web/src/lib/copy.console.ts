@@ -92,6 +92,11 @@ export const copyConsole = {
     title: 'People',
     add: 'Add person',
     you: 'you',
+    addPasskey: 'Add another passkey',
+    consoleActs: 'This Console can act for signed-in admins.',
+    revokeConsole: 'Revoke',
+    consoleRevoked: 'This Console no longer acts for anyone.',
+    passkeyAdded: 'Your new passkey works now.',
     pending: "Hasn't opened their link yet",
     waiting: (role: string): string =>
       `Made a passkey. Approve them to let them sign in as ${role === 'member' ? 'a member' : `an ${role}`}.`,

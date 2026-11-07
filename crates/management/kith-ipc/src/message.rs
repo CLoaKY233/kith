@@ -428,6 +428,13 @@ pub enum AuthorityChange {
         /// The device.
         device: NodeId,
     },
+    /// Adds another passkey to a person; their own passkey or an owner's approves it.
+    AddCredential {
+        /// The person.
+        account: AccountId,
+        /// The new passkey.
+        credential: PasskeyCredential,
+    },
 }
 
 /// A network's people, from [`Request::Accounts`].

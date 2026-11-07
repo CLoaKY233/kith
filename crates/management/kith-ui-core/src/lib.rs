@@ -245,6 +245,8 @@ fn routes() -> Router<Arc<Shared>> {
         .route("/api/register/{token}", get(api::auth::register_info))
         .route("/api/register/begin", post(api::auth::register_begin))
         .route("/api/register/finish", post(api::auth::register_finish))
+        .route("/api/recover/begin", post(api::auth::recover_begin))
+        .route("/api/recover/finish", post(api::auth::recover_finish))
         .route(
             "/api/people",
             get(api::people::list).post(api::people::invite),
@@ -254,6 +256,8 @@ fn routes() -> Router<Arc<Shared>> {
         .route("/api/people/{id}/approve", post(api::people::approve))
         .route("/api/authority/begin", post(api::people::authority_begin))
         .route("/api/authority/finish", post(api::people::authority_finish))
+        .route("/api/passkeys/begin", post(api::people::passkey_begin))
+        .route("/api/passkeys/finish", post(api::people::passkey_finish))
         .route("/api/device-codes", post(api::devicecodes::create))
         .route("/api/history/journal", get(api::history::journal))
         .route("/api/history/traffic", get(api::history::traffic))

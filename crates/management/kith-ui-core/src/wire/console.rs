@@ -204,6 +204,8 @@ pub enum AuthorityKind {
     AuthorizeConsole,
     /// Takes that back.
     RevokeConsole,
+    /// Adds another passkey to a person.
+    AddCredential,
 }
 
 /// A passkey prompt that signs one ledger change: pass `public_key` to

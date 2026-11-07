@@ -13,6 +13,9 @@ Props:
 <script lang="ts">
   import { onMount } from 'svelte';
   import { me } from '../lib/account.svelte';
+  import { accounts } from '../lib/accounts';
+  import { passkeyText } from '../lib/passkeyText';
+  import { createPasskey, usePasskey } from '../lib/webauthn';
   import { AuthorityPrompt } from '../lib/authority.svelte';
   import { errorText } from '../lib/api';
   import { copy } from '../lib/copy';
@@ -40,6 +43,34 @@ Props:
   let changing = $state.raw<Pending | null>(null);
   let dialogOpen = $state(false);
   const authority = new AuthorityPrompt();
+  let addingPasskey = $state(false);
+  const consoleAuthority = new AuthorityPrompt();
+
+  /** Takes this Console's power to act for people back; the owner's passkey signs it. */
+  async function revokeConsole(): Promise<void> {
+    const node = live.status?.node;
+    if (!node || consoleAuthority.state === 'signing') return;
+    consoleAuthority.prepare({ kind: 'revoke_console', device: node });
+    if (await consoleAuthority.confirm()) toast.done(copyConsole.people.consoleRevoked);
+    else toast.failed(consoleAuthority.error ?? copyConsole.people.loadFailed);
+  }
+
+  /** Makes a second passkey, then signs its addition with one the person already has. */
+  async function addPasskey(): Promise<void> {
+    if (addingPasskey) return;
+    addingPasskey = true;
+    try {
+      const made = await createPasskey((await accounts.passkeyBegin()).public_key);
+      const prompt = await accounts.passkeyFinish(made);
+      await accounts.authorityFinish(await usePasskey(prompt.public_key));
+      toast.done(copyConsole.people.passkeyAdded);
+      await load();
+    } catch (cause) {
+      toast.failed(passkeyText(cause));
+    } finally {
+      addingPasskey = false;
+    }
+  }
 
   const viewer = $derived(me());
   const sorted = $derived(people ? sortPeople(people) : []);
@@ -165,6 +196,14 @@ Props:
 </script>
 
 <section class="screen">
+  {#if viewer?.role === 'owner' && live.status?.node}
+    <div class="toolbar">
+      <p class="quiet">{copyConsole.people.consoleActs}</p>
+      <Button pending={consoleAuthority.state === 'signing'} onclick={revokeConsole}>
+        {copyConsole.people.revokeConsole}
+      </Button>
+    </div>
+  {/if}
   {#if addableRoles(viewer).length > 0}
     <div class="toolbar">
       <Button variant="primary" onclick={() => (adding = true)}>{copyConsole.people.add}</Button>
@@ -186,6 +225,9 @@ Props:
           <div class="who">
             <span class="name">{person.name}</span>
             {#if person.me}<span class="you">{copyConsole.people.you}</span>{/if}
+            {#if person.me && person.state === 'active'}
+              <Button pending={addingPasskey} onclick={addPasskey}>{copyConsole.people.addPasskey}</Button>
+            {/if}
             <span class="role {person.role}">{copy.account.role[person.role]}</span>
           </div>
           <div class="devices">

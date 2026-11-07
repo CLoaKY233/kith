@@ -515,3 +515,102 @@ pub(crate) async fn register_finish(
     };
     Ok(Json(json!(pending_view(&registered))))
 }
+
+/// What a recovery prompt needs to finish.
+#[derive(Debug, Serialize, Deserialize)]
+struct RecoverPrompt {
+    name: String,
+}
+
+/// `POST /api/recover/begin`'s input.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RecoverBeginIn {
+    name: String,
+}
+
+/// `POST /api/recover/finish`'s input.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RecoverFinishIn {
+    credential: serde_json::Value,
+    words: String,
+}
+
+/// `POST /api/recover/begin`: a prompt that makes a passkey for someone who holds the
+/// recovery words and no working passkey.
+pub(crate) async fn recover_begin(
+    State(shared): State<Arc<Shared>>,
+    input: Result<Json<RecoverBeginIn>, JsonRejection>,
+) -> Answer {
+    let Json(input) = input?;
+    let person = name(&input.name, "a name")?;
+    let challenge = challenge()?;
+    let user = random_bytes()?;
+    open_ceremony(
+        &shared,
+        "recover",
+        None,
+        &challenge,
+        &RecoverPrompt {
+            name: person.clone(),
+        },
+    )?;
+    Ok(Json(json!(CeremonyOptions {
+        public_key: creation_options(
+            crate::console::rp_id(&shared),
+            user.get(..16).unwrap_or_default(),
+            &person,
+            &challenge,
+            &[],
+        )
+    })))
+}
+
+/// `POST /api/recover/finish`: adds the new passkey as an owner, approved by the recovery
+/// words, and signs them in.
+pub(crate) async fn recover_finish(
+    State(shared): State<Arc<Shared>>,
+    input: Result<Json<RecoverFinishIn>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(input) = input?;
+    let registration: Registration = credential(input.credential)?;
+    let challenge = registration
+        .challenge()
+        .map_err(passkey_error(StatusCode::BAD_REQUEST))?;
+    let prompt: RecoverPrompt = close_ceremony(
+        &shared,
+        "recover",
+        &challenge,
+        None,
+        StatusCode::BAD_REQUEST,
+    )?;
+    let passkey = with_party(&shared, |party| {
+        verify_registration(&registration, &challenge, party)
+    })
+    .map_err(passkey_error(StatusCode::BAD_REQUEST))?;
+    let (network, _, _) = network(&shared).await?;
+    let public_key = passkey.public_key.clone();
+    let change = AuthorityChange::AddAccount {
+        name: prompt.name,
+        role: PersonRole::Owner,
+        credential: passkey,
+    };
+    let prepared = shared.accounts.prepare_authority(network, change).await?;
+    shared
+        .accounts
+        .recover_authority(network, prepared.op_bytes, input.words)
+        .await?;
+    let account = shared
+        .accounts
+        .accounts(network)
+        .await?
+        .into_iter()
+        .find(|one| {
+            one.credentials
+                .iter()
+                .any(|passkey| passkey.public_key == public_key)
+        })
+        .map(|one| one.id)
+        .ok_or_else(|| ApiError::not_found("the recovered owner is not in the ledger yet"))?;
+    let cookie = start_session(&shared, &account)?;
+    Ok(with_cookie(json!({ "account": account }), cookie))
+}

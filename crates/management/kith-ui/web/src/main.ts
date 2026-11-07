@@ -37,14 +37,16 @@ async function boot(): Promise<void> {
   }
   // The Console's pages before a session: the one-time setup link, an invited person's
   // registration link, and passkey sign-in. None shows the network.
-  const outside = /^\/(?:(setup|register)\/([^/]+)|login)\/?$/.exec(location.pathname);
+  const outside = /^\/(?:(setup|register)\/([^/]+)|login|(recover))\/?$/.exec(location.pathname);
   if (outside) {
     const page =
       outside[1] === 'setup'
         ? import('./routes/Setup.svelte')
         : outside[1] === 'register'
           ? import('./routes/Register.svelte')
-          : import('./routes/Login.svelte');
+          : outside[3] === 'recover'
+            ? import('./routes/Recover.svelte')
+            : import('./routes/Login.svelte');
     const { default: Page } = (await page) as { default: Component<{ token: string }> };
     target.replaceChildren();
     mount(Page, { target, props: { token: outside[2] ?? '' } });
