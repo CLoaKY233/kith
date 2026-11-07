@@ -38,6 +38,7 @@ Props:
   import { IDLE_BYTES_PER_SEC, PHONE_ABANDONED_MS } from '../live/timing';
   import type { DotState } from '../types';
   import type { PeerInfo } from '../types.gen';
+  import Icon from '../icons/Icon.svelte';
   import Badge from '../ui/Badge.svelte';
   import DropdownMenu, { type MenuItem } from '../ui/RowMenu.svelte';
   import IconButton from '../ui/IconButton.svelte';
@@ -136,6 +137,15 @@ Props:
   );
   const needsYou = $derived(admin && !self && !removed && (blockedNeed || waitingTooLong));
   /** §11.5: the needs-you state has a word, not only a colour. */
+  /** What an admin chose for the device: `via vps`, a lock, `Paused`; nothing when nothing. */
+  const chosen = $derived(self ? (network?.my_settings ?? null) : (peer.settings ?? null));
+  const viaName = $derived(
+    chosen?.exit
+      ? (live.exits[net]?.find((e) => e.node === chosen.exit)?.name ??
+          live.peers[net]?.[chosen.exit]?.name ??
+          null)
+      : null,
+  );
   const needsWord = $derived(
     needsYou ? (blockedNeed ? copy.device.needsBlocked : copy.device.needsWaiting) : null,
   );
@@ -218,6 +228,9 @@ Props:
     else if (progress) parts.push(progress);
     else parts.push(statusWord);
     if (needsWord) parts.push(needsWord);
+    if (viaName) parts.push(copy.deviceSettings.tagVia(viaName));
+    if (chosen?.exit_locked) parts.push(copy.deviceSettings.tagLocked);
+    if (chosen?.paused) parts.push(copy.deviceSettings.tagPaused);
     if (presence.kind === 'online' && !self && !removed) {
       const text = pathText(path, relay);
       if (text) parts.push(text);
@@ -352,6 +365,17 @@ Props:
     <span class="name">{peer.display_name}</span>
     {#if self}<Badge>{copy.device.you}</Badge>{/if}
     {#if needsWord}<span class="needs-word" title={needsWord}>{needsWord}</span>{/if}
+    {#if viaName || chosen?.exit_locked || chosen?.paused}
+      <span class="tags">
+        {#if viaName}<span>{copy.deviceSettings.tagVia(viaName)}</span>{/if}
+        {#if chosen?.exit_locked}
+          <span class="tag-icon" title={copy.deviceSettings.tagLocked}>
+            <Icon name="lock" label={copy.deviceSettings.tagLocked} />
+          </span>
+        {/if}
+        {#if chosen?.paused}<span>{copy.deviceSettings.tagPaused}</span>{/if}
+      </span>
+    {/if}
     <span class="addr">{peer.address}</span>
   </span>
   <span class="c-path" role="gridcell">
@@ -616,6 +640,18 @@ Props:
   .name {
     flex: none;
     max-width: 100%;
+  }
+  .tags {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    font: var(--t-small);
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .tag-icon {
+    display: inline-flex;
   }
   .needs-word {
     min-width: 0;

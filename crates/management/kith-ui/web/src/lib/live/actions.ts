@@ -9,6 +9,7 @@ import type {
     CreateNetworkIn,
     DeviceCodeIn,
     DeviceCodeView,
+    DeviceSettingsInfo,
     Entry,
     ExitIn,
     ExitView,
@@ -412,6 +413,28 @@ export function createActions(host: ActionsHost, runner: Runner) {
                             } satisfies RenameDeviceIn,
                         )
                         .then(afterwards(() => loadPeers(net))),
+                refresh: () => loadPeers(net),
+            }),
+        /** Where a device sends its internet traffic, whether it may change that, and whether it is paused. */
+        setDeviceSettings: (
+            net: string,
+            node: string,
+            settings: DeviceSettingsInfo,
+        ) =>
+            runner.run<Outcome>({
+                ledger: true,
+                run: () =>
+                    api
+                        .post<Outcome>(
+                            networkPath(net, `/devices/${enc(node)}/settings`),
+                            settings,
+                        )
+                        .then(
+                            afterwards(async () => {
+                                await loadPeers(net);
+                                if (node === host.status?.node) host.resync();
+                            }),
+                        ),
                 refresh: () => loadPeers(net),
             }),
         removeDevice: (net: string, node: string, lost: boolean) =>

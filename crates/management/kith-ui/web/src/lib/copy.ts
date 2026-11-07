@@ -374,6 +374,29 @@ export const copy = {
     },
 
     /** §6.4 Device detail. */
+    /** A device's internet traffic: where it goes, who may change that, and pause. */
+    deviceSettings: {
+        heading: "Internet traffic",
+        exit: "Goes through",
+        own: "Its own connection",
+        noMatch: "No exit matches",
+        lock: "Lock",
+        lockHelper: "Only admins and its owner can change this",
+        pause: "Pause",
+        pauseHelper: "Keeps it off the network until you resume it",
+        save: "Save",
+        noExits: "No device is allowed as an exit yet.",
+        waiting: (device: string): string => `Waiting for ${device}…`,
+        offline: (device: string): string =>
+            `Set${DOT}applies when ${device} is online`,
+        using: (exit: string): string => `Using ${exit}`,
+        usingOwn: "Using its own connection",
+        paused: "Paused",
+        tagVia: (exit: string): string => `via ${exit}`,
+        tagLocked: "Locked",
+        tagPaused: "Paused",
+    },
+
     detail: {
         editName: "Rename",
         kindOs: (kind: string, os: string): string => `${kind}${DOT}${os}`,
@@ -562,8 +585,10 @@ export const copy = {
         empty: "No device offers itself as an exit yet. On the one that should, run:",
         offerCommand: "kith server --exit",
         emptyThen: "Then an admin allows it here.",
-        consoleUse: (network: string): string =>
-            `Each device picks its own exit. On the device, run: kith exit use ${network} <exit>`,
+        devicesPick: "Each device picks its exit on its own page:",
+        devicesLink: "Devices",
+        allowedColumn: "Allowed",
+        toggleFor: (exit: string): string => `Allow ${exit} as an exit`,
         exit: "Exit",
         everyone: "Every device",
         nobody: "Nobody",

@@ -11,7 +11,7 @@ const LUCIDE = [
   'inbox', 'search', 'copy', 'check', 'ellipsis', 'ban', 'triangle-alert', 'circle-x',
   'qr-code', 'ticket', 'laptop', 'monitor', 'smartphone', 'server', 'cpu', 'key-round',
   'radio-tower', 'pencil', 'arrow-left', 'x', 'chevron-down', 'chevron-right', 'minus',
-  'scan', 'network', 'users',
+  'scan', 'network', 'users', 'lock',
 ];
 
 // Custom glyphs (spec §5) on Lucide's 24-unit grid with the same stroke rules. Endpoints are

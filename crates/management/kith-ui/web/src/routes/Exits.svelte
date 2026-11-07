@@ -1,11 +1,11 @@
 <!--
 @component
 Exits (spec §6.7). This device's choice at the top (ExitPicker), then, for admins, every
-exit on the network: who has access, who is using it now and its live rate. An exit that
-may be used offers `Stop offering…`; one that may not offers `Allow as exit…` and reads
-`Not allowed yet`. Both are tier 2: an AlertDialog with the consequences, and the button
-names the exit. This device is `This device` in the lists, first. `Allow device…` (§6.7)
-waits for the API: an exit grant is network-wide today.
+exit on the network: who has access, who is using it now (the exit's own `in_use_by`) and
+its live rate. Each row has an `Allowed` switch; one that may not be used reads `Not allowed
+yet`. Switching either way is tier 2: an AlertDialog with the consequences, and the button
+names the exit. A line says devices pick their exit on their own page, and links to Devices.
+This device is `This device` in the lists, first. `Allow device…` (§6.7) waits for the API: an exit grant is network-wide today.
 Below them: imported WireGuard networks (ImportedExits: use, stop using, remove),
 `Import a WireGuard config…` (`?sheet=wireguard`), and this device offered as an exit or relay.
 Props:
@@ -21,15 +21,14 @@ Props:
   import OfferThisDevice from '../lib/kith/OfferThisDevice.svelte';
   import ImportWireguard from '../sheets/ImportWireguard.svelte';
   import Button from '../lib/ui/Button.svelte';
-  import { closeOverlay, openOverlay } from '../router';
+  import { closeOverlay, go, href, openOverlay } from '../router';
   import Rate from '../lib/kith/Rate.svelte';
   import { actions, live } from '../lib/live/store.svelte';
   import { BANNER_DELAY_MS } from '../lib/live/timing';
   import type { ActionHandle, DotState } from '../lib/types';
   import type { ExitView, NetworkSummary, Outcome } from '../lib/types.gen';
   import AlertDialog from '../lib/ui/AlertDialog.svelte';
-  import DropdownMenu, { type MenuItem } from '../lib/ui/DropdownMenu.svelte';
-  import IconButton from '../lib/ui/IconButton.svelte';
+  import Switch from '../lib/ui/Switch.svelte';
   import StatusDot from '../lib/ui/StatusDot.svelte';
 
   let { net, query }: { net: string; query?: URLSearchParams } = $props();
@@ -152,6 +151,7 @@ Props:
 
   function apply(): void {
     const current = change;
+    committed = true;
     changeOpen = false;
     if (current === null || netId === null) return;
     const id = netId;
@@ -163,11 +163,14 @@ Props:
     });
   }
 
-  function items(exit: ExitView): MenuItem[] {
-    return exit.allowed
-      ? [{ label: copy.exits.stopOffering, tone: 'danger', onSelect: () => confirm(exit, false) }]
-      : [{ label: copy.detail.allowAsExit, onSelect: () => confirm(exit, true) }];
-  }
+  // A switch moves at once; when the dialog is cancelled it is built again from the truth.
+  let committed = false;
+  let resets = $state(0);
+  $effect(() => {
+    if (changeOpen) return;
+    if (committed) committed = false;
+    else if (change !== null) resets += 1;
+  });
 
   const headingId = $props.id();
   const reasonId = `${headingId}-reason`;
@@ -183,10 +186,17 @@ Props:
       {/if}
 
       <!-- Below the picker once it has its height, so nothing moves (§11.9). -->
-      {#if consoleMode() === 'public'}
-        <p class="t-small hint">{copy.exits.consoleUse(network.name)}</p>
-      {/if}
       {#if pickerReady || consoleMode() === 'public'}
+        <p class="t-small hint">
+          {copy.exits.devicesPick}
+          <a
+            href={href({ name: 'devices', net: network.name })}
+            onclick={(event) => {
+              event.preventDefault();
+              go(href({ name: 'devices', net: network.name }));
+            }}>{copy.exits.devicesLink}</a
+          >
+        </p>
         {#if admin && rows.length > 0}
           <section class="network" aria-labelledby={headingId}>
             <h2 class="t-heading" id={headingId}>{copy.exits.onNetwork}</h2>
@@ -196,7 +206,7 @@ Props:
                 <span role="columnheader">{copy.exits.access}</span>
                 <span role="columnheader">{copy.exits.inUse}</span>
                 <span role="columnheader" class="num">{copy.device.columns.rate}</span>
-                <span role="columnheader"><span class="sr-only">{copy.device.columns.actions}</span></span>
+                <span role="columnheader" class="num">{copy.exits.allowedColumn}</span>
               </div>
               {#each rows as exit (exit.node)}
                 {@const grant = grants[exit.node]}
@@ -238,16 +248,15 @@ Props:
                   </span>
                   <span class="num" role="cell"><Rate value={rate(exit)} stale={frozen} /></span>
                   <span class="more" role="cell">
-                    <DropdownMenu items={items(exit)}>
-                      {#snippet trigger(props)}
-                        <IconButton
-                          icon="ellipsis"
-                          label={copy.exits.moreFor(exit.name)}
-                          triggerProps={props}
-                          aria-describedby={frozen ? reasonId : undefined}
-                        />
-                      {/snippet}
-                    </DropdownMenu>
+                    {#key `${exit.node}/${exit.allowed}/${resets}`}
+                      <Switch
+                        checked={exit.allowed}
+                        label={copy.exits.toggleFor(exit.name)}
+                        hideLabel
+                        disabled={frozen}
+                        onCheckedChange={(on) => confirm(exit, on)}
+                      />
+                    {/key}
                   </span>
                 </div>
               {/each}
@@ -369,6 +378,9 @@ Props:
   .use {
     min-width: 0;
     color: var(--ink-2);
+  }
+  .hint {
+    color: var(--ink-3);
   }
   .quiet {
     color: var(--ink-3);

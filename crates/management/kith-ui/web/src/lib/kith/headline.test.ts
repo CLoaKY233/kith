@@ -7,6 +7,8 @@ function peer(name: string, online: boolean, path: PeerInfo['path'] = 'direct'):
   return {
     node: `id-${name}`,
     invite: null,
+    settings: null,
+    via_this_exit: false,
     name,
     address: '100.64.0.9',
     path: online ? path : null,

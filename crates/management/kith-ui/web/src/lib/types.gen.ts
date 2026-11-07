@@ -33,6 +33,23 @@ secs_ago: number,
 message: string, };
 
 /**
+ * What an admin, or the device's owner, has chosen for one device.
+ */
+export type DeviceSettingsInfo = { 
+/**
+ * The exit device it sends its internet traffic through; `None` is its own connection.
+ */
+exit: string | null, 
+/**
+ * Whether the device itself may not change its exit.
+ */
+exit_locked: boolean, 
+/**
+ * Whether the device is paused.
+ */
+paused: boolean, };
+
+/**
  * One network in [`Status`].
  */
 export type NetworkSummary = { 
@@ -63,7 +80,11 @@ problems: Array<Problem>,
 /**
  * Whether this device is an admin of the network, so may change it.
  */
-admin: boolean, };
+admin: boolean, 
+/**
+ * The settings chosen for the local device in this network.
+ */
+my_settings: DeviceSettingsInfo | null, };
 
 /**
  * A plain WireGuard network imported from a `wg-quick` config, in [`Status`].
@@ -219,7 +240,15 @@ path_mtu: number | null,
  * The invite the device joined with, as its [`InviteInfo::id`]; `None` for a device
  * added another way, such as by an admin, an approved request or as a phone.
  */
-invite: string | null, };
+invite: string | null, 
+/**
+ * The settings chosen for this device in the network.
+ */
+settings: DeviceSettingsInfo | null, 
+/**
+ * Whether this peer sent internet traffic through the local device in the last minute.
+ */
+via_this_exit: boolean, };
 
 /**
  * What a journal [`Entry`] records.

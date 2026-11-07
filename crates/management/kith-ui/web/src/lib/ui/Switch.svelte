@@ -8,6 +8,7 @@ Props:
   - checked: boolean, bindable.
   - label: string (from copy.ts).
   - helper?: string, under the label in `--ink-3` (the privacy switch's explanation).
+  - hideLabel?: boolean, keep the label for assistive tech only (a switch alone in a table row).
   - disabled?: boolean. `aria-disabled` (a stale connection): stays focusable, does not
     toggle. Pair it with inline reason text.
   - onCheckedChange?: (checked: boolean) => void, called only for a real change.
@@ -19,12 +20,14 @@ Props:
     checked = $bindable(false),
     label,
     helper,
+    hideLabel = false,
     disabled = false,
     onCheckedChange,
   }: {
     checked?: boolean;
     label: string;
     helper?: string;
+    hideLabel?: boolean;
     disabled?: boolean;
     onCheckedChange?: (checked: boolean) => void;
   } = $props();
@@ -38,9 +41,9 @@ Props:
   }
 </script>
 
-<div class="switch-row">
+<div class="switch-row" class:bare={hideLabel}>
   <div class="text">
-    <label for={id}>{label}</label>
+    <label for={id} class:sr-only={hideLabel}>{label}</label>
     {#if helper}<p class="helper" id={`${id}-help`}>{helper}</p>{/if}
   </div>
   <Switch.Root
@@ -61,6 +64,10 @@ Props:
     justify-content: space-between;
     gap: var(--s-4);
     min-height: var(--row);
+  }
+  .switch-row.bare {
+    justify-content: flex-end;
+    min-height: 0;
   }
   .text {
     display: grid;

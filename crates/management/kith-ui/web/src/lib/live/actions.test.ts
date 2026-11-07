@@ -64,6 +64,13 @@ describe('actions for the newer endpoints', () => {
     expect(posts[1]?.url).toBe('/api/networks/n1/invites/inv%201/revoke');
   });
 
+  it('sends a device its exit, lock and pause in one body', async () => {
+    const { calls, actions } = setup();
+    const settings = { exit: 'ab12', exit_locked: true, paused: false };
+    await actions.setDeviceSettings('n1', 'node1', settings).done;
+    expect(calls[0]).toEqual({ method: 'POST', url: '/api/networks/n1/devices/node1/settings', body: settings });
+  });
+
   it('turns server mode on and imports a WireGuard config', async () => {
     const { calls, host, actions } = setup({
       'GET /api/server': { exit: true, relay: false },

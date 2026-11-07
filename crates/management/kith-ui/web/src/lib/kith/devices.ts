@@ -53,6 +53,8 @@ export function selfPeer(status: StatusView | null, membership: Membership | nul
   return {
     node: status.node,
     invite: null,
+    settings: null,
+    via_this_exit: false,
     name: membership.name,
     address: membership.address,
     path: null,

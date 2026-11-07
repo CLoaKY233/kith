@@ -43,6 +43,8 @@ export function selfPeer(net: string): PeerInfo | null {
   return {
     node,
     invite: null,
+    settings: null,
+    via_this_exit: false,
     name: me.name,
     address: me.address,
     path: null,

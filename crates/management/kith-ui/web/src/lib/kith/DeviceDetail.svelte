@@ -9,6 +9,7 @@ DeviceDetail (spec §6.4): everything about one device, sections 32 px apart:
      request, bytes per day for the 30 days the Console keeps;
   5. names pointing here, with Copy;
   6. history: the last 10 entries, then `All →` into Activity;
+  6b. internet traffic (DeviceSettings): the exit it uses, Lock and Pause;
   7. actions: admins `Rename`, `Use as exit` or `Allow as exit…`, then `Remove from home…`;
      members one `Ask an admin…`; this device `Leave home…` instead of Remove.
 While the connection is stale every change is aria-disabled with the reason inline.
@@ -80,6 +81,7 @@ Props:
     verdict as verdictOf,
     windowTotals,
   } from './devices';
+  import DeviceSettings from './DeviceSettings.svelte';
   import EventRow from './EventRow.svelte';
   import PathBadge from './PathBadge.svelte';
 
@@ -877,6 +879,10 @@ Props:
           </p>
         {/if}
       </section>
+    {/if}
+
+    {#if !isPhone(peer)}
+      <DeviceSettings {net} {node} name={peer.name} {online} {isSelf} stale={isStale} />
     {/if}
 
     {#if !isSelf}

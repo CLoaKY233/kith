@@ -137,6 +137,8 @@ export function reduce(state: ReducerState, entry: Entry, fx: Effects): void {
         net[entry.node] = {
           node: entry.node,
           invite: entry.invite,
+          settings: null,
+          via_this_exit: false,
           name: entry.name,
           address: entry.address,
           path: null,
