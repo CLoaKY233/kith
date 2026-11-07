@@ -1421,7 +1421,12 @@ impl Daemon {
             }
         }
         self.exit = exit.map(|node| (network, node));
-        self.dataplane.set_exit(self.exit).await?;
+        // A chosen exit the dataplane can't use yet is a warning, never a reason to stop.
+        if let Err(error) = self.dataplane.set_exit(self.exit).await {
+            tracing::warn!(%error, "could not use the exit the network chose");
+            self.exit = None;
+            self.dataplane.set_exit(None).await?;
+        }
         self.exit_watch = None;
         self.exit_bypassed = false;
         self.state.save_exit(self.exit)?;
@@ -2489,7 +2494,6 @@ impl Daemon {
     }
 
     async fn refresh(&mut self, changed: Option<NetworkId>) -> Result<(), NodeError> {
-        self.apply_device_settings().await?;
         self.refresh_public_endpoints().await;
         self.push_peers().await?;
         let maps = self.networks.maps();
@@ -2509,6 +2513,9 @@ impl Daemon {
                 self.addresses.insert(id, wanted);
             }
         }
+        // After the dataplane knows the networks, before routes and DNS follow the exit.
+        self.apply_device_settings().await?;
+        let maps = self.networks.maps();
         let peers: Vec<NodeId> = member_maps(maps)
             .flat_map(|map| map.peers().keys().copied())
             .collect();

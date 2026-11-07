@@ -2415,6 +2415,40 @@ mod tests {
         shutdown([a, s]).await
     }
 
+    /// A locked exit is saved and applied again at start, where the dataplane learns the
+    /// network only during the first refresh: the daemon must come up using it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_device_with_a_locked_exit_restarts_through_it() -> TestResult {
+        let s = start_server(true, false, None).await?;
+        let disk_a = Disk::new("locked")?;
+        let a = disk_a.start().await?;
+        let network = create(&s, "server").await?;
+        join(&s, &a, network, "alpha").await?;
+        let server = peer_info(&a, network, "server").await?.node;
+        let alpha = peer_info(&s, network, "alpha").await?.node;
+        let granted = s
+            .request(Request::SetExitGrant {
+                network,
+                node: server,
+                allowed: true,
+            })
+            .await;
+        if granted != Response::ExitGrantSet {
+            return Err(format!("grant failed: {granted:?}").into());
+        }
+        let locked = DeviceSettingsInfo {
+            exit: Some(server),
+            exit_locked: true,
+            paused: false,
+        };
+        set_settings(&s, network, alpha, locked).await?;
+        wait_for_exit(&a, Some("home/server")).await?;
+        a.shutdown().await?;
+        let a = disk_a.start().await?;
+        wait_for_exit(&a, Some("home/server")).await?;
+        shutdown([a, s]).await
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_device_paused_by_an_admin_pauses() -> TestResult {
         let s = start().await?;
