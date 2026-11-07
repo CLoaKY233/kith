@@ -223,6 +223,7 @@ fn routes() -> Router<Arc<Shared>> {
         )
         .route("/invites/{id}/revoke", post(api::invites::revoke))
         .route("/phones", post(api::phones::create))
+        .route("/phones/gateways", get(api::phones::gateways))
         .route("/phones/{node}/config", post(api::phones::config))
         .route("/joins/{node}/approve", post(api::joins::approve))
         .route("/joins/{node}/deny", post(api::joins::deny))

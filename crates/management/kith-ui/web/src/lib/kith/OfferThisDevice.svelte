@@ -11,6 +11,7 @@ Props:
   none
 -->
 <script lang="ts">
+  import { consoleMode } from '../account.svelte';
   import { untrack } from 'svelte';
   import { announce } from '../announce';
   import { errorText } from '../api';
@@ -31,6 +32,8 @@ Props:
   );
   const operator = $derived(live.status?.operator ?? false);
   const device = $derived(live.status?.memberships[0]?.name ?? live.status?.host.name ?? '');
+  /** On a public Console this device is the server, named outright. */
+  const remote = $derived(consoleMode() === 'public');
   const frozen = $derived(live.conn === 'stale' || live.conn === 'daemon_down');
 
   // The switches follow the server; a cancelled change puts them back.
@@ -99,19 +102,19 @@ Props:
 </script>
 
 <section class="offer" aria-labelledby={headingId}>
-  <h2 class="t-heading" id={headingId}>{copy.server.heading}</h2>
+  <h2 class="t-heading" id={headingId}>{remote ? copy.server.serverHeading(device) : copy.server.heading}</h2>
   {#if operator}
     <Switch
       bind:checked={exitOn}
       disabled={frozen}
-      label={copy.server.exit}
+      label={remote ? copy.server.serverExit(device) : copy.server.exit}
       helper={copy.server.exitHelp}
       onCheckedChange={(on) => ask('exit', on)}
     />
     <Switch
       bind:checked={relayOn}
       disabled={frozen}
-      label={copy.server.relay}
+      label={remote ? copy.server.serverRelay(device) : copy.server.relay}
       helper={copy.server.relayHelp}
       onCheckedChange={(on) => ask('relay', on)}
     />

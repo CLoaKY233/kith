@@ -283,7 +283,15 @@ impl World {
             Ipc::SetRecord { .. } if self.admin => Reply::RecordSet,
             Ipc::SetRecord { .. } => admin_only(),
             Ipc::DeleteRecord { .. } => Reply::RecordDeleted,
-            Ipc::ExportWireGuard { device_name, .. } => Reply::WireGuardConfig {
+            Ipc::Gateways { .. } => Reply::Gateways(vec![kith_ipc::GatewayInfo {
+                node: NodeId::from_bytes([7; 32]),
+                name: "vps".into(),
+                endpoint: "203.0.113.7:41641".into(),
+                exit: true,
+                default: true,
+            }]),
+            Ipc::ExportWireGuard { device_name, .. }
+            | Ipc::ExportWireGuardVia { device_name, .. } => Reply::WireGuardConfig {
                 device: device_name.clone(),
                 endpoint: "192.168.1.20:41641".into(),
                 mesh: "[Interface]\nPrivateKey = mesh-key\n".into(),
@@ -1277,5 +1285,29 @@ async fn the_simulator_lists_an_import_until_it_is_removed() -> TestResult {
         .map(|one| &one["name"])
         .collect();
     assert_eq!(names, [&json!("work-vpn")]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_phone_goes_through_the_gateway_the_page_picked() -> TestResult {
+    let mut page = Page::open(World::new(true), Gate::System).await?;
+    let (code, gateways) = page.get(&net("/phones/gateways")).await?;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(
+        (gateways[0]["name"].clone(), gateways[0]["exit"].clone()),
+        (json!("vps"), json!(true))
+    );
+    let gateway = NodeId::from_bytes([7; 32]);
+    let (code, _) = page
+        .post(
+            &net("/phones"),
+            json!({ "name": "phone", "tags": [], "gateway": gateway.to_string() }),
+        )
+        .await?;
+    assert_eq!(code, StatusCode::OK);
+    assert!(page.changes().iter().any(|change| matches!(
+        change,
+        Ipc::ExportWireGuardVia { gateway: Some(picked), .. } if *picked == gateway
+    )));
     Ok(())
 }

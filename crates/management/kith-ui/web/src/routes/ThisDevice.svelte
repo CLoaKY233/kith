@@ -8,6 +8,7 @@ Props:
   none
 -->
 <script lang="ts">
+  import { consoleMode } from '../lib/account.svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import { copy, copyScreens, DOT } from '../lib/copy';
   import { logLevel, logLine } from '../lib/kith/activity';
@@ -127,7 +128,7 @@ Props:
     {/if}
   </section>
 
-  <OfferThisDevice />
+  {#if consoleMode() !== 'public'}<OfferThisDevice />{/if}
 
   <section class="group" aria-labelledby="this-log">
     <div class="log-head">

@@ -240,9 +240,9 @@ Props:
   <div class="body" bind:this={body}>
     {#if network === null}
       <!-- The route names no network this device is in: nothing to add to. -->
-    {:else if !network.admin}
+    {:else if !network.admin && !person}
       <p class="quiet">{copy.error.permissionDenied}</p>
-    {:else if !laptop}
+    {:else if !laptop && network.admin}
       <p class="t-heading">{copy.addDevice.question}</p>
       <div class="kinds">
         <button type="button" class="kind" onclick={chooseLaptop}>

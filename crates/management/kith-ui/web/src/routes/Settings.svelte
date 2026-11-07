@@ -12,6 +12,7 @@ Props:
   - query?: URLSearchParams. `?relay=new` (the palette's `Add relay`) focuses the new relay.
 -->
 <script lang="ts">
+  import { consoleMode } from '../lib/account.svelte';
   import { onMount, tick, untrack } from 'svelte';
   import { go, setQuery } from '../router';
   import { announce } from '../lib/announce';
@@ -452,6 +453,7 @@ Props:
         {/if}
       </section>
 
+      {#if consoleMode() !== 'public'}
       <section class="group" aria-labelledby="settings-danger">
         <h2 class="t-heading" id="settings-danger">{copy.settings.danger}</h2>
         {#if lastAdmin}
@@ -465,6 +467,7 @@ Props:
           {#if frozen}<p class="quiet">{copy.conn.staleActions}</p>{/if}
         {/if}
       </section>
+      {/if}
     {/if}
 
     <AlertDialog

@@ -412,6 +412,55 @@ fn consoles_act_only_for_admins_and_lose_to_a_concurrent_revoke() {
 }
 
 #[test]
+fn a_console_makes_a_member_only_a_single_use_untagged_invite() {
+    let ann = Passkey::new(1);
+    let max = Passkey::new(3);
+    let mut ledger = owned_by(&ann);
+    for change in [
+        max.add("max", Role::Member),
+        OpBody::AuthorizeConsole { device: id(9) },
+    ] {
+        let op = approved(&ledger, &key(1), change, |c| ann.approve(c));
+        put(&mut ledger, op);
+    }
+    let invite = |seed: u8, max_uses: u16, tags: Vec<String>| OpBody::CreateInvite {
+        invite_key: key(seed).verifying_key(),
+        expires: Timestamp::from_millis(600_000),
+        max_uses,
+        tags,
+    };
+
+    let reusable = acted(&ledger, &key(9), max.account(), invite(20, 5, Vec::new()));
+    let tagged = acted(
+        &ledger,
+        &key(9),
+        max.account(),
+        invite(21, 1, alloc::vec!["admin".into()]),
+    );
+    let not_console = acted(&ledger, &key(8), max.account(), invite(22, 1, Vec::new()));
+    let stranger = acted(
+        &ledger,
+        &key(9),
+        Passkey::new(5).account(),
+        invite(23, 1, Vec::new()),
+    );
+    for op in [reusable, tagged, not_console, stranger] {
+        put(&mut ledger, op);
+    }
+    assert!(ledger.view().invites().is_empty());
+
+    let own = acted(&ledger, &key(9), max.account(), invite(24, 1, Vec::new()));
+    put(&mut ledger, own);
+    assert!(
+        ledger
+            .view()
+            .invites()
+            .contains_key(&key(24).verifying_key().to_bytes())
+    );
+    assert_eq!(ledger.view().invites().len(), 1);
+}
+
+#[test]
 fn the_recovery_key_adds_people_and_consoles_like_an_owner() {
     let mut ledger = network();
     let recovery = key(40);

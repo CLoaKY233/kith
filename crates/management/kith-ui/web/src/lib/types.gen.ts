@@ -1726,7 +1726,16 @@ name: string,
 /**
  * Its policy tags.
  */
-tags: Array<string>, };
+tags: Array<string>,
+/**
+ * The device it connects through; absent picks the network's default gateway.
+ */
+gateway?: string, };
+
+/**
+ * A device that plain WireGuard devices can connect through.
+ */
+export type GatewayInfo = { node: string, name: string, endpoint: string, exit: boolean, default: boolean, };
 
 /**
  * The phone that was made.

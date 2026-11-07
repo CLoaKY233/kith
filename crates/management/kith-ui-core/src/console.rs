@@ -605,6 +605,7 @@ async fn assign_joined(
     let Ok(codes) = store.unassigned_codes(&network.to_string(), since) else {
         return;
     };
+    let by_invite = invite.is_some();
     let code = match invite {
         Some(invite) => codes
             .into_iter()
@@ -615,10 +616,16 @@ async fn assign_joined(
         return;
     };
     let assign = accounts.assign_device(network, node, code.account.clone());
-    if acting_as(Some(code.created_by.clone()), assign)
+    let mut assigned = acting_as(Some(code.created_by.clone()), assign)
         .await
-        .is_ok()
-    {
+        .is_ok();
+    // A member may not assign devices, but the device that used their own code's invite
+    // is theirs: the Console assigns it on its own authority.
+    if !assigned && by_invite && code.created_by == code.account {
+        let assign = accounts.assign_device(network, node, code.account.clone());
+        assigned = acting_as(None, assign).await.is_ok();
+    }
+    if assigned {
         let _kept = store.set_device_code_node(&code.code, &node.to_string());
     }
 }
