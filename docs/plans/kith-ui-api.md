@@ -32,6 +32,8 @@ Status 400, 401, 403, 404, 409, 500 or 503 with `ApiErrorBody {code, message, co
 | 403 | `os_auth_denied` | a tier-3 change the OS did not confirm, or this computer cannot ask; nothing was signed |
 | 404 | `not_found` | the network, device or name is gone |
 | 409 | `conflict` | another device settled it first; see below |
+| 410 | `session_used`, `session_expired` | a Console setup link, registration link or device code was used, or lapsed |
+| 429 | `rate_limited` | too many `GET /j/<code>` tries from one address within a minute |
 | 500 | `internal` | the daemon answered something unexpected, or another failure; `message` says what |
 | 503 | `daemon_down`, `not_in_group`, `version_skew` | the daemon is not running, this OS user may not open its socket, or it speaks another protocol |
 
@@ -131,3 +133,80 @@ Only the routes of the design spec §4.1 serve the page: `/`, `/welcome`, `/this
 - The recording never stops or restarts: no `daemon_down`, and `reset` only for a page that asks with another boot.
 
 Every endpoint works. Reads answer from an in-memory copy of the file, and every change edits that copy and writes the journal entry a daemon would, so the page sees its own changes on the stream: approving a join adds the device (`device_joined`), removing one drops it (`device_removed`), renaming writes `device_renamed`, using an exit writes `exit_changed`, and adding a phone adds a device. Records, invites (real `kith://join/` links for a network no daemon serves), revocations, the policy (allowing a blocked connection adds its rule and clears the group), relays and server mode change what the reads return; an import checks the config as the daemon does and lists a made-up network in `imported`, which can be used, stopped and removed. Tier-3 changes do not prompt. Nothing reaches a daemon or the network, and changes last until `kith-ui` stops. `request-code` answers `kith://request/<network>-recorded`. `npm run fixture` regenerates the file.
+
+People and passkeys work under `--fixture` too, against a ledger in memory that checks every passkey signature as the real one does. The database is in memory unless `--state-dir` is given.
+
+## Console
+
+`docs/plans/console.md` is the design. The same router serves two modes:
+
+- **Local** (`kith ui`, unchanged): `127.0.0.1:<port>` and the one-time link. Passkeys work here too, with relying party `localhost`, so only when the page is opened as `http://localhost:<port>`. Links the server hands out (registration, device codes) use `http://localhost:<port>`.
+- **Public** (`kith-ui --public <domain>`): HTTPS on 443 with a Let's Encrypt certificate (TLS-ALPN-01 on the same port, renewed automatically, cached in `<state>/acme`), and port 80 answering every request with `308` to `https://<domain><path>`. Flags: `--state-dir` (default `$STATE_DIRECTORY`), `--acme-email` (or `KITH_CONSOLE_EMAIL`), `--acme-staging`, `--https-port`, `--http-port` (0 for none).
+
+In public mode the guards above change:
+
+- `Host` must be `<domain>` or `<domain>:443`; `Origin` must be `https://<domain>`. Everything else is as above, refusals included.
+- Every answer also carries `Strict-Transport-Security: max-age=31536000`. The CSP is unchanged.
+- There is no link sign-in: `POST /api/session` answers 401. The session cookie is `__Host-kith=<secret>; HttpOnly; Secure; SameSite=Lax; Path=/` (locally the passkey session uses the usual `kith_ui_<port>` cookie).
+- `GET /api/status` answers without a session, with only `{mode: "public", me: null}`, so the signed-out page knows to offer passkey sign-in. Every other API path but the open ones below answers 401 without a session.
+
+A passkey session lasts 12 hours after its last request (it slides, written back at most once a minute), and ends at sign-out or when the person is removed. Sessions live in the Console's database as the SHA-256 of their secret.
+
+With a person's session, a change other than the ones they handle themselves (sign-out, device codes, people, authority prompts) needs an owner or admin; a member gets 403 `permission_denied`. Every admin request the Console sends the daemon carries the person as its `actor` once `kith-ipc` has the field (`accounts::with_actor` is the one place to set it).
+
+`GET /api/status` and the boot snapshot's `status` gain `mode: "local" | "public"` and `me: {id, name, role} | null` (`null` for the local link's session).
+
+### Passkeys on the wire
+
+Options and answers are WebAuthn's own JSON, passed through untouched: binary fields are base64url without padding, both ways. The page hands `public_key` to `PublicKeyCredential.parseCreationOptionsFromJSON` (create) or `parseRequestOptionsFromJSON` (get) and sends back `credential.toJSON()`. Only ES256 passkeys are taken; user verification is required; attestation is `none`. A prompt lasts 5 minutes and is answered once.
+
+`CeremonyOptions {public_key}`; `CredentialIn {credential}`; `TokenCredentialIn {token, credential}`.
+
+### Open paths (no session)
+
+| Method | Path | In | Out |
+|---|---|---|---|
+| GET | `/api/setup/<token>` | | `SetupInfo {network: {id, name} \| null, expires_at_ms}`. 404 unknown; 410 `session_used` or `session_expired` |
+| POST | `/api/setup/begin` | `SetupBeginIn {token, name, network_name}`; `network_name` only when `network` was `null` | `CeremonyOptions` (create) |
+| POST | `/api/setup/finish` | `TokenCredentialIn` | `SetupFinished {person: PersonView, authority: AuthorityChallenge}` and the session cookie. Burns the link, adds the owner (`AddAccount`, signed by this device), and opens the `authorize_console` prompt for this device; finish it with `/api/authority/finish` |
+| POST | `/api/login/begin` | `{}` | `CeremonyOptions` (get, any passkey of this site) |
+| POST | `/api/login/finish` | `CredentialIn` | `MeView {mode, person, network}` and the session cookie; 401 `unauthorized` for a passkey nobody in the network has, a bad signature or a used prompt |
+| GET | `/api/register/<token>` | | `RegisterInfo {name, role, network, invited_by, expires_at_ms, registered}` |
+| POST | `/api/register/begin` | `TokenIn {token}` | `CeremonyOptions` (create). 410 once registered or lapsed; 403 for an admin's or owner's invite not yet confirmed (see `add_admin`) |
+| POST | `/api/register/finish` | `TokenCredentialIn` | `PersonView` with `state: "registered"` |
+| GET | `/j/<code>` | | `JoinLink {invite_link, network_name}`: a `kith://join/` link for one device, valid 10 minutes, for `kith join https://<domain>/j/<code>`. Case and `-` are ignored, `O`→`0`, `I`/`L`→`1`. 404 unknown, 410 used or lapsed, 429 `rate_limited` after 10 tries per address per minute. Not under `/api/`, so no `Origin` needed |
+
+The setup link is `https://<domain>/setup/<token>`: `kith-ui --public` prints a new one at every start until the first owner exists, writes it to `<state>/setup-link`, and retires the previous one. It is good once, for 30 minutes. A registration link is `<origin>/register/<token>`, good once, for 7 days. Both are page routes, as are `/login` and `/n/<net>/people`.
+
+### With a session
+
+| Method | Path | In | Out |
+|---|---|---|---|
+| GET | `/api/me` | | `MeView`; `person` is `null` for the local link's session |
+| POST | `/api/logout` | `{}` | 204, the cookie cleared, the session ended |
+| POST | `/api/setup/recovery` | `{}` | `RecoveryWords {words}`, owners only, once; 409 after |
+| GET | `/api/people` | | `[PersonView {id, name, role, state, devices, passkeys, invited_by, expires_at_ms, me}]`: everyone in the ledger (`state: "active"`), then, for owners and admins, invited people (`invited`, or `registered` once they made a passkey; their `id` starts with `p-`) |
+| POST | `/api/people` | `PersonIn {name, role}` | `PersonInvite {person, link, expires_at_ms, qr_svg}`; `qr_svg` may be `null`. Admins invite members; owners anyone |
+| POST | `/api/people/<id>/role` | `RoleIn {role}` | `AuthorityChallenge`; the same as `set_role` below |
+| POST | `/api/people/<id>/approve` | `{}` | `AuthorityChallenge`; the same as `add_admin` below |
+| POST | `/api/people/<id>/remove` | `{}` | for an invited person (`p-…`), `Outcome` at once; otherwise `AuthorityChallenge`, the same as `remove_person` |
+| POST | `/api/authority/begin` | `AuthorityBeginIn {change}` | `AuthorityChallenge {change, public_key, expires_at_ms}` |
+| POST | `/api/authority/finish` | `CredentialIn` | `Outcome`. 400 for a prompt that is not open, someone else's, or a bad signature; the daemon's refusal as usual |
+| POST | `/api/device-codes` | `DeviceCodeIn {person}`; `null` is the signed-in person, someone else needs an owner or admin | `DeviceCodeView {code, expires_at_ms, link, command, qr_svg, person}`: six Crockford base32 characters, 10 minutes, `link` is `<origin>/j/<code>`, `command` is `kith join <link>` |
+| GET | `/api/history/journal?before=&limit=&network=` | | `JournalPage {entries: [StoredEntry {id, boot, entry}], next_before}`, newest first; `limit` 200 by default, at most 1000; pass `next_before` as `before` for older ones |
+| GET | `/api/history/traffic?network=&node=&since_ms=&until_ms=` | | `[TrafficHistory {network, node, minutes: [{minute_ms, rx_bytes, tx_bytes}]}]`: bytes per peer per minute, the last day unless asked, 30 days at most |
+
+`change` is one of (`kind` names it):
+
+- `{kind: "add_admin", person}`: an invited person of any role (`add_person` is accepted too). Before they made a passkey it is a confirmation: the prompt signs a random challenge, nothing reaches the ledger, and an owner's or admin's registration link starts working (member links work without it). The page does this for an admin before it shows the link. After they registered it signs their `AddAccount`, and they can sign in. A passkey can only sign an op that names the new passkey, so an invited admin always takes two prompts from the inviter: one when the link is made, one once they registered.
+- `{kind: "set_role", person, role}`: owners only.
+- `{kind: "remove_person", person}` (or `remove_account`): admins remove members, owners anyone. Ends the person's sessions.
+- `{kind: "authorize_console", device}`, `device` `null` for this one; `{kind: "revoke_console", device}`: owners only.
+
+The challenge of an authority prompt is the op hash the daemon gave for the change (`PrepareAuthority`); `allowCredentials` lists the signer's passkeys for this site. Finishing checks the answer against the signer's stored key, origin and relying party, then hands op and assertion to the daemon (`SubmitAuthority`), which checks again.
+
+A device that joins with a code's invite is assigned to the code's person (`AssignDevice`) when its `device_joined` entry arrives and exactly one code of that network handed out an invite in the last 10 minutes without a device yet. A phone made through `/phones` by a signed-in person is assigned to them.
+
+### History
+
+The Console keeps every journal entry it sees (each once, also across restarts) and the traffic samples as bytes per peer per minute, both for 30 days, in SQLite (`<state>/console.sqlite3`, numbered migrations run at start). The live chart and stream above are unchanged; the history endpoints reach further back.

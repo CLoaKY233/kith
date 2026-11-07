@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+data-encoding = { workspace = true, features = ["alloc"] }
 futures-core.workspace = true
 kith-crypto = { workspace = true, features = ["getrandom"] }
 kith-config.workspace = true
@@ -18,11 +19,17 @@ kith-identity = { workspace = true, features = ["getrandom"] }
 kith-ipc.workspace = true
 kith-policy.workspace = true
 kith-types.workspace = true
+p256 = { workspace = true, features = ["ecdsa", "std"] }
 qrcode = { workspace = true, features = ["svg"] }
+rusqlite = { workspace = true, features = ["bundled"] }
+rustls.workspace = true
+rustls-acme = { workspace = true, features = ["ring", "tokio", "webpki-roots", "tls12"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json = { workspace = true, features = ["std"] }
+sha2.workspace = true
 subtle = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "net", "process", "rt", "sync", "time"] }
+tokio-rustls.workspace = true
 toml.workspace = true
 ts-rs = { workspace = true, optional = true }
 

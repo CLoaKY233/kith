@@ -34,6 +34,7 @@ pub(crate) async fn create(
         Source::Fixture(sim) => {
             let (created, held) = sim.add_phone(&shared.live, &net, &input)?;
             hold(&shared, &net, &created.node, held);
+            assign(&shared, &net, &created.node).await;
             return Ok(Json(json!(created)));
         }
         Source::Daemon(daemon) => daemon,
@@ -72,7 +73,19 @@ pub(crate) async fn create(
         made_ms: now_ms(),
     };
     hold(&shared, &network.to_string(), &created.node, held);
+    assign(&shared, &net, &created.node).await;
     Ok(Json(json!(created)))
+}
+
+/// Gives a new phone to the signed-in person who made it. Best effort: a daemon without
+/// accounts, or the local link's session, leaves it unassigned.
+async fn assign(shared: &Shared, net: &str, node: &str) {
+    let Some(account) = crate::accounts::actor() else {
+        return;
+    };
+    if let (Ok(network), Ok(node)) = (network_id(net), node_id(node)) {
+        let _assigned = shared.accounts.assign_device(network, node, account).await;
+    }
 }
 
 /// Keeps a phone's config until the page reveals it, dropping the oldest past [`MAX_HELD`].

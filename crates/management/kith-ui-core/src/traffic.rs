@@ -130,6 +130,40 @@ impl History {
         }
     }
 
+    /// Each device's newest sample time, to find what a change added with
+    /// [`History::since`].
+    pub fn newest(&self) -> BTreeMap<(NetworkId, NodeId), u64> {
+        self.devices
+            .iter()
+            .filter_map(|(key, device)| Some((*key, device.ring.last_ms()?)))
+            .collect()
+    }
+
+    /// The samples newer than `before` says each device had, oldest first per device.
+    pub fn since(
+        &self,
+        before: &BTreeMap<(NetworkId, NodeId), u64>,
+    ) -> Vec<(NetworkId, NodeId, TrafficSample)> {
+        let mut fresh = Vec::new();
+        for (key, device) in &self.devices {
+            let from = before.get(key).copied();
+            let newer: Vec<&TrafficSample> = device
+                .ring
+                .samples
+                .iter()
+                .rev()
+                .take_while(|sample| from.is_none_or(|last| sample.at_ms > last))
+                .collect();
+            fresh.extend(
+                newer
+                    .into_iter()
+                    .rev()
+                    .map(|sample| (key.0, key.1, *sample)),
+            );
+        }
+        fresh
+    }
+
     /// How many devices are kept.
     pub fn len(&self) -> usize {
         self.devices.len()

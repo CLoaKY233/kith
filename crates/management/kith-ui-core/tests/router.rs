@@ -10,6 +10,7 @@
 )]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
 
     use axum::Router;
     use axum::body::Body;
@@ -19,7 +20,7 @@ mod tests {
         DnsRecord, IpcServer, NetworkSummary, Request as Ipc, Response as Answer, Status,
     };
     use kith_types::NetworkId;
-    use kith_ui_core::{Asset, Config, Source, Token, load_fixture, router};
+    use kith_ui_core::{Asset, Config, Mode, Source, SqliteStore, Token, load_fixture, router};
     use serde_json::{Value, json};
     use tokio::sync::mpsc;
     use tower::ServiceExt as _;
@@ -55,6 +56,8 @@ mod tests {
             token,
             assets: Some(ASSETS),
             dev_origins: Vec::new(),
+            mode: Mode::Local,
+            store: Arc::new(SqliteStore::memory()?),
         })?;
         Ok((app, hex))
     }

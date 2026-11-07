@@ -36,7 +36,7 @@ const HISTORY_TIMEOUT: Duration = Duration::from_secs(5);
 const TAIL: usize = 150;
 
 /// The daemon behind its socket.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Daemon {
     socket: PathBuf,
 }
@@ -75,7 +75,11 @@ impl Daemon {
 
     /// One request on a fresh connection.
     pub(crate) async fn ask(&self, request: Request) -> Result<Response, ApiError> {
-        Ok(self.connect().await?.request(request).await?)
+        Ok(self
+            .connect()
+            .await?
+            .request(crate::accounts::with_actor(request))
+            .await?)
     }
 }
 
@@ -299,6 +303,7 @@ pub(crate) async fn snapshot(shared: &Shared) -> Result<Boot, ApiError> {
     let mut snapshot = api::status::snapshot(shared).await?;
     snapshot.boot = boot;
     snapshot.seq = seq;
+    snapshot.status.mode = api::status::console_mode(shared);
     let traffic = shared.live.traffic(TAIL);
     if !traffic.is_empty() {
         snapshot.traffic_tail = json::to_value(&traffic)?;

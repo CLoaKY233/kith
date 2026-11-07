@@ -37,12 +37,13 @@ const SIGNED_OUT: &str = "<main class=\"signed-out\"><h1>This page needs a fresh
 fn is_page(path: &str) -> bool {
     let segments: Vec<&str> = path.trim_end_matches('/').split('/').skip(1).collect();
     match segments.as_slice() {
-        [] | ["" | "welcome" | "this"] => true,
+        [] | ["" | "welcome" | "this" | "login"] => true,
+        ["setup" | "register", token] => !token.is_empty(),
         ["n", net]
         | [
             "n",
             net,
-            "devices" | "activity" | "names" | "exits" | "access" | "settings",
+            "devices" | "activity" | "names" | "exits" | "access" | "settings" | "people",
         ] => !net.is_empty(),
         ["n", net, "devices", device] => !net.is_empty() && !device.is_empty(),
         _ => false,
@@ -100,7 +101,13 @@ fn script_safe(json: &str) -> String {
     json.replace('<', "\\u003c")
 }
 
-async fn page(shared: &Shared, index: &Asset, signed_in: bool) -> Response {
+/// `index.html` with the boot snapshot for a signed-in page. The no-script signed-out
+/// page shows only locally, and not on the pages that sign people in.
+async fn page(shared: &Shared, index: &Asset, signed_in: bool, path: &str) -> Response {
+    let signing_in = ["/login", "/setup/", "/register/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix));
+    let show_signed_out = !signed_in && !signing_in && shared.mode == crate::console::Mode::Local;
     let html = String::from_utf8_lossy(index.body);
     let boot = if signed_in {
         match snapshot(shared).await {
@@ -120,7 +127,7 @@ async fn page(shared: &Shared, index: &Asset, signed_in: bool) -> Response {
         )
         .replace(
             "<!--kith:signed-out-->",
-            if signed_in { "" } else { SIGNED_OUT },
+            if show_signed_out { SIGNED_OUT } else { "" },
         );
     let mut response = (StatusCode::OK, html).into_response();
     let headers = response.headers_mut();
@@ -173,9 +180,12 @@ pub(crate) async fn serve(State(shared): State<Arc<Shared>>, request: Request) -
         return not_found();
     };
     if is_page(path) {
-        let signed_in = shared.sessions.admits(request.headers());
+        let signed_in = request
+            .extensions()
+            .get::<crate::session::Caller>()
+            .is_some_and(|caller| caller.0.is_some());
         return match assets.iter().find(|asset| asset.path == "index.html") {
-            Some(index) => page(&shared, index, signed_in).await,
+            Some(index) => page(&shared, index, signed_in, path).await,
             None => not_found(),
         };
     }
@@ -207,6 +217,10 @@ mod tests {
             "/n/home/exits",
             "/n/home/access",
             "/n/home/settings",
+            "/n/home/people",
+            "/login",
+            "/setup/3f2a",
+            "/register/3f2a",
         ] {
             assert!(is_page(page), "{page}");
         }
@@ -218,6 +232,8 @@ mod tests {
             "/n//devices",
             "/assets",
             "/index.html",
+            "/setup",
+            "/register/3f2a/x",
         ] {
             assert!(!is_page(other), "{other}");
         }

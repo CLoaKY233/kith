@@ -871,6 +871,14 @@ host: Host,
  */
 exit_state: ExitState | null, 
 /**
+ * How this server is reached.
+ */
+mode: ConsoleMode, 
+/**
+ * The signed-in person; `null` for the local link's session or no session.
+ */
+me: Me | null, 
+/**
  * This device's identity, once created.
  */
 node: string | null, 
@@ -1262,7 +1270,7 @@ set_by: string | null, };
 /**
  * Why a request failed, as the page maps it to copy.
  */
-export type ApiErrorCode = "unauthorized" | "session_used" | "session_expired" | "forbidden" | "permission_denied" | "not_found" | "conflict" | "invalid_argument" | "daemon_down" | "not_in_group" | "version_skew" | "os_auth_denied" | "internal";
+export type ApiErrorCode = "unauthorized" | "session_used" | "session_expired" | "forbidden" | "permission_denied" | "not_found" | "conflict" | "invalid_argument" | "daemon_down" | "not_in_group" | "version_skew" | "os_auth_denied" | "rate_limited" | "internal";
 
 /**
  * How a join request was settled.
@@ -1851,3 +1859,452 @@ policies: { [key in string]: string },
  * Relays per network id.
  */
 relays: { [key in string]: Array<RelayView> }, };
+
+/**
+ * A person's role in the network's ledger.
+ */
+export type PersonRole = "owner" | "admin" | "member";
+
+/**
+ * Where a person stands.
+ */
+export type PersonState = "active" | "invited" | "registered";
+
+/**
+ * One person, in the ledger or invited.
+ */
+export type PersonView = { 
+/**
+ * The account id (hex) once active; `p-` and hex while invited.
+ */
+id: string, 
+/**
+ * Their name.
+ */
+name: string, 
+/**
+ * Their role, or the one they will get.
+ */
+role: PersonRole, 
+/**
+ * Where they stand.
+ */
+state: PersonState, 
+/**
+ * Their devices' ids.
+ */
+devices: Array<string>, 
+/**
+ * How many passkeys they have.
+ */
+passkeys: number, 
+/**
+ * The account id of who invited them, while invited or registered.
+ */
+invited_by: string | null, 
+/**
+ * When their registration link lapses, while invited.
+ */
+expires_at_ms: number | null, 
+/**
+ * Whether this is the signed-in person.
+ */
+me: boolean, };
+
+/**
+ * How this server is reached.
+ */
+export type ConsoleMode = "local" | "public";
+
+/**
+ * The signed-in person in `GET /api/status`.
+ */
+export type Me = { 
+/**
+ * Their account id.
+ */
+id: string, 
+/**
+ * Their name.
+ */
+name: string, 
+/**
+ * Their role.
+ */
+role: PersonRole, };
+
+/**
+ * A network by id and name.
+ */
+export type NetworkRef = { 
+/**
+ * Its id, hex.
+ */
+id: string, 
+/**
+ * Its name.
+ */
+name: string, };
+
+/**
+ * `GET /api/me`: who is signed in.
+ */
+export type MeView = { 
+/**
+ * How this server is reached.
+ */
+mode: ConsoleMode, 
+/**
+ * The signed-in person; `null` for the session the local one-time link started.
+ */
+person: PersonView | null, 
+/**
+ * The network the Console manages, once there is one.
+ */
+network: NetworkRef | null, };
+
+/**
+ * The options to pass to `navigator.credentials.create` or `.get`, in `WebAuthn`'s own
+ * JSON (`PublicKeyCredentialCreationOptionsJSON` or `...RequestOptionsJSON`).
+ */
+export type CeremonyOptions = { 
+/**
+ * For `PublicKeyCredential.parseCreationOptionsFromJSON` or
+ * `parseRequestOptionsFromJSON`.
+ */
+public_key: unknown, };
+
+/**
+ * A browser's answer to a passkey prompt: `PublicKeyCredential.toJSON()`, unchanged.
+ */
+export type CredentialIn = { 
+/**
+ * `AuthenticationResponseJSON`.
+ */
+credential: unknown, };
+
+/**
+ * `GET /api/setup/<token>`: what the setup page shows.
+ */
+export type SetupInfo = { 
+/**
+ * The network this device is in; `null` when setup names a new one.
+ */
+network: NetworkRef | null, 
+/**
+ * When the link lapses.
+ */
+expires_at_ms: number, };
+
+/**
+ * `POST /api/setup/begin`.
+ */
+export type SetupBeginIn = { 
+/**
+ * The token from `/setup/<token>`.
+ */
+token: string, 
+/**
+ * The owner's name.
+ */
+name: string, 
+/**
+ * The new network's name; needed only when [`SetupInfo::network`] is `null`.
+ */
+network_name: string | null, };
+
+/**
+ * `POST /api/setup/finish` and `POST /api/register/finish`.
+ */
+export type TokenCredentialIn = { 
+/**
+ * The token from the link.
+ */
+token: string, 
+/**
+ * `RegistrationResponseJSON`: `PublicKeyCredential.toJSON()` after
+ * `navigator.credentials.create`.
+ */
+credential: unknown, };
+
+/**
+ * The ledger change an authority prompt signs.
+ */
+export type AuthorityKind = "add_account" | "remove_account" | "set_role" | "authorize_console" | "revoke_console";
+
+/**
+ * A passkey prompt that signs one ledger change: pass `public_key` to
+ * `navigator.credentials.get`, then send the answer to `POST /api/authority/finish`.
+ * Its challenge is the change's op hash.
+ */
+export type AuthorityChallenge = { 
+/**
+ * What is being signed.
+ */
+change: AuthorityKind, 
+/**
+ * `PublicKeyCredentialRequestOptionsJSON`, limited to the signer's passkeys.
+ */
+public_key: unknown, 
+/**
+ * When the prompt lapses.
+ */
+expires_at_ms: number, };
+
+/**
+ * `POST /api/setup/finish`: the owner, now signed in, and the prompt that authorizes
+ * this device as the network's Console.
+ */
+export type SetupFinished = { 
+/**
+ * The owner.
+ */
+person: PersonView, 
+/**
+ * `authorize_console` for this device.
+ */
+authority: AuthorityChallenge, };
+
+/**
+ * `POST /api/setup/recovery`: the recovery words, shown once.
+ */
+export type RecoveryWords = { 
+/**
+ * The words, in order.
+ */
+words: Array<string>, };
+
+/**
+ * `GET /api/register/<token>`: what an invited person's page shows.
+ */
+export type RegisterInfo = { 
+/**
+ * Their name.
+ */
+name: string, 
+/**
+ * The role they will get.
+ */
+role: PersonRole, 
+/**
+ * The network.
+ */
+network: NetworkRef, 
+/**
+ * The inviter's name.
+ */
+invited_by: string, 
+/**
+ * When the link lapses.
+ */
+expires_at_ms: number, 
+/**
+ * Whether they already made their passkey.
+ */
+registered: boolean, };
+
+/**
+ * `POST /api/register/begin`.
+ */
+export type TokenIn = { 
+/**
+ * The token from the link.
+ */
+token: string, };
+
+/**
+ * `POST /api/people`: invites a person.
+ */
+export type PersonIn = { 
+/**
+ * Their name.
+ */
+name: string, 
+/**
+ * Their role; only an owner invites an owner or an admin.
+ */
+role: PersonRole, };
+
+/**
+ * A new person's one-time registration link.
+ */
+export type PersonInvite = { 
+/**
+ * The invited person.
+ */
+person: PersonView, 
+/**
+ * `<origin>/register/<token>`; works once.
+ */
+link: string, 
+/**
+ * When it lapses.
+ */
+expires_at_ms: number, 
+/**
+ * The link as a QR code.
+ */
+qr_svg: string | null, };
+
+/**
+ * `POST /api/people/<id>/role`.
+ */
+export type RoleIn = { 
+/**
+ * The new role.
+ */
+role: PersonRole, };
+
+/**
+ * `POST /api/authority/begin`: the change to sign.
+ */
+export type AuthorityChangeIn = { "kind": "add_admin", 
+/**
+ * The pending person's id.
+ */
+person: string, } | { "kind": "remove_person", 
+/**
+ * Their account id.
+ */
+person: string, } | { "kind": "set_role", 
+/**
+ * Their account id.
+ */
+person: string, 
+/**
+ * The new role.
+ */
+role: PersonRole, } | { "kind": "authorize_console", 
+/**
+ * The device id.
+ */
+device: string | null, } | { "kind": "revoke_console", 
+/**
+ * The device id.
+ */
+device: string, };
+
+/**
+ * `POST /api/authority/begin`.
+ */
+export type AuthorityBeginIn = { 
+/**
+ * The change to sign.
+ */
+change: AuthorityChangeIn, };
+
+/**
+ * `POST /api/device-codes`.
+ */
+export type DeviceCodeIn = { 
+/**
+ * Whose device it will be, by account id; `null` is the signed-in person. Only
+ * owners and admins name someone else.
+ */
+person: string | null, };
+
+/**
+ * A code that lets one device join, for 10 minutes.
+ */
+export type DeviceCodeView = { 
+/**
+ * Six characters, such as `K7Q2MX`.
+ */
+code: string, 
+/**
+ * When it lapses.
+ */
+expires_at_ms: number, 
+/**
+ * `<origin>/j/<code>`.
+ */
+link: string, 
+/**
+ * `kith join <link>`.
+ */
+command: string, 
+/**
+ * The link as a QR code.
+ */
+qr_svg: string | null, 
+/**
+ * Whose device it will be.
+ */
+person: string, };
+
+/**
+ * `GET /j/<code>`: the invite a device joins with.
+ */
+export type JoinLink = { 
+/**
+ * A `kith://join/` link for one device, valid 10 minutes.
+ */
+invite_link: string, 
+/**
+ * The network's name.
+ */
+network_name: string, };
+
+/**
+ * A journal entry the Console kept.
+ */
+export type StoredEntry = { 
+/**
+ * The row's id; older pages are asked for with `before`.
+ */
+id: number, 
+/**
+ * The daemon run it belongs to.
+ */
+boot: string, 
+/**
+ * The entry, flattened as the event stream sends it.
+ */
+entry: Entry, };
+
+/**
+ * `GET /api/history/journal`.
+ */
+export type JournalPage = { 
+/**
+ * The entries, newest first.
+ */
+entries: Array<StoredEntry>, 
+/**
+ * `before` for the next, older page; `null` when this one reached the oldest.
+ */
+next_before: number | null, };
+
+/**
+ * Bytes with one device in one minute.
+ */
+export type TrafficMinute = { 
+/**
+ * The minute's start.
+ */
+minute_ms: number, 
+/**
+ * Received from the device in that minute.
+ */
+rx_bytes: number, 
+/**
+ * Sent to it.
+ */
+tx_bytes: number, };
+
+/**
+ * `GET /api/history/traffic`: one per device.
+ */
+export type TrafficHistory = { 
+/**
+ * The network id.
+ */
+network: string, 
+/**
+ * The device id.
+ */
+node: string, 
+/**
+ * Minutes with traffic, oldest first; quiet minutes are left out.
+ */
+minutes: Array<TrafficMinute>, };

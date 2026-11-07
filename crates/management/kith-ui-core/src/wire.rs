@@ -4,8 +4,11 @@
 //! `kith-ipc` type are kept as JSON already reshaped by [`crate::json`], so the TypeScript
 //! side sees the `kith-ipc` declaration and the page sees ids as hex.
 
+mod console;
+
 use std::collections::BTreeMap;
 
+pub use console::*;
 use kith_ipc::PathKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -105,6 +108,12 @@ pub struct StatusView {
     pub host: Host,
     /// How the exit in use is doing; `null` without one.
     pub exit_state: Option<ExitState>,
+    /// How this server is reached.
+    #[serde(default)]
+    pub mode: ConsoleMode,
+    /// The signed-in person; `null` for the local link's session or no session.
+    #[serde(default)]
+    pub me: Option<Me>,
 }
 
 /// [`StatusView`] with its `Status` typed, for its TypeScript declaration: ts-rs cannot
@@ -129,6 +138,10 @@ pub struct StatusViewDecl {
     pub host: Host,
     /// How the exit in use is doing; `null` without one.
     pub exit_state: Option<ExitState>,
+    /// How this server is reached.
+    pub mode: ConsoleMode,
+    /// The signed-in person; `null` for the local link's session or no session.
+    pub me: Option<Me>,
 }
 
 /// One exit in a network, for the Exits screen and the picker.
@@ -387,9 +400,9 @@ pub struct RecordView {
 pub enum ApiErrorCode {
     /// No session, or the session ended.
     Unauthorized,
-    /// The one-time link was already used.
+    /// The one-time link (or setup link, registration link, device code) was already used.
     SessionUsed,
-    /// The one-time link is older than 2 minutes.
+    /// The one-time link is older than 2 minutes, or another one-time link or code lapsed.
     SessionExpired,
     /// Wrong `Host` or `Origin`.
     Forbidden,
@@ -409,6 +422,8 @@ pub enum ApiErrorCode {
     VersionSkew,
     /// The person at this computer refused or cancelled the OS confirmation.
     OsAuthDenied,
+    /// Too many tries; wait a minute.
+    RateLimited,
     /// Anything else; `message` says what.
     Internal,
 }

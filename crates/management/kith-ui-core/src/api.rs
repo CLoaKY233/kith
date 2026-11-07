@@ -3,13 +3,17 @@
 //! Every handler reads from [`crate::ipc::Source`]: the daemon, or under `--fixture` the
 //! simulator in [`crate::sim`], which changes its copy of the recording.
 
+pub(crate) mod auth;
 pub(crate) mod blocked;
 pub(crate) mod codes;
+pub(crate) mod devicecodes;
 pub(crate) mod devices;
 pub(crate) mod exits;
+pub(crate) mod history;
 pub(crate) mod invites;
 pub(crate) mod joins;
 pub(crate) mod peers;
+pub(crate) mod people;
 pub(crate) mod phones;
 pub(crate) mod policy;
 pub(crate) mod records;
@@ -19,6 +23,8 @@ pub(crate) mod status;
 pub(crate) mod traffic;
 pub(crate) mod validate;
 
+#[cfg(test)]
+mod console_tests;
 #[cfg(test)]
 mod tests;
 

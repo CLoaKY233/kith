@@ -17,8 +17,8 @@ use crate::api::codes::{check_code, key_fpr};
 use crate::api::{Answer, ApiError, network_id};
 use crate::ipc::{Daemon, Source};
 use crate::wire::{
-    BlockedGroup, Boot, Claimed, ExitState, Fixture, Host, JoinRequest, LinkTick, Membership,
-    Pending, RateBand, Role, Seen, StatusView, Tick, TrafficTick, Versions,
+    BlockedGroup, Boot, Claimed, ConsoleMode, ExitState, Fixture, Host, JoinRequest, LinkTick, Me,
+    Membership, Pending, RateBand, Role, Seen, StatusView, Tick, TrafficTick, Versions,
 };
 use crate::{Shared, json, now_ms};
 
@@ -32,12 +32,41 @@ const LIGHT_FROM: u64 = 1000;
 const BUSY_ABOVE: u64 = 1_000_000;
 
 /// `GET /api/status`.
-pub(crate) async fn status(State(shared): State<Arc<Shared>>) -> Answer {
-    let view = match &shared.source {
+///
+/// Without a session (only reachable in public mode) it says just `{mode, me: null}`, so
+/// the signed-out page knows to offer passkey sign-in.
+pub(crate) async fn status(
+    State(shared): State<Arc<Shared>>,
+    axum::extract::Extension(crate::session::Caller(principal)): axum::extract::Extension<
+        crate::session::Caller,
+    >,
+) -> Answer {
+    let mode = console_mode(&shared);
+    let Some(principal) = principal else {
+        return Ok(Json(json!({ "mode": mode, "me": null })));
+    };
+    let mut view = match &shared.source {
         Source::Fixture(sim) => sim.read().status.clone(),
         Source::Daemon(daemon) => read(&shared, daemon, false).await?.view,
     };
+    view.mode = mode;
+    if principal.account().is_some() {
+        let (_, person) = crate::console::signed_in(&shared, Some(&principal)).await?;
+        view.me = Some(Me {
+            id: person.id,
+            name: person.name,
+            role: person.role,
+        });
+    }
     Ok(Json(json!(view)))
+}
+
+/// How this server is reached, as the page reads it.
+pub(crate) const fn console_mode(shared: &Shared) -> ConsoleMode {
+    match shared.mode {
+        crate::console::Mode::Local => ConsoleMode::Local,
+        crate::console::Mode::Public { .. } => ConsoleMode::Public,
+    }
 }
 
 /// `GET /api/pending`.
@@ -292,6 +321,8 @@ async fn read(shared: &Shared, daemon: &Daemon, all_peers: bool) -> Result<Snaps
             .collect(),
         host: shared.api.host.clone(),
         exit_state: exit_state(&status, &networks),
+        mode: ConsoleMode::default(),
+        me: None,
     };
     Ok(Snapshot {
         view,
