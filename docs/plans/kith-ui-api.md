@@ -134,7 +134,7 @@ Only the routes of the design spec §4.1 serve the page: `/`, `/welcome`, `/this
 
 Every endpoint works. Reads answer from an in-memory copy of the file, and every change edits that copy and writes the journal entry a daemon would, so the page sees its own changes on the stream: approving a join adds the device (`device_joined`), removing one drops it (`device_removed`), renaming writes `device_renamed`, using an exit writes `exit_changed`, and adding a phone adds a device. Records, invites (real `kith://join/` links for a network no daemon serves), revocations, the policy (allowing a blocked connection adds its rule and clears the group), relays and server mode change what the reads return; an import checks the config as the daemon does and lists a made-up network in `imported`, which can be used, stopped and removed. Tier-3 changes do not prompt. Nothing reaches a daemon or the network, and changes last until `kith-ui` stops. `request-code` answers `kith://request/<network>-recorded`. `npm run fixture` regenerates the file.
 
-People and passkeys work under `--fixture` too, against a ledger in memory that checks every passkey signature as the real one does. The database is in memory unless `--state-dir` is given.
+People and passkeys work under `--fixture` too, against a ledger in memory that checks every passkey signature as the real one does. The database is in memory unless `--state-dir` is given. `--fixture-console`, a test switch, also prints a setup link on `http://localhost:<port>` (local mode has none otherwise), so setup, sign-in, people and device codes run end to end on this machine; `tests/playwright/console.spec.ts` runs it on a copy of the recording with no network, so setup names and creates one.
 
 ## Console
 

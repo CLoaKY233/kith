@@ -158,7 +158,8 @@ title and the live regions. Screens receive the network id as `net`.
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   let gated = $state(false);
   $effect(() => {
-    if (live.gate) gated = true;
+    // A signed-out gate shows nothing until the mode is known; its first paint is then.
+    if (live.gate && !(signedOutGate && signedOut.mode === null)) gated = true;
   });
   const crossfade = $derived({ duration: reduced || !gated ? 0 : MOTION.dialog });
 

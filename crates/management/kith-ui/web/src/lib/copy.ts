@@ -722,6 +722,7 @@ export const copy = {
       'For safety, kith only opens for the person at this computer. Run this in a terminal:',
     authCommand: 'kith ui',
     authOnce: 'The link it opens works once.',
+    authPasskey: 'Have a passkey for this Console? Sign in with it',
     authUsed: 'This link was already used. Links work once.',
     authExpired: 'This link expired. They last 2 minutes.',
     restarted: 'kith-ui restarted. Run kith ui to continue.',
@@ -784,6 +785,7 @@ export const copy = {
         : `kith couldn't do this: ${said}. Details are in Logs.`;
     },
     osAuthDenied: 'This computer did not confirm it. Nothing was signed.',
+    rateLimited: 'Too many tries in a minute. Wait a minute, then try again.',
   },
 
   /** §7.1 Start a network. */

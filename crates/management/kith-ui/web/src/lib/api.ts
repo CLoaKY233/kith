@@ -50,6 +50,7 @@ const CODES: readonly ApiErrorCode[] = [
   'not_in_group',
   'version_skew',
   'os_auth_denied',
+  'rate_limited',
   'internal',
 ];
 
@@ -72,6 +73,7 @@ const STATUS_CODES: Readonly<Record<number, ApiErrorCode>> = {
   409: 'conflict',
   410: 'session_expired',
   422: 'invalid_argument',
+  429: 'rate_limited',
   503: 'daemon_down',
 };
 
@@ -158,6 +160,8 @@ export function errorText(failure: ApiFailure, context: ErrorContext = {}): stri
       return copy.conn.staleActions;
     case 'os_auth_denied':
       return copy.error.osAuthDenied;
+    case 'rate_limited':
+      return copy.error.rateLimited;
     case 'unauthorized':
       return copy.conn.unauth;
     case 'session_used':

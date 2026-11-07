@@ -1,9 +1,9 @@
 <!--
 @component
-Login (docs/plans/console.md, flow 2): the signed-out page of a public Console. One button,
-`Sign in with passkey`, and nothing about the network. The server's challenge is fetched
-on arrival so the prompt opens straight from the click (Safari wants a user gesture). On
-success the page reloads and the server serves the signed-in page.
+Login (docs/plans/console.md, flow 2): the signed-out page of a public Console, and `/login`
+in either mode. One button, `Sign in with passkey`, and nothing about the network. The
+server's challenge is fetched on arrival so the prompt opens straight from the click
+(Safari wants a user gesture). On success the server serves the signed-in page.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -20,7 +20,7 @@ success the page reloads and the server serves the signed-in page.
   let options: Promise<RequestOptionsJSON> | null = null;
 
   function fetchOptions(): void {
-    const next = accounts.loginBegin().then((answer) => answer.publicKey);
+    const next = accounts.loginBegin().then((answer) => answer.public_key);
     next.catch(() => undefined);
     options = next;
   }
@@ -39,7 +39,9 @@ success the page reloads and the server serves the signed-in page.
       if (!options) fetchOptions();
       const assertion = await usePasskey(await (options as Promise<RequestOptionsJSON>));
       await accounts.loginFinish(assertion);
-      location.reload();
+      // The server now serves the signed-in page; `/login` itself has nothing to show.
+      if (location.pathname === '/login') location.assign('/');
+      else location.reload();
     } catch (cause) {
       const unknown = cause instanceof ApiError && (cause.code === 'unauthorized' || cause.code === 'not_found');
       error = unknown ? copyConsole.login.unknown : passkeyText(cause);

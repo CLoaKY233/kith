@@ -1,6 +1,7 @@
-// Passkeys over JSON. The Console sends WebAuthn options with every binary field as
-// base64url (no padding) and expects credentials back the same way; this file turns one
-// into the other and names why a prompt failed.
+// Passkeys over JSON. The Console sends WebAuthn's own JSON options, every binary field
+// base64url without padding, and takes `credential.toJSON()` back. Browsers that can parse
+// and write that JSON themselves do; for the rest this file turns one into the other. It
+// also names why a prompt failed.
 
 export function toBase64url(bytes: ArrayBuffer | ArrayBufferView): string {
   const view =
@@ -203,12 +204,45 @@ async function prompt<T>(ask: () => Promise<Credential | null>, read: (c: Public
   return read(credential as PublicKeyCredential);
 }
 
+/** The browser's own JSON support, where it has it (Chrome 129, Safari 18, Firefox 119). */
+type JsonParsers = Partial<
+  Pick<typeof PublicKeyCredential, 'parseCreationOptionsFromJSON' | 'parseRequestOptionsFromJSON'>
+>;
+
+function parsers(): JsonParsers {
+  return window.PublicKeyCredential as JsonParsers;
+}
+
+function toJSON<T>(credential: PublicKeyCredential, fallback: (c: PublicKeyCredential) => T): T {
+  return typeof credential.toJSON === 'function' ? (credential.toJSON() as T) : fallback(credential);
+}
+
 /** Asks this device to make a passkey. */
 export function createPasskey(options: CreationOptionsJSON): Promise<RegistrationJSON> {
-  return prompt(() => navigator.credentials.create({ publicKey: creationOptions(options) }), registrationJSON);
+  return prompt(
+    () => {
+      const browser = parsers();
+      const publicKey =
+        typeof browser.parseCreationOptionsFromJSON === 'function'
+          ? browser.parseCreationOptionsFromJSON(options as unknown as PublicKeyCredentialCreationOptionsJSON)
+          : creationOptions(options);
+      return navigator.credentials.create({ publicKey });
+    },
+    (credential) => toJSON(credential, registrationJSON),
+  );
 }
 
 /** Asks a passkey to sign the server's challenge. */
 export function usePasskey(options: RequestOptionsJSON): Promise<AssertionJSON> {
-  return prompt(() => navigator.credentials.get({ publicKey: requestOptions(options) }), assertionJSON);
+  return prompt(
+    () => {
+      const browser = parsers();
+      const publicKey =
+        typeof browser.parseRequestOptionsFromJSON === 'function'
+          ? browser.parseRequestOptionsFromJSON(options as unknown as PublicKeyCredentialRequestOptionsJSON)
+          : requestOptions(options);
+      return navigator.credentials.get({ publicKey });
+    },
+    (credential) => toJSON(credential, assertionJSON),
+  );
 }

@@ -298,12 +298,17 @@ async fn read_links(client: &mut IpcClient, status: &Status) -> Result<Vec<LinkT
 
 /// The boot snapshot: `boot` and `seq` are read first, so every entry after `seq` reaches
 /// the page on the stream; traffic and the last tick come from what the server keeps.
-pub(crate) async fn snapshot(shared: &Shared) -> Result<Boot, ApiError> {
+/// The status names the signed-in person as `me`.
+pub(crate) async fn snapshot(
+    shared: &Shared,
+    principal: Option<&crate::console::Principal>,
+) -> Result<Boot, ApiError> {
     let (boot, seq) = shared.live.position().await;
     let mut snapshot = api::status::snapshot(shared).await?;
     snapshot.boot = boot;
     snapshot.seq = seq;
     snapshot.status.mode = api::status::console_mode(shared);
+    snapshot.status.me = api::status::me(shared, principal).await?;
     let traffic = shared.live.traffic(TAIL);
     if !traffic.is_empty() {
         snapshot.traffic_tail = json::to_value(&traffic)?;

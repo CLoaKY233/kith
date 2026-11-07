@@ -1,8 +1,13 @@
 // Starts `kith-ui --fixture fixtures/office.json` on a free port and reads the one-time
-// link it prints. Never the daemon: the fixture replays a recorded network.
+// link it prints, or, for the Console, a fixture device in no network with the setup link
+// `--fixture-console` prints. Never the daemon: the fixture replays a recorded network.
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Fixture } from '../../src/lib/types.gen';
 
 const web = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -32,7 +37,60 @@ function stopper(child: ChildProcess): () => Promise<void> {
 }
 
 export function startServer(): Promise<Server> {
-  const child = spawn(binary, ['--fixture', fixturePath, '--no-open', '--port', '0'], {
+  return spawnServer(['--fixture', fixturePath], (output, stop) => {
+    const match = LINK.exec(output);
+    if (!match?.[1]) return null;
+    return { origin: match[1], link: match[0].slice('kith ui is at '.length), stop };
+  });
+}
+
+const SETUP = /^\s+(http:\/\/localhost:\d+)\/setup\/[0-9a-f]{64}$/m;
+
+/** A server for the Console's flows: a device in no network yet, and its setup link. */
+export interface ConsoleServer {
+  /** `http://localhost:<port>`: passkeys work locally only on `localhost`. */
+  origin: string;
+  /** `<origin>/setup/<token>`, good once. */
+  setup: string;
+  stop(): Promise<void>;
+}
+
+/**
+ * The office recording with every network taken out: a device that is in no network yet,
+ * as `install.sh --console` finds it, so setup names and creates the network.
+ */
+function freshFixture(): string {
+  const office = JSON.parse(readFileSync(fixturePath, 'utf8')) as Fixture;
+  const fresh: Fixture = {
+    ...office,
+    status: { ...office.status, networks: [], memberships: [], exit_node: null, imported: [], warnings: [] },
+    peers: {},
+    records: {},
+    pending: { joins: [], blocked: [] },
+    journal: [],
+    traffic: [],
+    links: {},
+    exits: {},
+    invites: {},
+    policies: {},
+    relays: {},
+  };
+  const path = join(mkdtempSync(join(tmpdir(), 'kith-ui-console-')), 'fresh.json');
+  writeFileSync(path, JSON.stringify(fresh));
+  return path;
+}
+
+/** `kith-ui --fixture <fresh> --fixture-console`: setup, passkeys and people in memory. */
+export function startConsole(): Promise<ConsoleServer> {
+  return spawnServer(['--fixture', freshFixture(), '--fixture-console'], (output, stop) => {
+    const match = SETUP.exec(output);
+    if (!match?.[1]) return null;
+    return { origin: match[1], setup: match[0].trim(), stop };
+  });
+}
+
+function spawnServer<T>(args: readonly string[], ready: (output: string, stop: () => Promise<void>) => T | null): Promise<T> {
+  const child = spawn(binary, [...args, '--no-open', '--port', '0'], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return new Promise((resolve, reject) => {
@@ -43,11 +101,10 @@ export function startServer(): Promise<Server> {
     }, START_TIMEOUT_MS);
     const read = (chunk: Buffer): void => {
       output += chunk.toString();
-      const match = LINK.exec(output);
-      if (!match?.[1]) return;
+      const server = ready(output, stopper(child));
+      if (server === null) return;
       clearTimeout(timer);
-      const link = match[0].slice('kith ui is at '.length);
-      resolve({ origin: match[1], link, stop: stopper(child) });
+      resolve(server);
     };
     child.stdout?.on('data', read);
     child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));

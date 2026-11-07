@@ -14,7 +14,7 @@ import {
   RANGE_MS,
 } from '../live/timing';
 import type { ActivityKind, Range } from '../types';
-import type { Entry, PathKind } from '../types.gen';
+import type { Entry, PathKind, StoredEntry } from '../types.gen';
 
 /** The filters of the Activity toolbar, in order; `null` is All. */
 export const ACTIVITY_KINDS = ['changes', 'joins', 'paths', 'blocked', 'logs'] as const;
@@ -461,6 +461,23 @@ export function buildFeed(
   emitGaps(Number.NEGATIVE_INFINITY);
   if (journal.length >= JOURNAL_CAP) rows.push({ type: 'cap', key: 'cap', text: copy.activity.cap });
   return rows;
+}
+
+/**
+ * Entries the Console kept (`GET /api/history/journal`, newest first) that the page does
+ * not hold yet, oldest first, numbered below `below`: negative seqs, past every live one,
+ * so the feed orders and keys them after the live journal whatever daemon run they came
+ * from. Entries of this run from the journal's first seq on are the live journal's own.
+ */
+export function olderEntries(
+  kept: readonly StoredEntry[],
+  journal: readonly Entry[],
+  boot: string,
+  below: number,
+): Entry[] {
+  const first = journal[0]?.seq;
+  const fresh = kept.filter((one) => !(one.boot === boot && first !== undefined && one.entry.seq >= first));
+  return fresh.map((one, i) => ({ ...one.entry, seq: below - 1 - i })).reverse();
 }
 
 /** §6.5 linking: the chart range that keeps `atMs` in view, or `null` past the last hour. */

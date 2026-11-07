@@ -18,8 +18,8 @@ test('sets up the network in three steps with a passkey', async ({ page, server,
   await expect(page.getByText(copyConsole.setup.progress(2, 3))).toBeVisible();
   expect(server.sent('/api/setup/begin')[0]?.body).toEqual({
     token: 'tok-123',
+    name: 'Ana',
     network_name: 'office-net',
-    person_name: 'Ana',
   });
   await page.getByRole('button', { name: copyConsole.setup.createPasskey }).click();
   await page.getByRole('button', { name: copyConsole.setup.confirm }).click();
@@ -34,8 +34,9 @@ test('sets up the network in three steps with a passkey', async ({ page, server,
   expect(isBase64url(finish.credential['rawId'])).toBe(true);
   expect(isBase64url(response['attestationObject'])).toBe(true);
   expect(isBase64url(response['clientDataJSON'])).toBe(true);
-  const signed = server.sent('/api/authority/finish')[0]?.body as { assertion: { response: Record<string, unknown> } };
-  expect(isBase64url(signed.assertion.response['signature'])).toBe(true);
+  const signed = server.sent('/api/authority/finish')[0]?.body as { credential: { response: Record<string, unknown> } };
+  expect(isBase64url(signed.credential.response['signature'])).toBe(true);
+  expect(server.sent('/api/setup/recovery')).toHaveLength(1);
 
   await page.getByRole('button', { name: copyConsole.setup.saved }).click();
   await page.waitForURL(`**/n/${network.name}`);

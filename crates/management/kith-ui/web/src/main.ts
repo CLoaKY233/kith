@@ -2,7 +2,7 @@
 // fragment, then hydrate the store and mount the app.
 
 import '../tailwind.css';
-import { mount } from 'svelte';
+import { mount, type Component } from 'svelte';
 import App from './App.svelte';
 import { api } from './lib/api';
 import type { ApiFailure, GateReason } from './lib/types';
@@ -35,12 +35,19 @@ async function boot(): Promise<void> {
     mount(Kit, { target });
     return;
   }
-  // The Console's one-time setup link: no session and no network to show yet.
-  const setup = /^\/setup\/([^/]+)\/?$/.exec(location.pathname);
-  if (setup?.[1]) {
-    const { default: Setup } = await import('./routes/Setup.svelte');
+  // The Console's pages before a session: the one-time setup link, an invited person's
+  // registration link, and passkey sign-in. None shows the network.
+  const outside = /^\/(?:(setup|register)\/([^/]+)|login)\/?$/.exec(location.pathname);
+  if (outside) {
+    const page =
+      outside[1] === 'setup'
+        ? import('./routes/Setup.svelte')
+        : outside[1] === 'register'
+          ? import('./routes/Register.svelte')
+          : import('./routes/Login.svelte');
+    const { default: Page } = (await page) as { default: Component<{ token: string }> };
     target.replaceChildren();
-    mount(Setup, { target, props: { token: setup[1] } });
+    mount(Page, { target, props: { token: outside[2] ?? '' } });
     return;
   }
   const snapshot = parseBoot(document.getElementById('boot')?.textContent);

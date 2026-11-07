@@ -9,8 +9,9 @@ Props:
   - token: string, from the URL.
 -->
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { accounts } from '../lib/accounts';
+  import { ApiError } from '../lib/api';
   import { copy } from '../lib/copy';
   import { copyConsole } from '../lib/copy.console';
   import { nameProblem } from '../lib/kith/errors';
@@ -29,12 +30,16 @@ Props:
   import Button from '../lib/ui/Button.svelte';
   import Field from '../lib/ui/Field.svelte';
   import Input from '../lib/ui/Input.svelte';
+  import type { SetupInfo } from '../lib/types.gen';
   import { createPasskey, passkeysSupported, usePasskey } from '../lib/webauthn';
   import { normaliseName } from '../sheets/flow';
 
   let { token }: { token: string } = $props();
 
   let wizard = $state<SetupState>(initialSetup(passkeysSupported()));
+  /** What the link says: whether this device is in a network already. Null until read. */
+  let info = $state.raw<SetupInfo | null>(null);
+  /** The network setup names: the one this device is in, else what the person types. */
   let network = $state('home');
   let person = $state('');
   let networkError = $state<string | null>(null);
@@ -55,7 +60,26 @@ Props:
     send({ type: 'failed', problem: setupProblem(cause) });
   }
 
+  onMount(() => {
+    if (wizard.phase === 'blocked') return;
+    accounts.setupInfo(token).then(
+      (answer) => {
+        info = answer;
+        if (answer.network) network = answer.network.name;
+      },
+      (cause: unknown) => {
+        fail(cause);
+        // Not knowing is no reason to stop: the server ignores a network name it has.
+        info = { network: null, expires_at_ms: 0 };
+      },
+    );
+  });
+
+  /** The network exists already, so setup only names its owner. */
+  const named = $derived(info?.network != null);
+
   function checkNetwork(): boolean {
+    if (named) return true;
     const problem = networkNameProblem(network);
     networkError = problem === null ? null : nameProblem(problem);
     return problem === null;
@@ -78,8 +102,8 @@ Props:
     if (!ok) return;
     send({ type: 'start' });
     try {
-      const { publicKey } = await accounts.setupBegin(token, network, person.trim());
-      send({ type: 'started', options: publicKey });
+      const answer = await accounts.setupBegin(token, person.trim(), named ? null : network);
+      send({ type: 'started', options: answer.public_key });
     } catch (cause) {
       fail(cause);
     }
@@ -92,9 +116,19 @@ Props:
     try {
       const credential = await createPasskey(options);
       const { authority } = await accounts.setupFinish(token, credential);
-      send({ type: 'created', authority });
+      send({ type: 'created', authority: authority.public_key });
     } catch (cause) {
       fail(cause);
+    }
+  }
+
+  /** The recovery words, shown once; none when the network already had a recovery code. */
+  async function recoveryWords(): Promise<readonly string[]> {
+    try {
+      return (await accounts.recovery()).words;
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.code === 'conflict') return [];
+      throw cause;
     }
   }
 
@@ -104,8 +138,8 @@ Props:
     send({ type: 'confirm' });
     try {
       const assertion = await usePasskey(authority);
-      const answer = await accounts.authorityFinish(assertion);
-      send({ type: 'confirmed', words: answer.recovery_words ?? [] });
+      await accounts.authorityFinish(assertion);
+      send({ type: 'confirmed', words: await recoveryWords() });
     } catch (cause) {
       fail(cause);
     }
@@ -158,15 +192,23 @@ Props:
     {#if wizard.problem.kind === 'used'}
       <a class="link" href="/">{copyConsole.setup.signIn}</a>
     {/if}
+  {:else if step === 1 && info === null}
+    <p class="lede" role="status">{copyConsole.setup.checking}</p>
   {:else if step === 1}
     <form class="body" onsubmit={start} novalidate>
-      <h2 class="heading" tabindex="-1" bind:this={heading}>{copyConsole.setup.namesHeading}</h2>
-      <p class="lede">{copyConsole.setup.namesLede}</p>
-      <Field label={copyConsole.setup.networkLabel} helper={copyConsole.setup.networkHelper(network || 'home')} error={networkError}>
-        {#snippet children(control)}
-          <Input {...control} kind="name" value={network} oninput={onNetworkInput} onblur={checkNetwork} />
-        {/snippet}
-      </Field>
+      <h2 class="heading" tabindex="-1" bind:this={heading}>
+        {named ? copyConsole.setup.ownerHeading : copyConsole.setup.namesHeading}
+      </h2>
+      {#if named}
+        <p class="lede">{copyConsole.setup.ownerLede(network)}</p>
+      {:else}
+        <p class="lede">{copyConsole.setup.namesLede}</p>
+        <Field label={copyConsole.setup.networkLabel} helper={copyConsole.setup.networkHelper(network || 'home')} error={networkError}>
+          {#snippet children(control)}
+            <Input {...control} kind="name" value={network} oninput={onNetworkInput} onblur={checkNetwork} />
+          {/snippet}
+        </Field>
+      {/if}
       <Field label={copyConsole.setup.personLabel} helper={copyConsole.setup.personHelper} error={personError}>
         {#snippet children(control)}
           <Input

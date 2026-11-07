@@ -1,8 +1,9 @@
 <!--
 @component
 AddPerson (docs/plans/console.md, flow 3): a name and a role, then a one-time sign-up link
-to copy or scan. The owner may add admins; adding one is an authority change, so the
-owner's passkey confirms it before the link shows. Admins add members only.
+to copy or scan. The owner may add admins; an admin's link works only once the owner's
+passkey confirmed it, so that prompt comes before the link shows. Once the person made
+their passkey, People asks for one more prompt to approve them. Admins add members only.
 Props:
   - open: boolean, bindable.
   - onAdded?: () => void, after a person is added (the list reloads).
@@ -16,7 +17,7 @@ Props:
   import QrPanel from '../lib/kith/QrPanel.svelte';
   import { actions } from '../lib/live/store.svelte';
   import { addableRoles } from '../lib/people';
-  import type { PersonAdded, PersonRole } from '../lib/types';
+  import type { PersonInvite, PersonRole } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
   import CopyField from '../lib/ui/CopyField.svelte';
   import Field from '../lib/ui/Field.svelte';
@@ -32,7 +33,7 @@ Props:
   let nameError = $state<string | null>(null);
   let error = $state<string | null>(null);
   let pending = $state(false);
-  let added = $state<PersonAdded | null>(null);
+  let added = $state<PersonInvite | null>(null);
   const authority = new AuthorityPrompt();
 
   const roles = $derived(addableRoles(me()));
@@ -67,8 +68,8 @@ Props:
     if (!handle.result) return;
     added = handle.result;
     onAdded?.();
-    if (role === 'admin') {
-      authority.prepare({ kind: 'add_admin', person: handle.result.id });
+    if (role !== 'member') {
+      authority.prepare({ kind: 'add_admin', person: handle.result.person.id });
       phase = 'confirm';
     } else {
       phase = 'link';

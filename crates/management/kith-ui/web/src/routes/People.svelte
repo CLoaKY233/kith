@@ -1,9 +1,12 @@
 <!--
 @component
-People (docs/plans/console.md): everyone in the network with their role and devices.
-Owners and admins add people (a one-time link), and change roles or remove people through
-an AlertDialog that says what changes, then the person's passkey confirms it. Members see
-the same list read-only, with who to ask instead of controls.
+People (docs/plans/console.md): everyone in the network with their role and devices, and
+the people invited. Owners and admins add people (a one-time link). Someone who made
+their passkey waits at the top with one `Approve…` button: approving signs their
+`AddAccount` with the approver's passkey, which an invited admin needs on top of the
+confirmation made with their link. Roles change and people go through an AlertDialog that
+says what changes, then the person's passkey confirms it. An invite nobody approved is
+taken back at once: nothing was signed. Members see the list read-only, with who to ask.
 Props:
   - net: string, the network id.
 -->
@@ -15,31 +18,32 @@ Props:
   import { copy } from '../lib/copy';
   import { copyConsole } from '../lib/copy.console';
   import { actions, live, onEntry } from '../lib/live/store.svelte';
-  import { addableRoles, canRemove, roleChoices, runsNetwork, sortPeople } from '../lib/people';
-  import type { AuthorityChange, Person } from '../lib/types';
+  import { addableRoles, canApprove, canRemove, roleChoices, runsNetwork, sortPeople } from '../lib/people';
+  import type { AuthorityChangeIn, PersonView } from '../lib/types.gen';
   import AlertDialog from '../lib/ui/AlertDialog.svelte';
   import Button from '../lib/ui/Button.svelte';
   import DropdownMenu, { type MenuItem } from '../lib/ui/DropdownMenu.svelte';
   import IconButton from '../lib/ui/IconButton.svelte';
   import StatusDot from '../lib/ui/StatusDot.svelte';
   import { toast } from '../lib/ui/Toast.svelte';
-  import { networkName } from '../frame/net';
+  import { membership, networkName } from '../frame/net';
   import AddPerson from '../sheets/AddPerson.svelte';
 
   let { net }: { net: string } = $props();
 
-  let people = $state.raw<Person[] | null>(null);
+  let people = $state.raw<PersonView[] | null>(null);
   let loadError = $state<string | null>(null);
   let adding = $state(false);
 
-  type Pending = { readonly person: Person; readonly change: AuthorityChange };
+  type Change = Extract<AuthorityChangeIn, { kind: 'add_admin' | 'set_role' | 'remove_person' }>;
+  type Pending = { readonly person: PersonView; readonly change: Change };
   let changing = $state.raw<Pending | null>(null);
   let dialogOpen = $state(false);
   const authority = new AuthorityPrompt();
 
   const viewer = $derived(me());
   const sorted = $derived(people ? sortPeople(people) : []);
-  const admins = $derived(sorted.filter((p) => runsNetwork(p.role) && !p.pending).map((p) => p.name));
+  const admins = $derived(sorted.filter((p) => runsNetwork(p.role) && p.state === 'active').map((p) => p.name));
   const network = $derived(networkName(net));
 
   async function load(): Promise<void> {
@@ -53,38 +57,64 @@ Props:
     }
   }
 
+  /** How often the list is read again while someone may be making their passkey. */
+  const INVITED_POLL_MS = 10_000;
+
   onMount(() => {
     void load();
+    // Making a passkey writes no journal entry, so an open invite is checked on a timer.
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible' && people?.some((p) => p.state === 'invited')) void load();
+    }, INVITED_POLL_MS);
     // A device joining or leaving changes someone's list.
-    return onEntry((entry) => {
+    const stop = onEntry((entry) => {
       if (entry.kind === 'device_joined' || entry.kind === 'device_removed') void load();
     });
+    return () => {
+      clearInterval(timer);
+      stop();
+    };
   });
 
-  /** A device's state from the live store when it has one, else the list's. */
-  function online(node: string, listed: boolean): boolean {
-    if (node === live.status?.node) return true;
-    return live.peers[net]?.[node]?.online ?? listed;
+  /** A device by id, named and with its state from the live store. */
+  function device(node: string): { name: string; online: boolean } {
+    if (node === live.status?.node) return { name: membership(net)?.name ?? node.slice(0, 8), online: true };
+    const peer = live.peers[net]?.[node];
+    return { name: peer?.name ?? node.slice(0, 8), online: peer?.online ?? false };
   }
 
-  function ask(person: Person, change: AuthorityChange): void {
+  function ask(person: PersonView, change: Change): void {
     changing = { person, change };
     authority.prepare(change);
     dialogOpen = true;
   }
 
-  function menu(person: Person): MenuItem[] {
+  async function takeBack(person: PersonView): Promise<void> {
+    const handle = await actions.cancelInvite(person.id).done;
+    if (handle.state === 'failed' && handle.error) {
+      toast.failed(errorText(handle.error));
+      return;
+    }
+    toast.done(copyConsole.people.inviteCancelled(person.name));
+    void load();
+  }
+
+  function menu(person: PersonView): MenuItem[] {
     const items: MenuItem[] = roleChoices(viewer, person).map((role) => ({
       label: role === 'admin' ? copyConsole.people.makeAdmin : copyConsole.people.makeMember,
       onSelect: () => ask(person, { kind: 'set_role', person: person.id, role }),
     }));
     if (canRemove(viewer, person)) {
       if (items.length > 0) items.push({ separator: true });
-      items.push({
-        label: copyConsole.people.remove,
-        tone: 'danger',
-        onSelect: () => ask(person, { kind: 'remove_person', person: person.id }),
-      });
+      items.push(
+        person.state === 'active'
+          ? {
+              label: copyConsole.people.remove,
+              tone: 'danger',
+              onSelect: () => ask(person, { kind: 'remove_person', person: person.id }),
+            }
+          : { label: copyConsole.people.cancelInvite, tone: 'danger', onSelect: () => void takeBack(person) },
+      );
     }
     return items;
   }
@@ -92,6 +122,14 @@ Props:
   const dialog = $derived.by(() => {
     if (!changing) return null;
     const { person, change } = changing;
+    if (change.kind === 'add_admin') {
+      return {
+        title: copyConsole.people.approveTitle(person.name),
+        body: copyConsole.people.approveBody(person.name, person.role, network),
+        confirm: copyConsole.people.approveLabel(person.name),
+        variant: 'primary' as const,
+      };
+    }
     if (change.kind === 'remove_person') {
       return {
         title: copyConsole.people.removeTitle(person.name),
@@ -116,7 +154,11 @@ Props:
     dialogOpen = false;
     const { person, change } = current;
     toast.done(
-      change.kind === 'set_role' ? copyConsole.people.roleChanged(person.name, change.role) : copyConsole.people.removed(person.name),
+      change.kind === 'set_role'
+        ? copyConsole.people.roleChanged(person.name, change.role)
+        : change.kind === 'add_admin'
+          ? copyConsole.people.approved(person.name)
+          : copyConsole.people.removed(person.name),
     );
     void load();
   }
@@ -140,23 +182,33 @@ Props:
     <ul class="list" aria-label={copyConsole.people.title}>
       {#each sorted as person (person.id)}
         {@const items = menu(person)}
-        <li class="person">
+        <li class="person" class:waiting={person.state === 'registered'} data-state={person.state}>
           <div class="who">
             <span class="name">{person.name}</span>
-            {#if person.id === viewer?.id}<span class="you">{copyConsole.people.you}</span>{/if}
+            {#if person.me}<span class="you">{copyConsole.people.you}</span>{/if}
             <span class="role {person.role}">{copy.account.role[person.role]}</span>
           </div>
           <div class="devices">
-            {#if person.pending}
+            {#if person.state === 'registered'}
+              <span class="note">
+                <StatusDot state="needs_you" />
+                {copyConsole.people.waiting(person.role)}
+              </span>
+              {#if canApprove(viewer, person)}
+                <Button variant="primary" onclick={() => ask(person, { kind: 'add_admin', person: person.id })}>
+                  {copyConsole.people.approve}
+                </Button>
+              {/if}
+            {:else if person.state === 'invited'}
               <span class="quiet">{copyConsole.people.pending}</span>
             {:else if person.devices.length === 0}
               <span class="quiet">{copyConsole.people.noDevices}</span>
             {:else}
-              {#each person.devices as device (device.node)}
-                {@const on = online(device.node, device.online)}
+              {#each person.devices as node (node)}
+                {@const shown = device(node)}
                 <span class="device">
-                  <StatusDot state={on ? 'online' : 'offline'} />
-                  {copyConsole.people.device(device.name, on)}
+                  <StatusDot state={shown.online ? 'online' : 'offline'} />
+                  {copyConsole.people.device(shown.name, shown.online)}
                 </span>
               {/each}
             {/if}
@@ -261,6 +313,15 @@ Props:
   .role.member {
     background: transparent;
     border: var(--hairline) solid var(--line-strong);
+  }
+  .waiting {
+    background: var(--sunken);
+  }
+  .note {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    color: var(--ink-1);
   }
   .device {
     display: inline-flex;

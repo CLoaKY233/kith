@@ -18,7 +18,7 @@ Props:
   import { copyConsole } from '../lib/copy.console';
   import { checkCode, clock } from '../lib/format';
   import { actions, live, onEntry } from '../lib/live/store.svelte';
-  import type { DeviceCode, Me } from '../lib/types';
+  import type { DeviceCodeView, Me } from '../lib/types.gen';
   import Button from '../lib/ui/Button.svelte';
   import CopyField from '../lib/ui/CopyField.svelte';
 
@@ -28,7 +28,7 @@ Props:
     onShow,
   }: { networkId: string; person: Me; onShow?: (device: string) => void } = $props();
 
-  let code = $state.raw<DeviceCode | null>(null);
+  let code = $state.raw<DeviceCodeView | null>(null);
   let pending = $state(false);
   let error = $state<string | null>(null);
   let expired = $state(false);

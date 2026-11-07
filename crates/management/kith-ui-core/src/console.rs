@@ -600,7 +600,10 @@ struct Rollup {
     last: BTreeMap<(NetworkId, NodeId), TrafficSample>,
     /// Bytes per peer and minute not yet written.
     pending: BTreeMap<(NetworkId, NodeId, u64), (u64, u64)>,
-    /// The newest sample counted; older ones were counted before a restart.
+    /// The newest sample counted before this run started; samples up to it were kept by
+    /// an earlier run.
+    kept_ms: u64,
+    /// The newest sample counted, of any peer, to save as the next run's `kept_ms`.
     through_ms: u64,
 }
 
@@ -609,6 +612,7 @@ impl Rollup {
         Self {
             last: BTreeMap::new(),
             pending: BTreeMap::new(),
+            kept_ms: through_ms,
             through_ms,
         }
     }
@@ -626,7 +630,7 @@ impl Rollup {
             let Some(previous) = previous else {
                 continue;
             };
-            if sample.at_ms <= self.through_ms {
+            if sample.at_ms <= self.kept_ms {
                 continue;
             }
             let delta = |now: u64, before: u64| now.checked_sub(before).unwrap_or(now);
@@ -738,9 +742,13 @@ mod tests {
     const PEER: NodeId = NodeId::from_bytes([2; 32]);
 
     fn sample(at_ms: u64, rx_bytes: u64) -> (NetworkId, NodeId, TrafficSample) {
+        sample_of(PEER, at_ms, rx_bytes)
+    }
+
+    fn sample_of(peer: NodeId, at_ms: u64, rx_bytes: u64) -> (NetworkId, NodeId, TrafficSample) {
         (
             NET,
-            PEER,
+            peer,
             TrafficSample {
                 at_ms,
                 rx_bytes,
@@ -774,6 +782,19 @@ mod tests {
             restarted.take().len(),
             1,
             "minutes kept before are not added twice"
+        );
+        let other = NodeId::from_bytes([3; 32]);
+        let mut both = Rollup::new(0);
+        both.add(&[
+            sample(119_000, 0),
+            sample(121_000, 10),
+            sample_of(other, 59_000, 0),
+            sample_of(other, 61_000, 7),
+        ]);
+        assert_eq!(
+            both.take().len(),
+            2,
+            "a peer's samples older than another's newest still count"
         );
     }
 

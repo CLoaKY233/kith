@@ -19,6 +19,7 @@ Props:
   let { reason }: { reason: GateReason } = $props();
 
   const mac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+  const passkeyHost = typeof location !== 'undefined' && location.hostname === 'localhost';
   const variant = $derived(
     reason === 'session_used'
       ? copy.gate.authUsed
@@ -49,6 +50,8 @@ Props:
     <p>{copy.gate.authBody}</p>
     <CopyField label={copy.gate.commandLabel} value={copy.gate.authCommand} />
     <p class="meta">{copy.gate.authOnce}</p>
+    <!-- Passkeys work locally only on `localhost`, the relying party kith-ui uses. -->
+    {#if passkeyHost}<a class="link" href="/login">{copy.gate.authPasskey}</a>{/if}
   {/if}
 </section>
 
@@ -73,5 +76,9 @@ Props:
   }
   .meta {
     color: var(--ink-3);
+  }
+  .link {
+    justify-self: start;
+    color: var(--accent);
   }
 </style>

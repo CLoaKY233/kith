@@ -1,15 +1,16 @@
 <!--
 @component
-Who is signed in to a public Console, with Sign out: in the header on wider screens and in
-the Network sheet on phones. Local mode has nobody signed in and renders nothing.
+Who is signed in to the Console with a passkey, with Sign out: in the header on wider
+screens and in the Network sheet on phones. The local one-time link signs nobody in, and
+then this renders nothing.
 -->
 <script lang="ts">
-  import { consoleMode, me, signOut } from '../lib/account.svelte';
+  import { me, signOut } from '../lib/account.svelte';
   import { copy } from '../lib/copy';
   import Button from '../lib/ui/Button.svelte';
 
   let pending = $state(false);
-  const person = $derived(consoleMode() === 'public' ? me() : null);
+  const person = $derived(me());
 
   function leave(): void {
     pending = true;
