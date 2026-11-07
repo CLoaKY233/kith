@@ -105,16 +105,32 @@ pub(crate) async fn redeem(
     if code.len() != 6 {
         return Err(ApiError::not_found("no such link or code"));
     }
-    let row = link_refusal(stored(shared.store.redeem_device_code(&code, now))?)?;
+    // Check, mint, then burn: a code is used up only once its invite exists, so a daemon
+    // that is down or refuses leaves the code good for another try.
+    let row = link_refusal(stored(shared.store.peek_device_code(&code, now))?)?;
     let network: NetworkId = row.network.parse().map_err(|_| ApiError::unexpected())?;
     let invite_link = acting_as(
         Some(row.created_by.clone()),
         one_device_invite(&shared, network),
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ApiErrorCode::Internal,
+            format!(
+                "the Console could not make an invite for this code ({}); the code still \
+                 works, so try again in a minute, or ask an owner to check that kith is \
+                 running on the server",
+                error.message()
+            ),
+        )
+    })?;
     let token = InviteToken::parse(&invite_link).map_err(|_| ApiError::unexpected())?;
     let invite = crate::sim::hex(&token.invite_public_key().to_bytes());
-    stored(shared.store.set_device_code_invite(&code, &invite))?;
+    link_refusal(stored(
+        shared.store.redeem_device_code(&code, now, &invite),
+    )?)?;
     let network_name = console_network(&shared)
         .await?
         .filter(|(id, _, _)| *id == network)

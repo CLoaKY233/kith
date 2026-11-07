@@ -210,7 +210,7 @@ pub(crate) async fn setup_finish(
     link_refusal(stored(
         shared
             .store
-            .use_setup_token(&prompt.token, shared.clock.now_ms()),
+            .check_setup_token(&prompt.token, shared.clock.now_ms()),
     )?)?;
     let network = if let Some((id, _, _)) = console_network(&shared).await? {
         id
@@ -223,7 +223,26 @@ pub(crate) async fn setup_finish(
     choose_network(&shared, network)?;
     // The recovery key can only be made while the network has no people: before the
     // owner. A network that already has one keeps it; setup goes on without words.
-    let words = shared.accounts.recovery_key(network).await.ok();
+    // Setup never finishes without recovery words: if the network has none yet and making
+    // them fails, setup stops here, before the owner exists.
+    let has_people = !shared.accounts.accounts(network).await?.is_empty();
+    let words =
+        if has_people {
+            None
+        } else {
+            Some(shared.accounts.recovery_key(network).await.map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::wire::ApiErrorCode::Internal,
+                format!(
+                    "setup stopped before adding you, because the recovery words could not \
+                     be made: {}. Check that kith is running on the server and that the \
+                     Console may change this network, then open the setup link again",
+                    error.message()
+                ),
+            )
+        })?)
+        };
     let owner = shared
         .accounts
         .add_account(network, prompt.name, PersonRole::Owner, passkey)
@@ -231,6 +250,12 @@ pub(crate) async fn setup_finish(
     if let Some(words) = words {
         crate::api::lock(&shared.api.recovery).insert(owner.id.clone(), words);
     }
+    // The link is burned last, so a failure above leaves it good for another try.
+    link_refusal(stored(
+        shared
+            .store
+            .use_setup_token(&prompt.token, shared.clock.now_ms()),
+    )?)?;
     mark_setup_done(&shared)?;
     let (_, _, device) = crate::console::network(&shared).await?;
     let device = device.ok_or_else(ApiError::unexpected)?;

@@ -67,6 +67,11 @@ impl ApiError {
         }
     }
 
+    /// What went wrong, as the page shows it.
+    pub(crate) fn message(&self) -> &str {
+        &self.body.message
+    }
+
     pub(crate) fn bad(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::BAD_REQUEST,

@@ -293,10 +293,35 @@ impl Storage for SqliteStore {
         Ok(())
     }
 
+    fn peek_device_code(
+        &self,
+        code: &str,
+        now_ms: u64,
+    ) -> Result<Redeem<DeviceCodeRow>, StoreError> {
+        let db = self.db();
+        let Some(row) = db
+            .query_row(
+                &format!("SELECT {CODE_COLUMNS} FROM device_codes WHERE code = ?1"),
+                params![code],
+                code_row,
+            )
+            .optional()?
+        else {
+            return Ok(Redeem::Unknown);
+        };
+        Ok(state(
+            row.used_ms.map(int),
+            int(row.expires_ms),
+            now_ms,
+            row,
+        ))
+    }
+
     fn redeem_device_code(
         &self,
         code: &str,
         now_ms: u64,
+        invite: &str,
     ) -> Result<Redeem<DeviceCodeRow>, StoreError> {
         let mut db = self.db();
         let transaction = db.transaction()?;
@@ -318,24 +343,17 @@ impl Storage for SqliteStore {
         );
         if let Redeem::Ok(_) = found {
             transaction.execute(
-                "UPDATE device_codes SET used_ms = ?2 WHERE code = ?1",
-                params![code, int(now_ms)],
+                "UPDATE device_codes SET used_ms = ?2, invite = ?3 WHERE code = ?1",
+                params![code, int(now_ms), invite],
             )?;
             transaction.commit()?;
             return Ok(Redeem::Ok(DeviceCodeRow {
                 used_ms: Some(now_ms),
+                invite: Some(invite.to_owned()),
                 ..row
             }));
         }
         Ok(found)
-    }
-
-    fn set_device_code_invite(&self, code: &str, invite: &str) -> Result<(), StoreError> {
-        self.db().execute(
-            "UPDATE device_codes SET invite = ?2 WHERE code = ?1",
-            params![code, invite],
-        )?;
-        Ok(())
     }
 
     fn unassigned_codes(

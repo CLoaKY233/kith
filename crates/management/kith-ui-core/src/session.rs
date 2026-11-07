@@ -411,9 +411,17 @@ pub(crate) async fn guard(
     );
     let refused = match refused {
         Some(refused) => Some(refused),
-        None if needs_admin(principal.as_ref(), request.method(), &path) => {
+        // Every API request of a signed-in person, reads and the event stream included,
+        // checks the ledger still holds them: a removed person's session reads nothing.
+        None if api
+            && !open(&shared.mode, &path)
+            && matches!(principal, Some(Principal::Person { .. })) =>
+        {
             match signed_in(&shared, principal.as_ref()).await {
-                Ok((_, person)) => require(&person, PersonRole::Admin).err(),
+                Ok((_, person)) if needs_admin(principal.as_ref(), request.method(), &path) => {
+                    require(&person, PersonRole::Admin).err()
+                }
+                Ok(_) => None,
                 Err(error) => Some(error),
             }
         }

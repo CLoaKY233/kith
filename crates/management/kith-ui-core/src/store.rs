@@ -198,14 +198,20 @@ pub trait Storage: Send + Sync + fmt::Debug {
 
     /// Keeps a new device code.
     fn put_device_code(&self, code: &DeviceCodeRow) -> Result<(), StoreError>;
-    /// Uses a device code: once, before it lapses.
-    fn redeem_device_code(
+    /// A device code as it stands, without using it.
+    fn peek_device_code(
         &self,
         code: &str,
         now_ms: u64,
     ) -> Result<Redeem<DeviceCodeRow>, StoreError>;
-    /// Notes the invite a used code handed out.
-    fn set_device_code_invite(&self, code: &str, invite: &str) -> Result<(), StoreError>;
+    /// Uses a device code once, before it lapses, noting the invite it handed out. Called
+    /// only after the invite exists, so nothing that fails before burns the code.
+    fn redeem_device_code(
+        &self,
+        code: &str,
+        now_ms: u64,
+        invite: &str,
+    ) -> Result<Redeem<DeviceCodeRow>, StoreError>;
     /// Codes of `network` used since `since_ms` whose device is not known yet.
     fn unassigned_codes(
         &self,
