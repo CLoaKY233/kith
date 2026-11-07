@@ -109,6 +109,8 @@ struct Shared {
     clock: Arc<console::Clock>,
     /// Tries of the public code lookup per address.
     limiter: console::RateLimiter,
+    /// Codes whose noted device was checked against its owner in this run.
+    rechecked: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// Writes history to `store`; stops when the router is dropped.
     _worker: console::Worker,
 }
@@ -201,6 +203,7 @@ fn build(
         accounts,
         clock,
         limiter: console::RateLimiter::default(),
+        rechecked: std::sync::Mutex::default(),
         _worker: worker,
     });
     let app = routes()

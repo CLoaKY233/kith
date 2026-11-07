@@ -218,6 +218,12 @@ pub trait Storage: Send + Sync + fmt::Debug {
         network: &str,
         since_ms: u64,
     ) -> Result<Vec<DeviceCodeRow>, StoreError>;
+    /// Codes of `network` made since `since_ms` whose device is noted.
+    fn assigned_codes(
+        &self,
+        network: &str,
+        since_ms: u64,
+    ) -> Result<Vec<DeviceCodeRow>, StoreError>;
     /// Notes the device that joined with a code.
     fn set_device_code_node(&self, code: &str, node: &str) -> Result<(), StoreError>;
 

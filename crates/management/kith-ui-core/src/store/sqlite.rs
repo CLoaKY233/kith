@@ -372,6 +372,22 @@ impl Storage for SqliteStore {
         Ok(rows)
     }
 
+    fn assigned_codes(
+        &self,
+        network: &str,
+        since_ms: u64,
+    ) -> Result<Vec<DeviceCodeRow>, StoreError> {
+        let db = self.db();
+        let mut statement = db.prepare(&format!(
+            "SELECT {CODE_COLUMNS} FROM device_codes WHERE network = ?1 AND created_ms >= ?2 \
+             AND invite IS NOT NULL AND node IS NOT NULL ORDER BY used_ms"
+        ))?;
+        let rows = statement
+            .query_map(params![network, int(since_ms)], code_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     fn set_device_code_node(&self, code: &str, node: &str) -> Result<(), StoreError> {
         self.db().execute(
             "UPDATE device_codes SET node = ?2 WHERE code = ?1",

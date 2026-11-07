@@ -607,7 +607,6 @@ async fn assign_joined(
     let Ok(codes) = store.unassigned_codes(&network.to_string(), since) else {
         return;
     };
-    let by_invite = invite.is_some();
     let code = match invite {
         Some(invite) => codes
             .into_iter()
@@ -615,7 +614,7 @@ async fn assign_joined(
         None => <[_; 1]>::try_from(codes).ok().map(|[code]| code),
     };
     if let Some(code) = code {
-        assign_code(store, accounts, network, node, &code, by_invite).await;
+        assign_code(store, accounts, network, node, &code).await;
     }
 }
 
@@ -627,19 +626,12 @@ async fn assign_code(
     network: NetworkId,
     node: NodeId,
     code: &DeviceCodeRow,
-    by_invite: bool,
 ) {
     let assign = accounts.assign_device(network, node, code.account.clone());
-    let mut assigned = acting_as(Some(code.created_by.clone()), assign)
+    if acting_as(Some(code.created_by.clone()), assign)
         .await
-        .is_ok();
-    // A member may not assign devices, but the device that used their own code's invite
-    // is theirs: the Console assigns it on its own authority.
-    if !assigned && by_invite && code.created_by == code.account {
-        let assign = accounts.assign_device(network, node, code.account.clone());
-        assigned = acting_as(None, assign).await.is_ok();
-    }
-    if assigned {
+        .is_ok()
+    {
         let _kept = store.set_device_code_node(&code.code, &node.to_string());
     }
 }
@@ -653,10 +645,20 @@ async fn claim_joined(shared: &Shared, network: NetworkId) {
         return;
     };
     let store = &*shared.store;
-    let Ok(codes) = store.unassigned_codes(&network.to_string(), 0) else {
+    let id = network.to_string();
+    let Ok(codes) = store.unassigned_codes(&id, 0) else {
         return;
     };
-    if codes.is_empty() {
+    let since = shared.clock.now_ms().saturating_sub(RECHECK_MS);
+    let assigned = store.assigned_codes(&id, since).unwrap_or_default();
+    let assigned: Vec<_> = {
+        let tried = lock(&shared.rechecked);
+        assigned
+            .into_iter()
+            .filter(|code| !tried.contains(&code.code))
+            .collect()
+    };
+    if codes.is_empty() && assigned.is_empty() {
         return;
     }
     let Ok(Response::Peers(peers)) = daemon.ask(Request::Peers { network }).await else {
@@ -667,7 +669,44 @@ async fn claim_joined(shared: &Shared, network: NetworkId) {
             .iter()
             .find(|peer| peer.invite.is_some() && peer.invite == code.invite);
         if let Some(peer) = joined {
-            assign_code(store, &*shared.accounts, network, peer.node, &code, true).await;
+            assign_code(store, &*shared.accounts, network, peer.node, &code).await;
+        }
+    }
+    if !assigned.is_empty() {
+        let members: Vec<NodeId> = peers.iter().map(|peer| peer.node).collect();
+        lock(&shared.rechecked).extend(assigned.iter().map(|code| code.code.clone()));
+        recheck_owners(store, &*shared.accounts, network, &members, &assigned).await;
+    }
+}
+
+/// How far back codes whose device is noted get their assignment checked again.
+const RECHECK_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Assigns again the devices noted on `codes` that their person does not hold: an older
+/// Console noted the device even when the ledger ignored the assignment. Devices no
+/// longer in `members` are left alone.
+async fn recheck_owners(
+    store: &dyn Storage,
+    accounts: &dyn AccountsBackend,
+    network: NetworkId,
+    members: &[NodeId],
+    codes: &[DeviceCodeRow],
+) {
+    let Ok(people) = accounts.accounts(network).await else {
+        return;
+    };
+    for code in codes {
+        let Some(node) = members
+            .iter()
+            .find(|node| code.node.as_deref() == Some(node.to_string().as_str()))
+        else {
+            continue;
+        };
+        let owned = people
+            .iter()
+            .any(|person| person.id == code.account && person.devices.contains(node));
+        if !owned {
+            assign_code(store, accounts, network, *node, code).await;
         }
     }
 }
@@ -956,6 +995,54 @@ mod tests {
                 .len(),
             2
         );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[expect(clippy::panic_in_result_fn, reason = "assertions fail the test")]
+    async fn a_noted_device_its_person_lacks_is_assigned_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::accounts::MemoryAccounts;
+        let store = crate::store::SqliteStore::memory()?;
+        let accounts = MemoryAccounts::default();
+        let ana = accounts
+            .add_account(
+                NET,
+                "Ana".to_owned(),
+                PersonRole::Owner,
+                crate::store::StoredCredential {
+                    credential_id: vec![1],
+                    public_key: vec![1; 65],
+                    rp_id: "vpn.example.com".to_owned(),
+                },
+            )
+            .await
+            .map_err(|error| error.message().to_owned())?;
+        let owned = NodeId::from_bytes([7; 32]);
+        let gone = NodeId::from_bytes([8; 32]);
+        acting_as(
+            Some(ana.id.clone()),
+            accounts.assign_device(NET, owned, ana.id.clone()),
+        )
+        .await
+        .map_err(|error| error.message().to_owned())?;
+        for (name, node) in [("AAAAAA", PEER), ("BBBBBB", owned), ("CCCCCC", gone)] {
+            let mut row = code(name, &ana.id, name);
+            row.node = Some(node.to_string());
+            assert!(store.put_device_code(&row).is_ok());
+        }
+        let noted = store.assigned_codes(&NET.to_string(), 0)?;
+        assert_eq!(noted.len(), 3);
+        recheck_owners(&store, &accounts, NET, &[PEER, owned], &noted).await;
+        let people = accounts.accounts(NET).await.unwrap_or_default();
+        let mut devices = people
+            .first()
+            .map(|one| one.devices.clone())
+            .unwrap_or_default();
+        devices.sort();
+        let mut want = vec![owned, PEER];
+        want.sort();
+        assert_eq!(devices, want);
         Ok(())
     }
 
