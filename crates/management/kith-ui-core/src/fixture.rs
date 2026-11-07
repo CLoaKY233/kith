@@ -41,7 +41,7 @@ pub enum FixtureError {
     Read(std::io::Error),
     /// The file is not a fixture.
     Parse(serde_json::Error),
-    /// The file is larger than [`MAX_BYTES`].
+    /// The file is larger than the fixture size limit.
     TooLarge,
     /// The boot id is not 1 to 64 ASCII letters and digits, so it cannot name events.
     Boot,
