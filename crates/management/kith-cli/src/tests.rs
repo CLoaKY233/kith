@@ -1,4 +1,4 @@
-use kith_ipc::{DnsRecord, Request, Status};
+use kith_ipc::{DeviceSettingsInfo, DnsRecord, Request, Status};
 #[cfg(unix)]
 use kith_ipc::{IpcServer, NetworkSummary, PathKind, PeerInfo, Response, Warning};
 use kith_types::{NetworkId, NodeId};
@@ -17,6 +17,15 @@ fn names() -> Names {
         peers: vec![(NODE, "nas".to_owned(), "NAS".to_owned())],
         hostname: "laptop".to_owned(),
         imports: vec![(IMPORT, "office".to_owned())],
+        settings: [(
+            NODE,
+            DeviceSettingsInfo {
+                exit: None,
+                exit_locked: false,
+                paused: true,
+            },
+        )]
+        .into(),
     }
 }
 
@@ -141,6 +150,30 @@ fn every_command_parses_into_the_right_request() {
             }),
         ),
         (vec!["exit", "use", "home", "ghost"], Err(())),
+        (
+            vec!["device", "home", "nas", "exit", "nas", "--lock"],
+            Ok(Request::SetDeviceSettings {
+                network: NET,
+                node: NODE,
+                settings: DeviceSettingsInfo {
+                    exit: Some(NODE),
+                    exit_locked: true,
+                    paused: true,
+                },
+            }),
+        ),
+        (
+            vec!["device", "home", "nas", "resume"],
+            Ok(Request::SetDeviceSettings {
+                network: NET,
+                node: NODE,
+                settings: DeviceSettingsInfo::default(),
+            }),
+        ),
+        (
+            vec!["device", "home", "nas", "exit", "off", "--lock", "--unlock"],
+            Err(()),
+        ),
         (
             vec!["exit", "allow", "home", "nas"],
             Ok(Request::SetExitGrant {
@@ -287,7 +320,11 @@ fn fake_status() -> Status {
     Status {
         node: Some(NodeId::from_bytes([0x12; 32])),
         networks: vec![NetworkSummary {
-            my_settings: None,
+            my_settings: Some(DeviceSettingsInfo {
+                exit: Some(NODE),
+                exit_locked: true,
+                paused: false,
+            }),
             id: NET,
             name: "home".into(),
             peers_online: 2,
@@ -347,7 +384,11 @@ fn fake_peers() -> Vec<PeerInfo> {
             invite: None,
         },
         PeerInfo {
-            settings: None,
+            settings: Some(DeviceSettingsInfo {
+                exit: Some(NODE),
+                exit_locked: false,
+                paused: false,
+            }),
             via_this_exit: false,
             node: phone,
             name: "phone".into(),
@@ -366,7 +407,7 @@ fn fake_peers() -> Vec<PeerInfo> {
         },
         PeerInfo {
             settings: None,
-            via_this_exit: false,
+            via_this_exit: true,
             node: NodeId::from_bytes([0xdd; 32]),
             name: "pixel".into(),
             address: "100.64.0.4".into(),
@@ -416,10 +457,11 @@ async fn status_renders_what_the_daemon_reports() {
          wireguard office (eeeeeeee): all internet traffic, not in use, heard 9s ago\n\
          \n\
          network home (aaaaaaaa)  2/3 online\n  \
-         NAME   ADDRESS     PATH     ENDPOINT            LAST SEEN  RX       TX       NODE\n  \
-         nas    100.64.0.2  direct   198.51.100.7:41641  4s ago     1.1 MiB  512 B    bbbbbbbb\n  \
-         phone  100.64.0.3  offline  -                   never      0 B      0 B      cccccccc\n  \
-         pixel  100.64.0.4  via nas  203.0.113.9:51820   12s ago    2.0 KiB  4.0 KiB  dddddddd\n\
+         exit nas (set in the network, locked)\n  \
+         NAME   ADDRESS     PATH     ENDPOINT            LAST SEEN  RX       TX       EXIT           NODE\n  \
+         nas    100.64.0.2  direct   198.51.100.7:41641  4s ago     1.1 MiB  512 B    -              bbbbbbbb\n  \
+         phone  100.64.0.3  offline  -                   never      0 B      0 B      exit nas       cccccccc\n  \
+         pixel  100.64.0.4  via nas  203.0.113.9:51820   12s ago    2.0 KiB  4.0 KiB  via this exit  dddddddd\n\
          \n\
          notes (run `kith doctor` for fixes):\n  \
          100.100.100.100/32 via utun37 overlaps kith's addresses (another VPN?)\n  \
@@ -440,18 +482,18 @@ async fn status_renders_what_the_daemon_reports() {
                 r#""rx_bytes":10,"tx_bytes":20}}],"#,
                 r#""networks":[{{"id":"{net}","#,
                 r#""name":"home","peers_online":2,"peers_total":3,"relays":1,"#,
-                r#""problems":[{{"what":"tablet has no address","fix":"remove it and add it again"}}],"peers":["#,
+                r#""problems":[{{"what":"tablet has no address","fix":"remove it and add it again"}}],"my_settings":{{"exit":"{nas}","exit_locked":true,"paused":false}},"peers":["#,
                 r#"{{"node":"{nas}","name":"nas","address":"100.64.0.2","path":"direct","#,
                 r#""path_reason":"direct to 198.51.100.7:41641 (12 ms)","#,
                 r#""endpoint":"198.51.100.7:41641","last_seen_secs":4,"#,
-                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null,"path_mtu":null,"invite":null}},"#,
+                r#""rx_bytes":1234567,"tx_bytes":512,"online":true,"display_name":"NAS","gateway":null,"path_mtu":null,"invite":null,"settings":null,"via_this_exit":false}},"#,
                 r#"{{"node":"{phone}","name":"phone","address":"100.64.0.3","#,
                 r#""path":null,"path_reason":null,"#,
                 r#""endpoint":null,"last_seen_secs":null,"#,
-                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null,"path_mtu":null,"invite":null}},"#,
+                r#""rx_bytes":0,"tx_bytes":0,"online":false,"display_name":"Phone \"old\"","gateway":null,"path_mtu":null,"invite":null,"settings":{{"exit":"{nas}","exit_locked":false,"paused":false}},"via_this_exit":false}},"#,
                 r#"{{"node":"{pixel}","name":"pixel","address":"100.64.0.4","path":null,"#,
                 r#""path_reason":null,"endpoint":"203.0.113.9:51820","last_seen_secs":12,"#,
-                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas","path_mtu":1216,"invite":null}}]}}]}}"#,
+                r#""rx_bytes":2048,"tx_bytes":4096,"online":true,"display_name":"Pixel","gateway":"nas","path_mtu":1216,"invite":null,"settings":null,"via_this_exit":true}}]}}]}}"#,
                 "\n",
             ),
             me = NodeId::from_bytes([0x12; 32]),

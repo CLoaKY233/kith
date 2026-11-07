@@ -14,6 +14,8 @@ Examples:
   kith wg export home phone --tag phone   add a phone: scan the code in the WireGuard app
   kith exit use home vps                  send all internet traffic through the device vps
   kith exit off                           stop doing that
+  kith device home phone exit vps --lock  make the phone use vps, and not change it itself
+  kith device home phone pause            pause the phone's traffic from here
   kith dns set home nas A 100.64.0.2      give an address a name: nas.home.kith.internal
   kith down                               turn kith off until kith up";
 
@@ -88,6 +90,17 @@ pub(crate) enum Cmd {
         device: String,
         #[bpaf(positional("NEW-NAME"))]
         name: String,
+    },
+    /// Choose a device's exit node or pause it, from an admin device or its owner
+    #[bpaf(command)]
+    Device {
+        #[bpaf(positional("NETWORK"))]
+        network: String,
+        /// The device's name or id
+        #[bpaf(positional("DEVICE"))]
+        device: String,
+        #[bpaf(external(device_action))]
+        action: DeviceAction,
     },
     /// Leave a network
     #[bpaf(command)]
@@ -237,6 +250,28 @@ pub(crate) enum DnsCmd {
         #[bpaf(positional("NAME"))]
         name: String,
     },
+}
+
+/// `kith device <network> <device> …`.
+#[derive(Debug, Clone, PartialEq, Eq, Bpaf)]
+pub(crate) enum DeviceAction {
+    /// Send its internet traffic through a device, or `off` for its own connection
+    #[bpaf(command)]
+    Exit {
+        /// Stop the device changing its exit itself
+        lock: bool,
+        /// Let the device change its exit itself again
+        unlock: bool,
+        /// A device's name or id, or `off`
+        #[bpaf(positional("EXIT-DEVICE"))]
+        exit: String,
+    },
+    /// Pause the device's traffic
+    #[bpaf(command)]
+    Pause,
+    /// Resume the device's traffic
+    #[bpaf(command)]
+    Resume,
 }
 
 /// `kith exit …`.
