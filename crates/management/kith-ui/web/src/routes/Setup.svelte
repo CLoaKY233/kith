@@ -331,6 +331,8 @@ Props:
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: flex-end;
     gap: var(--s-3);
   }

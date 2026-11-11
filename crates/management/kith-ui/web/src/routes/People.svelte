@@ -230,10 +230,10 @@ Props:
           <div class="who">
             <span class="name">{person.name}</span>
             {#if person.me}<span class="you">{copyConsole.people.you}</span>{/if}
+            <span class="role {person.role}">{copy.account.role[person.role]}</span>
             {#if person.me && person.state === 'active'}
               <Button pending={addingPasskey} onclick={addPasskey}>{copyConsole.people.addPasskey}</Button>
             {/if}
-            <span class="role {person.role}">{copy.account.role[person.role]}</span>
           </div>
           <div class="devices">
             {#if person.state === 'registered'}
@@ -353,6 +353,7 @@ Props:
     min-width: 0;
   }
   .name {
+    min-width: 0;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;

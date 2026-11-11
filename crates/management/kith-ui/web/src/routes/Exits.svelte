@@ -436,7 +436,9 @@ Props:
     .access,
     .use {
       display: flex;
-      gap: var(--s-2);
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0 var(--s-2);
       font: var(--t-small);
     }
     .cell-label {

@@ -43,7 +43,9 @@ nothing on its own.
     The 18 recovery words
     <textarea bind:value={words} rows="4" autocomplete="off" spellcheck="false"></textarea>
   </label>
-  <Button variant="primary" {pending} onclick={recover}>Make a new passkey</Button>
+  <div class="actions">
+    <Button variant="primary" {pending} onclick={recover}>Make a new passkey</Button>
+  </div>
   {#if error}<p class="problem" role="alert">{error}</p>{/if}
 </section>
 
@@ -67,6 +69,10 @@ nothing on its own.
   }
   .title {
     font: var(--t-title);
+    letter-spacing: var(--t-title-tracking);
+  }
+  .actions {
+    display: flex;
   }
   .problem {
     color: var(--danger);

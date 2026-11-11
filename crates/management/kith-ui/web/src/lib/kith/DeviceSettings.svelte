@@ -176,14 +176,16 @@ Props:
           onCheckedChange={(on) => edit({ paused: on })}
         />
       </div>
-      {#if dirty}
-        <div>
-          <Button variant="primary" pending={busy} disabled={stale} onclick={save}>
-            {copy.deviceSettings.save}
-          </Button>
+      {#if dirty || stale}
+        <div class="actions">
+          {#if dirty}
+            <Button variant="primary" pending={busy} disabled={stale} onclick={save}>
+              {copy.deviceSettings.save}
+            </Button>
+          {/if}
+          {#if stale}<p class="helper">{copy.conn.staleActions}</p>{/if}
         </div>
       {/if}
-      {#if stale}<p class="helper">{copy.conn.staleActions}</p>{/if}
     {/if}
     {#if note}
       <p class="status" class:failed={note.failed} role="status">{note.text}</p>
@@ -206,6 +208,12 @@ Props:
   .pick {
     display: grid;
     gap: var(--s-1);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2) var(--s-3);
   }
   .label {
     font: var(--t-small);
