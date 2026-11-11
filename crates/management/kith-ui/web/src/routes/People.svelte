@@ -196,19 +196,24 @@ Props:
 </script>
 
 <section class="screen">
-  {#if viewer?.role === 'owner' && live.status?.node}
+  {#if (viewer?.role === 'owner' && live.status?.node) || addableRoles(viewer).length > 0}
     <div class="toolbar">
-      <p class="quiet">{copyConsole.people.consoleActs}</p>
-      <Button pending={consoleAuthority.state === 'signing'} onclick={revokeConsole}>
-        {copyConsole.people.revokeConsole}
-      </Button>
+      {#if viewer?.role === 'owner' && live.status?.node}
+        <div class="console">
+          <p class="quiet">{copyConsole.people.consoleActs}</p>
+          <Button pending={consoleAuthority.state === 'signing'} onclick={revokeConsole}>
+            {copyConsole.people.revokeConsole}
+          </Button>
+        </div>
+      {/if}
+      {#if addableRoles(viewer).length > 0}
+        <span class="add">
+          <Button variant="primary" onclick={() => (adding = true)}>{copyConsole.people.add}</Button>
+        </span>
+      {/if}
     </div>
   {/if}
-  {#if addableRoles(viewer).length > 0}
-    <div class="toolbar">
-      <Button variant="primary" onclick={() => (adding = true)}>{copyConsole.people.add}</Button>
-    </div>
-  {:else if viewer}
+  {#if addableRoles(viewer).length === 0 && viewer}
     <p class="ask">{copyConsole.people.askAdmin(admins)}</p>
   {/if}
 
@@ -298,7 +303,22 @@ Props:
   }
   .toolbar {
     display: flex;
-    justify-content: flex-end;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-3) var(--s-4);
+  }
+  .console {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2) var(--s-3);
+    min-width: 0;
+  }
+  .console .quiet {
+    margin: 0;
+  }
+  .add {
+    margin-left: auto;
   }
   .ask {
     max-width: var(--measure);

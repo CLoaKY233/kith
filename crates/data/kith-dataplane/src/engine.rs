@@ -1022,8 +1022,11 @@ impl State {
             }
             match output.result {
                 Decapsulated::Packet(len) => {
+                    // A connection opened here is answered, maybe by this device, in segments
+                    // its MSS allows: keep it within the path to the phone, not just the tunnel.
+                    let limit = entry.member.as_ref().and_then(|member| member.size.limit());
                     if let Some(packet) = self.scratch.get_mut(..len) {
-                        clamp_mss(packet, self.clamp_to);
+                        clamp_mss(packet, clamp_for(self.clamp_to, limit));
                     }
                     if let Some(packet) = self.scratch.get(..len) {
                         if !packet::source(packet).is_some_and(|address| {
@@ -1272,7 +1275,7 @@ impl State {
         match output.result {
             Decapsulated::Packet(len) => {
                 if let Some(packet) = self.scratch.get_mut(..len) {
-                    clamp_mss(packet, self.clamp_to);
+                    clamp_mss(packet, clamp_for(self.clamp_to, entry.path_mtu));
                 }
                 if let Some(packet) = self.scratch.get(..len)
                     && is_fragment(packet)
@@ -1655,6 +1658,13 @@ fn owns_source(entry: &PeerEntry, role: ExitRole, drops: &mut DropCounters, pack
 }
 
 /// Cryptokey routing (the peer may use this source address), then the network's filter.
+/// The size TCP segments are kept to for a peer: the tunnel's, or the smaller one its path
+/// was found to carry. A sender that never hears "too big" (a reply hairpinned through a
+/// cloud's NAT, a filtered ICMP) then never sends what the path drops.
+fn clamp_for(tunnel: u16, path: Option<u16>) -> u16 {
+    path.map_or(tunnel, |path| tunnel.min(path))
+}
+
 /// Whether `packet` is bound for the internet: for none of this device's addresses, no
 /// network's mesh, and no advertised route.
 fn is_internet(
