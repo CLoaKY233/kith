@@ -1,0 +1,105 @@
+/* ui-sdk's components put their own CSS first, so its layer ranks lowest. Tailwind's reset
+   goes inside it as a sub-layer, which ranks below ui-sdk's own rules; utilities stay on top. */
+@layer ui-sdk, theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(ui-sdk.reset);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "@ui-sdk/core/web.css";
+
+/* Tokens (DESIGN.md): black and white, hairlines, square corners; red only for problems. */
+@theme {
+  --color-ink-0: #0a0a0a;
+  --color-ink-2: #171717;
+  --color-ink-3: #262626;
+  --color-line: #262626;
+  --color-line-2: #3a3a3a;
+  --color-fg: #fafafa;
+  --color-fg-2: #a4a4a4;
+  --color-fg-3: #6f6f6f;
+  --color-hot: #f2555a;
+  --font-sans: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-xs: 0px; --radius-sm: 0px; --radius-md: 0px; --radius-lg: 0px;
+  --radius-xl: 0px; --radius-2xl: 0px; --radius-3xl: 0px; --radius-4xl: 0px;
+}
+
+/* ui-sdk's own tokens, set to the same palette. */
+:root {
+  color-scheme: dark;
+  --ui-background: #0a0a0a;
+  --ui-foreground: #fafafa;
+  --ui-muted: #171717;
+  --ui-muted-foreground: #a4a4a4;
+  --ui-border: #262626;
+  --ui-input: #3a3a3a;
+  --ui-primary: #fafafa;
+  --ui-primary-foreground: #0a0a0a;
+  --ui-ring: #fafafa;
+  --ui-radius: 0px;
+  --ui-shadow: none;
+  --ui-font-sans: var(--font-sans);
+  --ui-font-mono: var(--font-mono);
+}
+
+/* Global defaults sit in their own layer so utilities (outline-offset-4, outline-none, ...) still win. */
+@layer base {
+  html, body, #app { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--color-ink-0);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: break-word;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scrollbar-gutter: stable; }
+  p { text-wrap: pretty; }
+  ::selection { background: #fafafa; color: #0a0a0a; }
+  button, [role="button"], summary { touch-action: manipulation; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible { outline: 1px solid var(--color-fg); outline-offset: 2px; }
+  :focus:not(:focus-visible) { outline: none; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible, [role="combobox"]:focus-visible { outline: none; }
+  a { text-underline-offset: 3px; }
+  @media (max-width: 767px) { input, textarea, select { font-size: 16px; } }
+}
+
+/* ui-sdk popups: solid raised surface, hairline, no shadow. */
+[data-slot="popover-content"], [data-slot="menu-content"], [data-slot="select-content"],
+[data-slot="combobox-content"], [data-slot="tooltip-content"], [data-slot="hover-card-content"],
+[data-slot="dialog-content"], [data-slot="alert-dialog-content"] {
+  background: var(--color-ink-2);
+  border: 1px solid var(--color-line-2);
+  box-shadow: none;
+}
+
+/* Status squares: online, offline, problem. */
+.dot-on, .dot-off, .dot-problem { display: inline-block; vertical-align: middle; box-sizing: border-box; width: 7px; height: 7px; flex: none; }
+.dot-on { background: var(--color-fg); }
+.dot-off { border: 1px solid var(--color-fg-3); }
+.dot-problem { background: var(--color-hot); }
+
+/* A place fades in on arrival; charts ease between updates; live links show moving packets. */
+@keyframes page-enter { from { opacity: 0; transform: translateY(4px); } }
+.page-enter { animation: page-enter 180ms cubic-bezier(0.2, 0, 0, 1); }
+.ui-path { transition: d 150ms ease-out; }
+.ui-bar { transition: width 150ms ease-out; }
+@keyframes flow { to { stroke-dashoffset: -24; } }
+.flow { stroke-dasharray: 2 10; animation: flow 1s linear infinite; }
+
+/* Panels in a grid share their hairlines. */
+.ui-panel-grid { border-top: 1px solid var(--color-line); border-left: 1px solid var(--color-line); }
+.ui-panel-grid > .ui-panel { border-width: 0 1px 1px 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+  .flow { animation: none; }
+}

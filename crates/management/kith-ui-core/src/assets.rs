@@ -39,6 +39,9 @@ fn is_page(path: &str) -> bool {
     match segments.as_slice() {
         [] | ["" | "welcome" | "this" | "login" | "recover"] => true,
         ["setup" | "register", token] => !token.is_empty(),
+        ["devices" | "stats" | "activity" | "settings"] => true,
+        ["devices", device] => !device.is_empty(),
+        ["settings", "network" | "exits" | "names" | "access" | "people"] => true,
         ["n", net]
         | [
             "n",
@@ -227,6 +230,12 @@ mod tests {
             "/login",
             "/setup/3f2a",
             "/register/3f2a",
+            "/stats",
+            "/devices",
+            "/devices/nas",
+            "/activity",
+            "/settings",
+            "/settings/access",
         ] {
             assert!(is_page(page), "{page}");
         }
@@ -240,6 +249,8 @@ mod tests {
             "/index.html",
             "/setup",
             "/register/3f2a/x",
+            "/settings/other",
+            "/devices/nas/x",
         ] {
             assert!(!is_page(other), "{other}");
         }

@@ -1,0 +1,6 @@
+*.tsbuildinfo
+dist/
+e2e/.setup-url
+node_modules/
+playwright-report/
+test-results/
