@@ -8,7 +8,7 @@ port=41695
 url_file="$here/.setup-url"
 rm -f "$url_file"
 
-(cd "$web" && npx vite build --outDir ../web/dist --emptyOutDir >/dev/null)
+(cd "$web" && npx vite build >/dev/null)
 (cd "$repo" && cargo build -q -p kith-ui --target-dir target-owner)
 
 state="$(mktemp -d)"

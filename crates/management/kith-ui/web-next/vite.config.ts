@@ -12,13 +12,15 @@ export default defineConfig({
   // Matches web/: kith-ui embeds dist/ and serves it under a CSP of default-src 'self'.
   build: {
     target: 'es2022',
-    outDir: 'dist',
+    outDir: '../web/dist',
     emptyOutDir: true,
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
     reportCompressedSize: false,
     rollupOptions: {
       output: {
+        // UI SDK's small shared helpers go in one file; alone, a stub is too small for brotli to shrink.
+        codeSplitting: { groups: [{ name: 'ui-foundation', test: /@ui-sdk[\\/]core[\\/]dist[\\/]foundation/ }] },
         entryFileNames: 'assets/[name]-[hash:6].js',
         chunkFileNames: 'assets/[name]-[hash:6].js',
         assetFileNames: 'assets/[name]-[hash:6][extname]',

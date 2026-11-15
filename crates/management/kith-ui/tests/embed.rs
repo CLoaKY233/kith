@@ -234,7 +234,7 @@ mod tests {
     /// its signed-out text.
     #[test]
     fn the_page_source_keeps_the_markers() -> TestResult {
-        let html = std::fs::read_to_string(crate_dir().join("web/index.html"))?;
+        let html = std::fs::read_to_string(crate_dir().join("web-next/index.html"))?;
         for marker in ["<!--kith:boot-->", "<!--kith:signed-out-->"] {
             assert_eq!(html.matches(marker).count(), 1, "{marker}");
         }

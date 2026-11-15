@@ -6,7 +6,7 @@ updates:
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: npm
-    directory: /crates/management/kith-ui/web
+    directory: /crates/management/kith-ui/web-next
     schedule: { interval: weekly }
     groups:
       npm: { patterns: ["*"] }

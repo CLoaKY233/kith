@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(reason) = incomplete(&dist)? {
         writeln!(
             stdout,
-            "cargo::warning={reason}, so kith-ui embeds fallback.html. Run `npm ci && npm run build` in crates/management/kith-ui/web."
+            "cargo::warning={reason}, so kith-ui embeds fallback.html. Run `npm ci && npm run build` in crates/management/kith-ui/web-next."
         )?;
         files.push(("index.html".to_owned(), fallback));
     } else {

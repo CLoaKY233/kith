@@ -15,7 +15,7 @@ jobs:
   # Release tags commit the built page, so `cargo install` from the tag never needs Node.
   # The tag's commit sits on top of the release commit and is not merged into main:
   #   git switch --detach main
-  #   (cd crates/management/kith-ui/web && npm ci && npm run build)
+  #   (cd crates/management/kith-ui/web-next && npm ci && npm run build)
   #   git add -f crates/management/kith-ui/web/dist && git commit -m "Add the built page for vX.Y.Z"
   #   git tag vX.Y.Z && git push origin vX.Y.Z
   # This job fails the release when the committed page is missing or is not what the tag's
@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: crates/management/kith-ui/web
+        working-directory: crates/management/kith-ui/web-next
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -34,7 +34,7 @@ jobs:
           node-version: 26.10.0
       - name: the tag commits web/dist
         run: |
-          if ! git ls-files --error-unmatch dist/index.html > /dev/null 2>&1; then
+          if ! git ls-files --error-unmatch ../web/dist/index.html > /dev/null 2>&1; then
             echo "::error::$GITHUB_REF_NAME does not commit crates/management/kith-ui/web/dist; see the comment above this job in release.yml."
             exit 1
           fi
@@ -43,10 +43,10 @@ jobs:
       - run: npm run size
       - name: the committed page is what the sources build
         run: |
-          changed="$(git status --porcelain --ignored=matching -- dist)"
+          changed="$(git status --porcelain --ignored=matching -- ../web/dist)"
           if [ -n "$changed" ]; then
             echo "$changed"
-            echo "::error::web/dist on $GITHUB_REF_NAME is stale; rebuild it with npm ci && npm run build and tag again."
+            echo "::error::web/dist on $GITHUB_REF_NAME is stale; rebuild it with npm ci && npm run build in web-next and tag again."
             exit 1
           fi
 
